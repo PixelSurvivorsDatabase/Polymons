@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "supabase:push": "supabase db push --linked",
+    "supabase:lint": "supabase db lint --linked --schema public,private --level warning --fail-on error",
+    "supabase:advisors": "supabase db advisors --linked --type security --level warn --fail-on error"
   },
   "dependencies": {
     "@react-three/fiber": "^9.6.1",
@@ -29,6 +32,7 @@
     "eslint-plugin-react-hooks": "^5.0.0",
     "eslint-plugin-react-refresh": "^0.4.16",
     "globals": "^15.14.0",
+    "supabase": "^2.106.0",
     "typescript": "~5.7.2",
     "typescript-eslint": "^8.18.2",
     "vite": "^6.0.5"

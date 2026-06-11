@@ -1,0 +1,1 @@
+-- Base platform records are created by migrations.
