@@ -24,6 +24,11 @@ import {
   Vector3,
 } from "three";
 import type { PlayerTransform, RemotePlayer } from "./multiplayer";
+import type {
+  PolyGuiObject,
+  PolyPlayerSettings,
+  PolyWorldObject,
+} from "./polyProject";
 
 type InputState = {
   forward: boolean;
@@ -404,10 +409,14 @@ function PlayerController({
   input,
   onTelemetry,
   onPlayerState,
+  spawn,
+  playerSettings,
 }: {
   input: MutableRefObject<InputState>;
   onTelemetry: (telemetry: Telemetry) => void;
   onPlayerState?: (state: Omit<PlayerTransform, "sequence">) => void;
+  spawn: { x: number; y: number; z: number };
+  playerSettings: PolyPlayerSettings;
 }) {
   const body = useRef<RapierRigidBody>(null);
   const groundContacts = useRef(0);
@@ -422,10 +431,10 @@ function PlayerController({
   const reset = useCallback(() => {
     const rigidBody = body.current;
     if (!rigidBody) return;
-    rigidBody.setTranslation(SPAWN, true);
+    rigidBody.setTranslation(spawn, true);
     rigidBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
     rigidBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
-  }, []);
+  }, [spawn]);
 
   useFrame((state, delta) => {
     const rigidBody = body.current;
@@ -451,7 +460,8 @@ function PlayerController({
     if (movement.lengthSq() > 1) movement.normalize();
 
     const velocity = rigidBody.linvel();
-    const targetSpeed = input.current.sprint ? 9.5 : 6.2;
+    const walkSpeed = Math.max(1, playerSettings.walkSpeed / 3);
+    const targetSpeed = input.current.sprint ? walkSpeed * 1.5 : walkSpeed;
     const acceleration = grounded.current ? 15 : 4.5;
     const smoothing = 1 - Math.exp(-acceleration * delta);
     const targetX = movement.x * targetSpeed;
@@ -467,7 +477,7 @@ function PlayerController({
       grounded.current &&
       jumpCooldown.current === 0
     ) {
-      nextVelocity.y = 8.2;
+      nextVelocity.y = Math.max(2, playerSettings.jumpPower * 0.78);
       jumpCooldown.current = 0.2;
       groundContacts.current = 0;
     }
@@ -544,7 +554,7 @@ function PlayerController({
     <RigidBody
       ref={body}
       name="player"
-      position={[SPAWN.x, SPAWN.y, SPAWN.z]}
+      position={[spawn.x, spawn.y, spawn.z]}
       colliders={false}
       lockRotations
       linearDamping={0.2}
@@ -611,6 +621,29 @@ function PhysicsCrate({
   );
 }
 
+function ProjectBlock({ object }: { object: PolyWorldObject }) {
+  if (object.visible === false) return null;
+  const content = (
+    <mesh castShadow receiveShadow>
+      <boxGeometry args={object.scale} />
+      <meshStandardMaterial color={object.color} roughness={0.74} />
+    </mesh>
+  );
+  return (
+    <RigidBody
+      type={object.anchored ? "fixed" : "dynamic"}
+      colliders="cuboid"
+      position={object.position}
+      rotation={object.rotation}
+      restitution={0.03}
+      friction={0.82}
+      ccd={!object.anchored}
+    >
+      {content}
+    </RigidBody>
+  );
+}
+
 function BaseplateWorld() {
   return (
     <>
@@ -637,12 +670,18 @@ function Scene({
   onPointerLock,
   remotePlayers,
   onPlayerState,
+  worldObjects,
+  playerSettings,
+  spawn,
 }: {
   input: MutableRefObject<InputState>;
   onTelemetry: (telemetry: Telemetry) => void;
   onPointerLock: (locked: boolean) => void;
   remotePlayers: RemotePlayer[];
   onPlayerState?: (state: Omit<PlayerTransform, "sequence">) => void;
+  worldObjects?: PolyWorldObject[];
+  playerSettings: PolyPlayerSettings;
+  spawn: { x: number; y: number; z: number };
 }) {
   return (
     <>
@@ -653,42 +692,56 @@ function Scene({
           input={input}
           onTelemetry={onTelemetry}
           onPlayerState={onPlayerState}
+          spawn={spawn}
+          playerSettings={playerSettings}
         />
         {remotePlayers.map((player) => (
           <RemoteBlockAvatar key={player.id} player={player} />
         ))}
-        <RigidBody type="fixed" colliders={false} name="baseplate">
-          <CuboidCollider args={[30, 0.5, 30]} position={[0, -0.5, 0]} friction={1} />
-          <mesh position={[0, -0.5, 0]} receiveShadow>
-            <boxGeometry args={[60, 1, 60]} />
-            <meshStandardMaterial color="#55a76a" roughness={0.9} />
-          </mesh>
-          <gridHelper
-            args={[60, 60, new Color("#d4efda"), new Color("#438956")]}
-            position={[0, 0.012, 0]}
-          />
-        </RigidBody>
-        <StaticBlock position={[-8, 1, -4]} size={[5, 2, 5]} color="#7281cf" />
-        <StaticBlock
-          position={[9, 1.3, -5]}
-          size={[8, 0.8, 5]}
-          color="#b990df"
-          rotation={[0, 0, -0.25]}
-        />
-        {[0, 1, 2, 3, 4].map((step) => {
-          const height = 0.5 * (step + 1);
-          return (
+        {worldObjects ? (
+          worldObjects.map((object) => (
+            <ProjectBlock key={object.id} object={object} />
+          ))
+        ) : (
+          <>
+            <RigidBody type="fixed" colliders={false} name="baseplate">
+              <CuboidCollider
+                args={[30, 0.5, 30]}
+                position={[0, -0.5, 0]}
+                friction={1}
+              />
+              <mesh position={[0, -0.5, 0]} receiveShadow>
+                <boxGeometry args={[60, 1, 60]} />
+                <meshStandardMaterial color="#55a76a" roughness={0.9} />
+              </mesh>
+              <gridHelper
+                args={[60, 60, new Color("#d4efda"), new Color("#438956")]}
+                position={[0, 0.012, 0]}
+              />
+            </RigidBody>
+            <StaticBlock position={[-8, 1, -4]} size={[5, 2, 5]} color="#7281cf" />
             <StaticBlock
-              key={step}
-              position={[-3.2 + step * 1.55, height / 2, -10]}
-              size={[1.6, height, 4]}
-              color={step % 2 === 0 ? "#cf9b5e" : "#d8aa70"}
+              position={[9, 1.3, -5]}
+              size={[8, 0.8, 5]}
+              color="#b990df"
+              rotation={[0, 0, -0.25]}
             />
-          );
-        })}
-        <PhysicsCrate position={[4, 1.1, 4]} color="#df714d" />
-        <PhysicsCrate position={[5.6, 1.1, 3.8]} color="#4d8fdf" />
-        <PhysicsCrate position={[4.8, 2.8, 4]} color="#e0bd4f" />
+            {[0, 1, 2, 3, 4].map((step) => {
+              const height = 0.5 * (step + 1);
+              return (
+                <StaticBlock
+                  key={step}
+                  position={[-3.2 + step * 1.55, height / 2, -10]}
+                  size={[1.6, height, 4]}
+                  color={step % 2 === 0 ? "#cf9b5e" : "#d8aa70"}
+                />
+              );
+            })}
+            <PhysicsCrate position={[4, 1.1, 4]} color="#df714d" />
+            <PhysicsCrate position={[5.6, 1.1, 3.8]} color="#4d8fdf" />
+            <PhysicsCrate position={[4.8, 2.8, 4]} color="#e0bd4f" />
+          </>
+        )}
       </Physics>
     </>
   );
@@ -726,21 +779,98 @@ function TouchButton({
   );
 }
 
+function GuiNode({
+  object,
+  objects,
+}: {
+  object: PolyGuiObject;
+  objects: PolyGuiObject[];
+}) {
+  if (!object.visible) return null;
+  const children = objects.filter((item) => item.parentId === object.id);
+  if (object.type === "screenGui") {
+    return (
+      <>
+        {children.map((child) => (
+          <GuiNode key={child.id} object={child} objects={objects} />
+        ))}
+      </>
+    );
+  }
+  const style = {
+    left: `${object.position[0] * 100}%`,
+    top: `${object.position[1] * 100}%`,
+    width: `${object.size[0] * 100}%`,
+    height: `${object.size[1] * 100}%`,
+    color: object.textColor,
+    backgroundColor: object.backgroundColor,
+    opacity: 1 - object.backgroundTransparency,
+  };
+  const className = `poly-gui-object poly-gui-${object.type}`;
+  if (object.type === "textButton") {
+    return (
+      <button className={className} style={style}>
+        {object.text}
+        {children.map((child) => (
+          <GuiNode key={child.id} object={child} objects={objects} />
+        ))}
+      </button>
+    );
+  }
+  return (
+    <div className={className} style={style}>
+      {object.type === "textLabel" ? object.text : null}
+      {children.map((child) => (
+        <GuiNode key={child.id} object={child} objects={objects} />
+      ))}
+    </div>
+  );
+}
+
+function ProjectGui({ objects }: { objects: PolyGuiObject[] }) {
+  const roots = objects.filter(
+    (object) => object.type === "screenGui" && object.parentId === null,
+  );
+  return (
+    <div className="poly-player-gui">
+      {roots.map((root) => (
+        <GuiNode key={root.id} object={root} objects={objects} />
+      ))}
+    </div>
+  );
+}
+
 export default function BaseplateGame({
   remotePlayers = [],
   onPlayerState,
+  worldObjects,
+  guiObjects = [],
+  playerSettings = { walkSpeed: 18, jumpPower: 10.5 },
+  projectName = "Baseplate",
 }: {
   remotePlayers?: RemotePlayer[];
   onPlayerState?: (state: Omit<PlayerTransform, "sequence">) => void;
+  worldObjects?: PolyWorldObject[];
+  guiObjects?: PolyGuiObject[];
+  playerSettings?: PolyPlayerSettings;
+  projectName?: string;
 }) {
+  const spawnObject = worldObjects?.find((object) => object.type === "spawn");
+  const spawn = spawnObject
+    ? {
+        x: spawnObject.position[0],
+        y: spawnObject.position[1] + 2.7,
+        z: spawnObject.position[2],
+      }
+    : SPAWN;
   const input = useRef<InputState>(createInputState());
   const [pointerLocked, setPointerLocked] = useState(false);
   const [telemetry, setTelemetry] = useState<Telemetry>({
     grounded: false,
     speed: 0,
-    x: SPAWN.x,
-    y: SPAWN.y,
-    z: SPAWN.z,
+    x: spawn.x,
+    y: spawn.y,
+    z: spawn.z,
     rotationY: 0,
   });
   useKeyboard(input);
@@ -775,13 +905,16 @@ export default function BaseplateGame({
             onPointerLock={setPointerLocked}
             remotePlayers={remotePlayers}
             onPlayerState={onPlayerState}
+            worldObjects={worldObjects}
+            playerSettings={playerSettings}
+            spawn={spawn}
           />
         </Suspense>
       </Canvas>
 
       <div className="game-hud game-hud-left">
-        <span className="game-build-label">BASEPLATE</span>
-        <strong>Nova</strong>
+        <span className="game-build-label">{projectName.toUpperCase()}</span>
+        <strong>LocalPlayer</strong>
         <span>
           {telemetry.grounded ? "Grounded" : "Airborne"} -{" "}
           {telemetry.speed.toFixed(1)} studs/s
@@ -791,6 +924,8 @@ export default function BaseplateGame({
           {remotePlayers.length === 0 ? "player" : "players"} online
         </span>
       </div>
+
+      <ProjectGui objects={guiObjects} />
 
       <div className="game-hud game-hud-right">
         <span>WASD Move</span>

@@ -1,0 +1,91 @@
+{
+  "version": 2,
+  "id": "22222222-2222-4222-8222-222222222222",
+  "name": "Studio Playtest",
+  "language": "luau",
+  "createdAt": "2026-06-11T00:00:00.000Z",
+  "updatedAt": "2026-06-11T00:00:00.000Z",
+  "objects": [
+    {
+      "id": "baseplate",
+      "name": "Baseplate",
+      "type": "baseplate",
+      "position": [0, -0.5, 0],
+      "rotation": [0, 0, 0],
+      "scale": [40, 1, 40],
+      "color": "#405946",
+      "anchored": true,
+      "visible": true
+    },
+    {
+      "id": "spawn",
+      "name": "Spawn",
+      "type": "spawn",
+      "position": [0, 0.15, 5],
+      "rotation": [0, 0, 0],
+      "scale": [4, 0.3, 4],
+      "color": "#5B3D91",
+      "anchored": true,
+      "visible": true
+    },
+    {
+      "id": "part",
+      "name": "Part",
+      "type": "part",
+      "position": [0, 2, 0],
+      "rotation": [0, 0, 0],
+      "scale": [4, 4, 4],
+      "color": "#342856",
+      "anchored": true,
+      "visible": true
+    }
+  ],
+  "scripts": [
+    {
+      "id": "server",
+      "name": "Main",
+      "kind": "script",
+      "parent": "ServerScriptService",
+      "source": "local part = Workspace:FindFirstChild(\"Part\")\npart.Color = \"#B45CFF\"\npart.Position = Vector3.new(0, 3, 0)\nprint(\"Server script ran\")"
+    },
+    {
+      "id": "client",
+      "name": "Client",
+      "kind": "localScript",
+      "parent": "StarterPlayerScripts",
+      "source": "local player = Players.LocalPlayer\nlocal label = PlayerGui:FindFirstChild(\"Status\")\nplayer.WalkSpeed = 24\nlabel.Text = \"Local playtest\"\nprint(\"Client script ran\")"
+    }
+  ],
+  "gui": [
+    {
+      "id": "screen",
+      "name": "Hud",
+      "type": "screenGui",
+      "parentId": null,
+      "position": [0, 0],
+      "size": [1, 1],
+      "backgroundColor": "#000000",
+      "backgroundTransparency": 1,
+      "text": "",
+      "textColor": "#FFFFFF",
+      "visible": true
+    },
+    {
+      "id": "status",
+      "name": "Status",
+      "type": "textLabel",
+      "parentId": "screen",
+      "position": [0.04, 0.06],
+      "size": [0.22, 0.08],
+      "backgroundColor": "#17131F",
+      "backgroundTransparency": 0.08,
+      "text": "Loading",
+      "textColor": "#FFFFFF",
+      "visible": true
+    }
+  ],
+  "playerSettings": {
+    "walkSpeed": 18,
+    "jumpPower": 10.5
+  }
+}

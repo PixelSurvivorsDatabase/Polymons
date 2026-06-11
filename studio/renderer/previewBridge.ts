@@ -1,29 +1,41 @@
-function createStarterScript(language: StudioLanguage): string {
+function createStarterScript(
+  language: StudioLanguage,
+  kind: StudioScript["kind"],
+): string {
   if (language === "cpp") {
-    return `#include <poly/studio.hpp>
+    return kind === "script"
+      ? `#include <poly/server.hpp>
 
-void onStart(poly::Game& game) {
-    game.log("Hello from Poly Studio");
-}
+auto part = Workspace.Find("Part");
+part.Color = "#6F49BB";
+`
+      : `#include <poly/client.hpp>
+
+auto player = Players::LocalPlayer;
+player.WalkSpeed = 18;
 `;
   }
   if (language === "csharp") {
-    return `using Poly;
+    return kind === "script"
+      ? `using Poly;
 
-public class Main : GameScript
-{
-    public override void OnStart()
-    {
-        Log("Hello from Poly Studio");
-    }
-}
+var part = Workspace.Find("Part");
+part.Color = "#6F49BB";
+`
+      : `using Poly;
+
+var player = Players.LocalPlayer;
+player.WalkSpeed = 18;
 `;
   }
-  return `local game = require("@poly/game")
+  return kind === "script"
+    ? `local part = Workspace:FindFirstChild("Part")
 
-game:onStart(function()
-    print("Hello from Poly Studio")
-end)
+part.Color = "#6F49BB"
+`
+    : `local player = Players.LocalPlayer
+
+player.WalkSpeed = 18
 `;
 }
 
@@ -33,12 +45,12 @@ function createPreviewProject(
 ): StudioProject {
   const now = new Date().toISOString();
   return {
+    version: 2,
     id: crypto.randomUUID(),
     name,
     language,
     createdAt: now,
     updatedAt: now,
-    script: createStarterScript(language),
     objects: [
       {
         id: crypto.randomUUID(),
@@ -49,6 +61,7 @@ function createPreviewProject(
         scale: [40, 1, 40],
         color: "#405946",
         anchored: true,
+        visible: true,
       },
       {
         id: crypto.randomUUID(),
@@ -59,6 +72,7 @@ function createPreviewProject(
         scale: [4, 0.3, 4],
         color: "#5b3d91",
         anchored: true,
+        visible: true,
       },
       {
         id: crypto.randomUUID(),
@@ -69,13 +83,31 @@ function createPreviewProject(
         scale: [4, 4, 4],
         color: "#342856",
         anchored: true,
+        visible: true,
       },
     ],
+    scripts: [
+      {
+        id: crypto.randomUUID(),
+        name: "Main",
+        kind: "script",
+        parent: "ServerScriptService",
+        source: createStarterScript(language, "script"),
+      },
+      {
+        id: crypto.randomUUID(),
+        name: "Client",
+        kind: "localScript",
+        parent: "StarterPlayerScripts",
+        source: createStarterScript(language, "localScript"),
+      },
+    ],
+    gui: [],
+    playerSettings: { walkSpeed: 18, jumpPower: 10.5 },
   };
 }
 
 const isPreview =
-  location.protocol.startsWith("http") &&
   new URLSearchParams(location.search).has("preview");
 
 if (isPreview && !window.polyStudio) {
@@ -104,13 +136,13 @@ if (isPreview && !window.polyStudio) {
     logout: async () => undefined,
     openWebsite: async () => undefined,
     listProjects: async () =>
-      [...projects.values()].map(
-        ({ script: _script, objects: _objects, ...project }) => {
-          void _script;
-          void _objects;
-          return project;
-        },
-      ),
+      [...projects.values()].map((project) => ({
+        id: project.id,
+        name: project.name,
+        language: project.language,
+        createdAt: project.createdAt,
+        updatedAt: project.updatedAt,
+      })),
     createProject: async ({ name, language }) => {
       const project = createPreviewProject(name.trim(), language);
       projects.set(project.id, project);
@@ -130,5 +162,6 @@ if (isPreview && !window.polyStudio) {
       return next;
     },
     revealProject: async () => undefined,
+    playProject: async () => undefined,
   };
 }

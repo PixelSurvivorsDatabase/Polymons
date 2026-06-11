@@ -27,19 +27,51 @@ type StudioObject = {
   scale: [number, number, number];
   color: string;
   anchored: boolean;
+  visible?: boolean;
+};
+
+type StudioScript = {
+  id: string;
+  name: string;
+  kind: "script" | "localScript";
+  parent: "ServerScriptService" | "StarterPlayerScripts" | string;
+  source: string;
+};
+
+type StudioGuiObject = {
+  id: string;
+  name: string;
+  type: "screenGui" | "frame" | "textLabel" | "textButton";
+  parentId: string | null;
+  position: [number, number];
+  size: [number, number];
+  backgroundColor: string;
+  backgroundTransparency: number;
+  text: string;
+  textColor: string;
+  visible: boolean;
 };
 
 type StudioProject = {
+  version: 2;
   id: string;
   name: string;
   language: StudioLanguage;
   createdAt: string;
   updatedAt: string;
-  script: string;
   objects: StudioObject[];
+  scripts: StudioScript[];
+  gui: StudioGuiObject[];
+  playerSettings: {
+    walkSpeed: number;
+    jumpPower: number;
+  };
 };
 
-type ProjectSummary = Omit<StudioProject, "script" | "objects">;
+type ProjectSummary = Pick<
+  StudioProject,
+  "id" | "name" | "language" | "createdAt" | "updatedAt"
+>;
 
 interface Window {
   polyStudio: {
@@ -55,5 +87,6 @@ interface Window {
     loadProject: (id: string) => Promise<StudioProject>;
     saveProject: (project: StudioProject) => Promise<StudioProject>;
     revealProject: (id: string) => Promise<void>;
+    playProject: (id: string) => Promise<void>;
   };
 }

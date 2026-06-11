@@ -2,6 +2,10 @@ import { Gamepad2, LogOut, Play, UserRound } from "lucide-react";
 import { lazy, Suspense, useEffect, useState } from "react";
 import logo from "../../assets/polymons-logo.png";
 import { useMultiplayer } from "../../src/game/multiplayer";
+import {
+  type PolyProject,
+  runPolyProject,
+} from "../../src/game/polyProject";
 
 const BaseplateGame = lazy(
   () => import("../../src/game/BaseplateGame"),
@@ -42,6 +46,7 @@ export default function PlayerApp() {
     try {
       const result = await window.polymons.play("baseplate");
       setLaunch({
+        mode: "online",
         game: "baseplate",
         websocketUrl: result.playSession.websocketUrl,
       });
@@ -123,6 +128,19 @@ function PlayerGame({
   launch: PlayerLaunch;
   onLeave: () => void;
 }) {
+  if (launch.mode === "studio") {
+    return <StudioPlayerGame launch={launch} onLeave={onLeave} />;
+  }
+  return <OnlinePlayerGame launch={launch} onLeave={onLeave} />;
+}
+
+function OnlinePlayerGame({
+  launch,
+  onLeave,
+}: {
+  launch: Extract<PlayerLaunch, { mode: "online" }>;
+  onLeave: () => void;
+}) {
   const { connection, remotePlayers, sendState } = useMultiplayer(
     launch.websocketUrl,
   );
@@ -146,6 +164,78 @@ function PlayerGame({
             onPlayerState={sendState}
           />
         </Suspense>
+      </section>
+    </main>
+  );
+}
+
+function StudioPlayerGame({
+  launch,
+  onLeave,
+}: {
+  launch: Extract<PlayerLaunch, { mode: "studio" }>;
+  onLeave: () => void;
+}) {
+  const [project, setProject] = useState<PolyProject | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    void window.polymons
+      .loadStudioProject(launch.projectId)
+      .then(setProject)
+      .catch((loadError: unknown) => {
+        setError(
+          loadError instanceof Error
+            ? loadError.message
+            : "Could not load the Studio project.",
+        );
+      });
+  }, [launch.projectId]);
+
+  const runtime = project ? runPolyProject(project) : null;
+
+  return (
+    <main className="game-screen">
+      <header className="player-bar">
+        <div className="player-brand">
+          <img src={logo} alt="" />
+          <strong>{project?.name ?? "Studio playtest"}</strong>
+        </div>
+        <span className="player-connection">Local playtest</span>
+        <button onClick={onLeave}>Stop</button>
+      </header>
+      <section className="player-game">
+        {error ? (
+          <div className="player-loading">{error}</div>
+        ) : runtime ? (
+          <Suspense
+            fallback={<div className="player-loading">Loading playtest...</div>}
+          >
+            <BaseplateGame
+              worldObjects={runtime.project.objects}
+              guiObjects={runtime.project.gui}
+              playerSettings={runtime.project.playerSettings}
+              projectName={runtime.project.name}
+            />
+            {(runtime.output.length > 0 || runtime.diagnostics.length > 0) && (
+              <aside className="player-output">
+                <strong>Output</strong>
+                {runtime.diagnostics.map((diagnostic, index) => (
+                  <span className="output-error" key={`diagnostic-${index}`}>
+                    {diagnostic.scriptName}:{diagnostic.line} {diagnostic.message}
+                  </span>
+                ))}
+                {runtime.output.map((entry, index) => (
+                  <span className={`output-${entry.level}`} key={`output-${index}`}>
+                    [{entry.scriptName}] {entry.message}
+                  </span>
+                ))}
+              </aside>
+            )}
+          </Suspense>
+        ) : (
+          <div className="player-loading">Loading Studio project...</div>
+        )}
       </section>
     </main>
   );

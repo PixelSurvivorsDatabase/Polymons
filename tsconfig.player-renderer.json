@@ -16,5 +16,6 @@
     "jsx": "react-jsx",
     "types": ["vite/client"]
   },
-  "include": ["player/renderer", "src/game"]
+  "include": ["player/renderer", "src/game"],
+  "exclude": ["src/**/*.test.ts"]
 }

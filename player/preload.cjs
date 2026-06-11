@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld("polymons", {
     ipcRenderer.invoke("auth:signup", { username, password, displayName }),
   logout: () => ipcRenderer.invoke("auth:logout"),
   play: (gameId) => ipcRenderer.invoke("game:play", { gameId }),
+  loadStudioProject: (id) => ipcRenderer.invoke("studio:project", { id }),
   getLaunch: () => ipcRenderer.invoke("launch:get"),
   onLaunch: (callback) => {
     const listener = (_event, launch) => callback(launch);

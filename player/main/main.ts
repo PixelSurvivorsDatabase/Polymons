@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import {
   app,
   BrowserWindow,
@@ -12,6 +13,7 @@ import {
 
 const API_URL = "https://polymons-server.onrender.com";
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const execFileAsync = promisify(execFile);
 
 type PlayerUser = {
   id: string;
@@ -34,8 +36,12 @@ type StoredAuth = {
 };
 
 type LaunchRequest = {
+  mode: "online";
   game: string;
   websocketUrl: string;
+} | {
+  mode: "studio";
+  projectId: string;
 };
 
 type ProtocolRequest = {
@@ -46,9 +52,40 @@ type ProtocolRequest = {
 let mainWindow: BrowserWindow | null = null;
 let pendingLaunch: LaunchRequest | null = null;
 let auth: StoredAuth | null = null;
+const captureArgument = !app.isPackaged
+  ? process.argv.find((argument) =>
+      argument.startsWith("--player-capture-studio="),
+    )
+  : undefined;
 
 function sessionPath(): string {
   return join(app.getPath("userData"), "session.bin");
+}
+
+function projectsRoot(): string {
+  if (!app.isPackaged && process.env.POLY_STUDIO_PROJECTS_ROOT) {
+    return process.env.POLY_STUDIO_PROJECTS_ROOT;
+  }
+  return join(app.getPath("documents"), "Poly Studio Projects");
+}
+
+function validateProjectId(id: string): void {
+  if (!/^[a-f0-9-]{36}$/i.test(id)) {
+    throw new Error("Invalid Studio project.");
+  }
+}
+
+async function loadStudioProject(id: string): Promise<unknown> {
+  validateProjectId(id);
+  const path = join(projectsRoot(), id, "project.poly.json");
+  const project = JSON.parse(await readFile(path, "utf8")) as {
+    id?: unknown;
+    version?: unknown;
+  };
+  if (project.id !== id || project.version !== 2) {
+    throw new Error("This Studio project needs to be opened and saved again.");
+  }
+  return project;
 }
 
 async function loadAuth(): Promise<StoredAuth | null> {
@@ -118,7 +155,7 @@ function parseProtocolRequest(value: string): ProtocolRequest | null {
     const url = new URL(value);
     if (
       url.protocol !== "polymons:" ||
-      !["account", "play"].includes(url.hostname)
+      !["account", "play", "studio"].includes(url.hostname)
     ) {
       return null;
     }
@@ -127,13 +164,21 @@ function parseProtocolRequest(value: string): ProtocolRequest | null {
     if (url.hostname === "account") {
       return accountTicket ? { accountTicket, launch: null } : null;
     }
+    if (url.hostname === "studio") {
+      const projectId = url.searchParams.get("project");
+      if (!projectId || !/^[a-f0-9-]{36}$/i.test(projectId)) return null;
+      return {
+        accountTicket: null,
+        launch: { mode: "studio", projectId },
+      };
+    }
 
     const websocketUrl = url.searchParams.get("ws");
     const game = url.searchParams.get("game") ?? "baseplate";
     if (!websocketUrl || !websocketUrl.startsWith("wss://")) return null;
     return {
       accountTicket,
-      launch: { game, websocketUrl },
+      launch: { mode: "online", game, websocketUrl },
     };
   } catch {
     return null;
@@ -202,7 +247,7 @@ async function handleProtocolRequest(
   }
 }
 
-function registerProtocol(): void {
+async function registerProtocol(): Promise<void> {
   if (process.platform !== "win32" || !app.isPackaged) return;
   const executable = process.env.PORTABLE_EXECUTABLE_FILE ?? process.execPath;
   const key = "HKCU\\Software\\Classes\\polymons";
@@ -219,7 +264,7 @@ function registerProtocol(): void {
     ],
   ];
   for (const args of commands) {
-    execFile("reg.exe", args, () => undefined);
+    await execFileAsync("reg.exe", args);
   }
 }
 
@@ -239,6 +284,21 @@ function createWindow(): void {
     },
   });
   void mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
+  if (captureArgument) {
+    const capturePath = captureArgument.slice(
+      "--player-capture-studio=".length,
+    );
+    mainWindow.webContents.once("did-finish-load", () => {
+      void (async () => {
+        await new Promise((resolve) => setTimeout(resolve, 3_500));
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        const image = await mainWindow.webContents.capturePage();
+        await mkdir(dirname(capturePath), { recursive: true });
+        await writeFile(capturePath, image.toPNG());
+        app.quit();
+      })();
+    });
+  }
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https://")) void shell.openExternal(url);
     return { action: "deny" };
@@ -255,7 +315,11 @@ if (!hasLock) {
   });
 
   void app.whenReady().then(async () => {
-    registerProtocol();
+    try {
+      await registerProtocol();
+    } catch (error) {
+      console.error("Could not register the Polymons protocol.", error);
+    }
     auth = await loadAuth();
     const initialRequest = findProtocolRequest(process.argv);
     if (initialRequest?.accountTicket) {
@@ -301,6 +365,10 @@ if (!hasLock) {
       await saveAuth(null);
     });
     ipcMain.handle("launch:get", () => pendingLaunch);
+    ipcMain.handle(
+      "studio:project",
+      (_event, input: { id: string }) => loadStudioProject(input.id),
+    );
     ipcMain.handle("game:play", async (_event, input: { gameId: string }) => {
       if (!auth) throw new Error("Sign in to play.");
       try {

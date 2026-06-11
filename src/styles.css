@@ -1263,6 +1263,37 @@ h3,
   cursor: crosshair;
 }
 
+.poly-player-gui {
+  position: absolute;
+  z-index: 8;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.poly-gui-object {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+  padding: 6px;
+  font-weight: 700;
+}
+
+.poly-gui-frame {
+  align-items: stretch;
+  justify-content: stretch;
+}
+
+.poly-gui-textButton {
+  pointer-events: auto;
+  cursor: pointer;
+  font: inherit;
+}
+
 .game-hud {
   position: absolute;
   z-index: 4;

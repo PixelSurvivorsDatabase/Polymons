@@ -11,4 +11,5 @@ contextBridge.exposeInMainWorld("polyStudio", {
   loadProject: (id) => ipcRenderer.invoke("projects:load", { id }),
   saveProject: (project) => ipcRenderer.invoke("projects:save", project),
   revealProject: (id) => ipcRenderer.invoke("projects:reveal", { id }),
+  playProject: (id) => ipcRenderer.invoke("projects:play", { id }),
 });

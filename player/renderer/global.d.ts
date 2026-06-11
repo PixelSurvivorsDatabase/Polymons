@@ -16,10 +16,16 @@ type PlayerAuth = {
   };
 };
 
-type PlayerLaunch = {
-  game: string;
-  websocketUrl: string;
-};
+type PlayerLaunch =
+  | {
+      mode: "online";
+      game: string;
+      websocketUrl: string;
+    }
+  | {
+      mode: "studio";
+      projectId: string;
+    };
 
 interface Window {
   polymons: {
@@ -34,6 +40,7 @@ interface Window {
     play: (
       gameId: string,
     ) => Promise<{ playSession: { websocketUrl: string } }>;
+    loadStudioProject: (id: string) => Promise<import("../../src/game/polyProject").PolyProject>;
     getLaunch: () => Promise<PlayerLaunch | null>;
     onLaunch: (callback: (launch: PlayerLaunch) => void) => () => void;
     onAuthChanged: (callback: (auth: PlayerAuth) => void) => () => void;
