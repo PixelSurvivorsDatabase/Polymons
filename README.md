@@ -4,8 +4,8 @@
 
 # Polymons
 
-Polymons is an independent game creation and social platform where people can
-build, publish, discover, and play community-made experiences.
+Polymons is a place to build games, publish them, play games made by other
+people, and hang out with friends.
 
 ## Status
 
