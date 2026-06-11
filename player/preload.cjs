@@ -14,4 +14,14 @@ contextBridge.exposeInMainWorld("polymons", {
     ipcRenderer.on("launch:open", listener);
     return () => ipcRenderer.removeListener("launch:open", listener);
   },
+  onAuthChanged: (callback) => {
+    const listener = (_event, auth) => callback(auth);
+    ipcRenderer.on("auth:changed", listener);
+    return () => ipcRenderer.removeListener("auth:changed", listener);
+  },
+  onProtocolError: (callback) => {
+    const listener = (_event, message) => callback(message);
+    ipcRenderer.on("protocol:error", listener);
+    return () => ipcRenderer.removeListener("protocol:error", listener);
+  },
 });

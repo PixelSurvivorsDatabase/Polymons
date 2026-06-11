@@ -31,3 +31,16 @@ export function createPlayTicket(): string {
 export function hashPlayTicket(ticket: string, secret: string): string {
   return createHmac("sha256", secret).update(ticket).digest("hex");
 }
+
+export function createPlayerAccountTicket(): string {
+  return randomBytes(32).toString("base64url");
+}
+
+export function hashPlayerAccountTicket(
+  ticket: string,
+  secret: string,
+): string {
+  return createHmac("sha256", secret)
+    .update(`player-account:${ticket}`)
+    .digest("hex");
+}

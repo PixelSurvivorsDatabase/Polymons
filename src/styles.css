@@ -1199,6 +1199,36 @@ h3,
   font-weight: 700;
 }
 
+.player-options-dialog {
+  max-width: 510px;
+}
+
+.player-options-actions,
+.profile-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.player-options-actions {
+  margin-top: 25px;
+}
+
+.player-options-actions > * {
+  flex: 1;
+  justify-content: center;
+}
+
+.player-options-note {
+  margin: 16px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.profile-actions {
+  margin-left: auto;
+}
+
 
 .baseplate-player {
   position: relative;

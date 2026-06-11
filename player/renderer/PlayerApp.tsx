@@ -23,7 +23,17 @@ export default function PlayerApp() {
       setLaunch(storedLaunch);
       setReady(true);
     });
-    return window.polymons.onLaunch(setLaunch);
+    const removeLaunch = window.polymons.onLaunch(setLaunch);
+    const removeAuth = window.polymons.onAuthChanged((next) => {
+      setAuth(next);
+      setError("");
+    });
+    const removeError = window.polymons.onProtocolError(setError);
+    return () => {
+      removeLaunch();
+      removeAuth();
+      removeError();
+    };
   }, []);
 
   async function playBaseplate() {

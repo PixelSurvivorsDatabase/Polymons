@@ -35,6 +35,10 @@ export const playSessionSchema = z.object({
   gameId: z.string().trim().min(1).max(64),
 });
 
+export const playerAccountLinkSchema = z.object({
+  ticket: z.string().min(40).max(256),
+});
+
 export const clientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("ping"),

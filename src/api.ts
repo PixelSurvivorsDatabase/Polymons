@@ -1,6 +1,8 @@
 export const POLYMONS_API_URL =
   import.meta.env.VITE_POLYMONS_API_URL ??
   "https://polymons-server.onrender.com";
+export const POLYMONS_PLAYER_DOWNLOAD_URL =
+  "https://github.com/PixelSurvivorsDatabase/Polymons/releases/latest/download/PolymonsPlayer.exe";
 
 export type PolymonsUser = {
   id: string;
@@ -32,6 +34,11 @@ export type PlaySession = {
   expiresAt: string;
   ticket: string;
   websocketUrl: string;
+};
+
+export type PlayerAccountLink = {
+  ticket: string;
+  expiresAt: string;
 };
 
 type ApiOptions = {
@@ -104,9 +111,28 @@ export function createPlaySession(
   });
 }
 
-export function playerLaunchUrl(playSession: PlaySession): string {
+export function createPlayerAccountLink(
+  accessToken: string,
+): Promise<{ playerAccountLink: PlayerAccountLink }> {
+  return apiRequest("/v1/player-account-links", {
+    method: "POST",
+    accessToken,
+  });
+}
+
+export function playerAccountUrl(ticket: string): string {
+  const launch = new URL("polymons://account");
+  launch.searchParams.set("link", ticket);
+  return launch.toString();
+}
+
+export function playerLaunchUrl(
+  playSession: PlaySession,
+  accountTicket?: string,
+): string {
   const launch = new URL("polymons://play");
   launch.searchParams.set("game", playSession.game.slug);
   launch.searchParams.set("ws", playSession.websocketUrl);
+  if (accountTicket) launch.searchParams.set("link", accountTicket);
   return launch.toString();
 }

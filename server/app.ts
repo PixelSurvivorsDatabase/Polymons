@@ -12,7 +12,9 @@ import {
   parseBody,
 } from "./http.js";
 import {
+  createPlayerAccountTicket,
   createPlayTicket,
+  hashPlayerAccountTicket,
   hashPlayTicket,
   internalEmailForUsername,
   isReservedUsername,
@@ -25,6 +27,7 @@ import {
 import { isLoginDisabled } from "./official-account.js";
 import {
   loginSchema,
+  playerAccountLinkSchema,
   playSessionSchema,
   refreshSchema,
   signUpSchema,
@@ -204,6 +207,86 @@ export function createApp(
     const user = await authenticatedUser(request, admin);
     response.json({ user: await loadProfile(admin, user.id) });
   });
+
+  app.post("/v1/player-account-links", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const ticket = createPlayerAccountTicket();
+    const expiresAt = new Date(Date.now() + 2 * 60_000).toISOString();
+    const { error } = await admin.from("player_account_links").insert({
+      user_id: user.id,
+      ticket_hash: hashPlayerAccountTicket(
+        ticket,
+        config.playTicketSecret,
+      ),
+      expires_at: expiresAt,
+    });
+
+    if (error) throw error;
+    response.set("Cache-Control", "no-store");
+    response.status(201).json({
+      playerAccountLink: { ticket, expiresAt },
+    });
+  });
+
+  app.post(
+    "/v1/player-account-links/redeem",
+    accountLimiter,
+    async (request, response) => {
+      const input = parseBody(playerAccountLinkSchema, request.body);
+      const now = new Date().toISOString();
+      const { data: link, error: linkError } = await admin
+        .from("player_account_links")
+        .update({ consumed_at: now })
+        .eq(
+          "ticket_hash",
+          hashPlayerAccountTicket(input.ticket, config.playTicketSecret),
+        )
+        .is("consumed_at", null)
+        .gt("expires_at", now)
+        .select("user_id")
+        .maybeSingle();
+
+      if (linkError) throw linkError;
+      if (!link) {
+        throw new HttpError(401, "That Player link is invalid or expired.");
+      }
+
+      const { data: account, error: accountError } =
+        await admin.auth.admin.getUserById(link.user_id);
+      if (
+        accountError ||
+        !account.user?.email ||
+        isLoginDisabled(account.user)
+      ) {
+        throw new HttpError(401, "That Player link cannot be used.");
+      }
+
+      const { data: generated, error: generateError } =
+        await admin.auth.admin.generateLink({
+          type: "magiclink",
+          email: account.user.email,
+        });
+      if (generateError || !generated.properties.hashed_token) {
+        throw new HttpError(500, "Could not connect the Player account.");
+      }
+
+      const auth = createAuthClient(config);
+      const { data: verified, error: verifyError } =
+        await auth.auth.verifyOtp({
+          token_hash: generated.properties.hashed_token,
+          type: "email",
+        });
+      if (verifyError || !verified.user || !verified.session) {
+        throw new HttpError(500, "Could not connect the Player account.");
+      }
+
+      response.set("Cache-Control", "no-store");
+      response.json({
+        user: await loadProfile(admin, verified.user.id),
+        session: publicSession(verified.session),
+      });
+    },
+  );
 
   app.get("/v1/games/:gameId", async (request, response) => {
     const gameId = request.params.gameId;

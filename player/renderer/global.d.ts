@@ -36,5 +36,7 @@ interface Window {
     ) => Promise<{ playSession: { websocketUrl: string } }>;
     getLaunch: () => Promise<PlayerLaunch | null>;
     onLaunch: (callback: (launch: PlayerLaunch) => void) => () => void;
+    onAuthChanged: (callback: (auth: PlayerAuth) => void) => () => void;
+    onProtocolError: (callback: (message: string) => void) => () => void;
   };
 }

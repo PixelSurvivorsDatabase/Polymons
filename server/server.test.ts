@@ -4,6 +4,8 @@ import { readConfig } from "./config.js";
 import { OFFICIAL_ACCOUNT, isLoginDisabled } from "./official-account.js";
 import {
   createPlayTicket,
+  createPlayerAccountTicket,
+  hashPlayerAccountTicket,
   hashPlayTicket,
   internalEmailForUsername,
   isReservedUsername,
@@ -57,6 +59,20 @@ test("creates opaque tickets and stable keyed hashes", () => {
   assert.notEqual(
     hashPlayTicket(ticket, secret),
     hashPlayTicket(ticket, `${secret}-different`),
+  );
+});
+
+test("creates domain-separated Player account tickets", () => {
+  const ticket = createPlayerAccountTicket();
+  const secret = "a-secure-test-secret-that-is-long-enough";
+  assert.ok(ticket.length >= 40);
+  assert.equal(
+    hashPlayerAccountTicket(ticket, secret),
+    hashPlayerAccountTicket(ticket, secret),
+  );
+  assert.notEqual(
+    hashPlayerAccountTicket(ticket, secret),
+    hashPlayTicket(ticket, secret),
   );
 });
 

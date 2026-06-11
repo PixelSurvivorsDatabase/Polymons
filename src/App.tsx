@@ -2,6 +2,7 @@ import {
   Bell,
   ChevronLeft,
   Compass,
+  Download,
   Gamepad2,
   Home,
   Menu,
@@ -22,8 +23,11 @@ import {
   useParams,
 } from "react-router-dom";
 import {
+  createPlayerAccountLink,
   createPlaySession,
+  playerAccountUrl,
   playerLaunchUrl,
+  POLYMONS_PLAYER_DOWNLOAD_URL,
   type PlaySession,
 } from "./api";
 import { useAuth } from "./auth";
@@ -394,6 +398,8 @@ function GamePage() {
   const [launching, setLaunching] = useState<"player" | "browser" | null>(null);
   const [launchError, setLaunchError] = useState("");
   const [browserSession, setBrowserSession] = useState<PlaySession | null>(null);
+  const [playerOptions, setPlayerOptions] = useState(false);
+  const [playerAttempted, setPlayerAttempted] = useState(false);
 
   async function getPlaySession() {
     if (!session) {
@@ -416,11 +422,36 @@ function GamePage() {
     setLaunching(target);
     setLaunchError("");
     try {
-      const next = await getPlaySession();
-      if (!next) return;
       if (target === "player") {
-        window.location.assign(playerLaunchUrl(next));
+        if (!session) {
+          showAuth();
+          setPlayerOptions(false);
+          return;
+        }
+        const getPlayerResources = async (accessToken: string) =>
+          Promise.all([
+            createPlaySession(game.id, accessToken),
+            createPlayerAccountLink(accessToken),
+          ]);
+        let resources;
+        try {
+          resources = await getPlayerResources(session.accessToken);
+        } catch {
+          const renewed = await refresh();
+          if (!renewed) throw new Error("Sign in again to open the Player.");
+          resources = await getPlayerResources(renewed.accessToken);
+        }
+        const [playResult, accountResult] = resources;
+        window.location.assign(
+          playerLaunchUrl(
+            playResult.playSession,
+            accountResult.playerAccountLink.ticket,
+          ),
+        );
+        setPlayerAttempted(true);
       } else {
+        const next = await getPlaySession();
+        if (!next) return;
         setBrowserSession(next);
       }
     } catch (error) {
@@ -449,7 +480,11 @@ function GamePage() {
         <div className="game-launch-actions">
           <button
             className="primary-button"
-            onClick={() => void play("player")}
+            onClick={() => {
+              setPlayerOptions(true);
+              setPlayerAttempted(false);
+              setLaunchError("");
+            }}
             disabled={launching !== null}
           >
             <Gamepad2 size={19} fill="currentColor" />
@@ -465,6 +500,19 @@ function GamePage() {
         </div>
       </section>
       {launchError && <div className="launch-error">{launchError}</div>}
+      {playerOptions && (
+        <PlayerOptionsDialog
+          title="Play with Polymons Player"
+          description={
+            playerAttempted
+              ? "The Player should be opening. If nothing happened, download it, run it once, then press Open Player again."
+              : "Open the installed Player or download the portable Windows app."
+          }
+          opening={launching === "player"}
+          onOpen={() => void play("player")}
+          onClose={() => setPlayerOptions(false)}
+        />
+      )}
       {browserSession ? (
         <BrowserGame playSession={browserSession} />
       ) : (
@@ -549,7 +597,11 @@ function FriendsPage() {
 }
 
 function ProfilePage() {
-  const { user, logout, showAuth } = useAuth();
+  const { user, session, logout, showAuth, refresh } = useAuth();
+  const [playerOptions, setPlayerOptions] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncAttempted, setSyncAttempted] = useState(false);
+  const [syncError, setSyncError] = useState("");
   if (!user) {
     return (
       <section className="large-empty-state">
@@ -561,6 +613,34 @@ function ProfilePage() {
       </section>
     );
   }
+
+  async function syncPlayer() {
+    if (!session) {
+      showAuth();
+      return;
+    }
+    setSyncing(true);
+    setSyncError("");
+    try {
+      let result;
+      try {
+        result = await createPlayerAccountLink(session.accessToken);
+      } catch {
+        const renewed = await refresh();
+        if (!renewed) throw new Error("Sign in again to sync the Player.");
+        result = await createPlayerAccountLink(renewed.accessToken);
+      }
+      window.location.assign(playerAccountUrl(result.playerAccountLink.ticket));
+      setSyncAttempted(true);
+    } catch (error) {
+      setSyncError(
+        error instanceof Error ? error.message : "Could not sync the Player.",
+      );
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   return (
     <>
       <section className="profile-hero">
@@ -571,8 +651,35 @@ function ProfilePage() {
           <span>@{user.username}</span>
           <p>Playing and building on Polymons.</p>
         </div>
-        <button className="secondary-button" onClick={logout}>Sign out</button>
+        <div className="profile-actions">
+          <button
+            className="primary-button"
+            onClick={() => {
+              setPlayerOptions(true);
+              setSyncAttempted(false);
+              setSyncError("");
+            }}
+          >
+            Sync to Player
+          </button>
+          <button className="secondary-button" onClick={logout}>Sign out</button>
+        </div>
       </section>
+      {playerOptions && (
+        <PlayerOptionsDialog
+          title="Sync your Player"
+          description={
+            syncAttempted
+              ? "Your Player should now be signed in as this account. If it did not open, download it, run it once, then try again."
+              : "Open Polymons Player to securely use this website account there."
+          }
+          error={syncError}
+          opening={syncing}
+          openLabel="Open and sync Player"
+          onOpen={() => void syncPlayer()}
+          onClose={() => setPlayerOptions(false)}
+        />
+      )}
       <section className="profile-stats">
         <div>
           <strong>0</strong>
@@ -596,6 +703,71 @@ function ProfilePage() {
         </div>
       </section>
     </>
+  );
+}
+
+function PlayerOptionsDialog({
+  title,
+  description,
+  error,
+  opening,
+  openLabel = "Open Player",
+  onOpen,
+  onClose,
+}: {
+  title: string;
+  description: string;
+  error?: string;
+  opening: boolean;
+  openLabel?: string;
+  onOpen: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="auth-overlay" role="presentation">
+      <button
+        className="auth-backdrop"
+        type="button"
+        aria-label="Close"
+        onClick={onClose}
+      />
+      <section
+        className="auth-dialog player-options-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+      >
+        <button className="auth-close" type="button" onClick={onClose}>
+          Close
+        </button>
+        <span className="eyebrow">Polymons Player</span>
+        <h2>{title}</h2>
+        <p>{description}</p>
+        {error && <div className="auth-error">{error}</div>}
+        <div className="player-options-actions">
+          <button
+            className="primary-button"
+            type="button"
+            onClick={onOpen}
+            disabled={opening}
+          >
+            <Gamepad2 size={18} />
+            {opening ? "Opening..." : openLabel}
+          </button>
+          <a
+            className="secondary-button"
+            href={POLYMONS_PLAYER_DOWNLOAD_URL}
+          >
+            <Download size={18} />
+            Download Player
+          </a>
+        </div>
+        <p className="player-options-note">
+          Windows may show a SmartScreen warning because the Player is not
+          code-signed yet.
+        </p>
+      </section>
+    </div>
   );
 }
 

@@ -38,6 +38,11 @@ type LaunchRequest = {
   websocketUrl: string;
 };
 
+type ProtocolRequest = {
+  accountTicket: string | null;
+  launch: LaunchRequest | null;
+};
+
 let mainWindow: BrowserWindow | null = null;
 let pendingLaunch: LaunchRequest | null = null;
 let auth: StoredAuth | null = null;
@@ -108,27 +113,53 @@ async function refreshAuth(): Promise<StoredAuth | null> {
   }
 }
 
-function parseLaunch(value: string): LaunchRequest | null {
+function parseProtocolRequest(value: string): ProtocolRequest | null {
   try {
     const url = new URL(value);
-    if (url.protocol !== "polymons:" || url.hostname !== "play") return null;
+    if (
+      url.protocol !== "polymons:" ||
+      !["account", "play"].includes(url.hostname)
+    ) {
+      return null;
+    }
+    const accountTicket = url.searchParams.get("link");
+    if (accountTicket && accountTicket.length > 256) return null;
+    if (url.hostname === "account") {
+      return accountTicket ? { accountTicket, launch: null } : null;
+    }
+
     const websocketUrl = url.searchParams.get("ws");
     const game = url.searchParams.get("game") ?? "baseplate";
     if (!websocketUrl || !websocketUrl.startsWith("wss://")) return null;
-    return { game, websocketUrl };
+    return {
+      accountTicket,
+      launch: { game, websocketUrl },
+    };
   } catch {
     return null;
   }
 }
 
-function findLaunch(args: string[]): LaunchRequest | null {
+function findProtocolRequest(args: string[]): ProtocolRequest | null {
   for (const arg of args) {
     if (arg.startsWith("polymons://")) {
-      const launch = parseLaunch(arg);
-      if (launch) return launch;
+      const request = parseProtocolRequest(arg);
+      if (request) return request;
     }
   }
   return null;
+}
+
+async function redeemAccountLink(ticket: string): Promise<StoredAuth> {
+  const next = await apiRequest<StoredAuth>(
+    "/v1/player-account-links/redeem",
+    {
+      method: "POST",
+      body: { ticket },
+    },
+  );
+  await saveAuth(next);
+  return next;
 }
 
 function sendLaunch(launch: LaunchRequest): void {
@@ -138,6 +169,36 @@ function sendLaunch(launch: LaunchRequest): void {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
     mainWindow.focus();
+  }
+}
+
+async function handleProtocolRequest(
+  request: ProtocolRequest,
+): Promise<void> {
+  try {
+    if (request.accountTicket) {
+      const next = await redeemAccountLink(request.accountTicket);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("auth:changed", next);
+      }
+    }
+    if (request.launch) sendLaunch(request.launch);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  } catch (error) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(
+        "protocol:error",
+        error instanceof Error
+          ? error.message
+          : "Could not connect the website account.",
+      );
+      mainWindow.show();
+      mainWindow.focus();
+    }
   }
 }
 
@@ -189,15 +250,22 @@ if (!hasLock) {
   app.quit();
 } else {
   app.on("second-instance", (_event, argv) => {
-    const launch = findLaunch(argv);
-    if (launch) sendLaunch(launch);
+    const request = findProtocolRequest(argv);
+    if (request) void handleProtocolRequest(request);
   });
 
   void app.whenReady().then(async () => {
     registerProtocol();
     auth = await loadAuth();
-    const initialLaunch = findLaunch(process.argv);
-    if (initialLaunch) pendingLaunch = initialLaunch;
+    const initialRequest = findProtocolRequest(process.argv);
+    if (initialRequest?.accountTicket) {
+      try {
+        await redeemAccountLink(initialRequest.accountTicket);
+      } catch {
+        // The renderer reports a useful error after it opens.
+      }
+    }
+    if (initialRequest?.launch) pendingLaunch = initialRequest.launch;
 
     ipcMain.handle("auth:get", () => auth);
     ipcMain.handle(
