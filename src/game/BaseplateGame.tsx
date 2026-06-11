@@ -55,16 +55,16 @@ const cameraRayDirection = new Vector3();
 const AVATAR_SCALE = 0.8;
 const AVATAR_VISUAL_OFFSET = -0.2;
 const HEAD_PROFILE = [
-  new Vector2(0, -0.67),
-  new Vector2(0.64, -0.67),
-  new Vector2(0.76, -0.62),
-  new Vector2(0.83, -0.51),
-  new Vector2(0.85, -0.37),
-  new Vector2(0.85, 0.37),
-  new Vector2(0.83, 0.51),
-  new Vector2(0.76, 0.62),
-  new Vector2(0.64, 0.67),
-  new Vector2(0, 0.67),
+  new Vector2(0, -0.72),
+  new Vector2(0.64, -0.72),
+  new Vector2(0.76, -0.67),
+  new Vector2(0.83, -0.56),
+  new Vector2(0.85, -0.42),
+  new Vector2(0.85, 0.42),
+  new Vector2(0.83, 0.56),
+  new Vector2(0.76, 0.67),
+  new Vector2(0.64, 0.72),
+  new Vector2(0, 0.72),
 ];
 
 function createInputState(): InputState {
@@ -337,13 +337,13 @@ function BlockAvatar({
         </mesh>
       </group>
 
-      <BlockPart size={[2.4, 2, 1.2]} position={[0, 0.5, 0]} color="#7650d8" />
+      <BlockPart size={[2.2, 2, 1.2]} position={[0, 0.5, 0]} color="#7650d8" />
 
-      <group ref={leftArm} position={[-1.7, 1.5, 0]}>
-        <BlockPart size={[1, 2, 1.05]} position={[0, -1, 0]} color="#e7bd91" />
+      <group ref={leftArm} position={[-1.6, 1.5, 0]}>
+        <BlockPart size={[1, 2.1, 1.05]} position={[0, -1.05, 0]} color="#e7bd91" />
       </group>
-      <group ref={rightArm} position={[1.7, 1.5, 0]}>
-        <BlockPart size={[1, 2, 1.05]} position={[0, -1, 0]} color="#e7bd91" />
+      <group ref={rightArm} position={[1.6, 1.5, 0]}>
+        <BlockPart size={[1, 2.1, 1.05]} position={[0, -1.05, 0]} color="#e7bd91" />
       </group>
 
       <group ref={leftLeg} position={[-0.58, -0.5, 0]}>
