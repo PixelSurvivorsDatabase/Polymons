@@ -20,6 +20,7 @@ import {
   Color,
   Group,
   MathUtils,
+  Vector2,
   Vector3,
 } from "three";
 
@@ -53,6 +54,18 @@ const desiredCameraPosition = new Vector3();
 const cameraRayDirection = new Vector3();
 const AVATAR_SCALE = 0.8;
 const AVATAR_VISUAL_OFFSET = -0.2;
+const HEAD_PROFILE = [
+  new Vector2(0, -0.67),
+  new Vector2(0.64, -0.67),
+  new Vector2(0.76, -0.62),
+  new Vector2(0.83, -0.51),
+  new Vector2(0.85, -0.37),
+  new Vector2(0.85, 0.37),
+  new Vector2(0.83, 0.51),
+  new Vector2(0.76, 0.62),
+  new Vector2(0.64, 0.67),
+  new Vector2(0, 0.67),
+];
 
 function createInputState(): InputState {
   return {
@@ -307,18 +320,18 @@ function BlockAvatar({
     >
       <group position={[0, 2.28, 0]}>
         <mesh castShadow receiveShadow>
-          <cylinderGeometry args={[0.82, 0.82, 1.5, 24]} />
+          <latheGeometry args={[HEAD_PROFILE, 32]} />
           <meshStandardMaterial color="#e7bd91" roughness={0.72} />
         </mesh>
-        <mesh position={[-0.28, 0.1, -0.805]}>
+        <mesh position={[-0.28, 0.08, -0.852]}>
           <boxGeometry args={[0.15, 0.2, 0.035]} />
           <meshStandardMaterial color="#24202b" roughness={0.85} />
         </mesh>
-        <mesh position={[0.28, 0.1, -0.805]}>
+        <mesh position={[0.28, 0.08, -0.852]}>
           <boxGeometry args={[0.15, 0.2, 0.035]} />
           <meshStandardMaterial color="#24202b" roughness={0.85} />
         </mesh>
-        <mesh position={[0, -0.3, -0.825]}>
+        <mesh position={[0, -0.28, -0.852]}>
           <boxGeometry args={[0.4, 0.075, 0.035]} />
           <meshStandardMaterial color="#8e5b52" roughness={0.9} />
         </mesh>
