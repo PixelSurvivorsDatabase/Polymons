@@ -51,7 +51,7 @@ const right = new Vector3();
 const cameraTarget = new Vector3();
 const desiredCameraPosition = new Vector3();
 const cameraRayDirection = new Vector3();
-const AVATAR_VISUAL_OFFSET = -0.4;
+const AVATAR_VISUAL_OFFSET = -0.28;
 
 function createInputState(): InputState {
   return {
@@ -252,7 +252,7 @@ function BlockAvatar({
     if (!root.current) return;
 
     const speedFactor = MathUtils.clamp(moving.current / 7, 0, 1);
-    const walk = Math.sin(state.clock.elapsedTime * 10.5) * 0.62 * speedFactor;
+    const walk = Math.sin(state.clock.elapsedTime * 10.5) * 0.5 * speedFactor;
     const targetFacing = facing.current;
     const currentFacing = root.current.rotation.y;
     const angleDelta = Math.atan2(
@@ -301,35 +301,35 @@ function BlockAvatar({
   return (
     <group ref={root} position={[0, AVATAR_VISUAL_OFFSET, 0]}>
       <group position={[0, 2.28, 0]}>
-        <BlockPart size={[1.7, 1.38, 1.4]} color="#e7bd91" />
-        <mesh position={[-0.31, 0.12, -0.706]}>
-          <boxGeometry args={[0.13, 0.2, 0.035]} />
+        <BlockPart size={[2.15, 1.55, 1.6]} color="#e7bd91" />
+        <mesh position={[-0.38, 0.1, -0.806]}>
+          <boxGeometry args={[0.15, 0.2, 0.035]} />
           <meshStandardMaterial color="#24202b" roughness={0.85} />
         </mesh>
-        <mesh position={[0.31, 0.12, -0.706]}>
-          <boxGeometry args={[0.13, 0.2, 0.035]} />
+        <mesh position={[0.38, 0.1, -0.806]}>
+          <boxGeometry args={[0.15, 0.2, 0.035]} />
           <meshStandardMaterial color="#24202b" roughness={0.85} />
         </mesh>
-        <mesh position={[0, -0.28, -0.71]}>
-          <boxGeometry args={[0.38, 0.07, 0.035]} />
+        <mesh position={[0, -0.3, -0.81]}>
+          <boxGeometry args={[0.44, 0.075, 0.035]} />
           <meshStandardMaterial color="#8e5b52" roughness={0.9} />
         </mesh>
       </group>
 
-      <BlockPart size={[2.05, 2.02, 1]} position={[0, 0.72, 0]} color="#7650d8" />
+      <BlockPart size={[2.4, 2, 1.2]} position={[0, 0.5, 0]} color="#7650d8" />
 
-      <group ref={leftArm} position={[-1.43, 1.58, 0]}>
-        <BlockPart size={[0.78, 1.94, 0.82]} position={[0, -0.97, 0]} color="#e7bd91" />
+      <group ref={leftArm} position={[-1.7, 1.5, 0]}>
+        <BlockPart size={[1, 2, 1.05]} position={[0, -1, 0]} color="#e7bd91" />
       </group>
-      <group ref={rightArm} position={[1.43, 1.58, 0]}>
-        <BlockPart size={[0.78, 1.94, 0.82]} position={[0, -0.97, 0]} color="#e7bd91" />
+      <group ref={rightArm} position={[1.7, 1.5, 0]}>
+        <BlockPart size={[1, 2, 1.05]} position={[0, -1, 0]} color="#e7bd91" />
       </group>
 
-      <group ref={leftLeg} position={[-0.54, -0.28, 0]}>
-        <BlockPart size={[0.92, 2.05, 0.94]} position={[0, -1.03, 0]} color="#313542" />
+      <group ref={leftLeg} position={[-0.58, -0.5, 0]}>
+        <BlockPart size={[1.1, 2, 1.1]} position={[0, -1, 0]} color="#313542" />
       </group>
-      <group ref={rightLeg} position={[0.54, -0.28, 0]}>
-        <BlockPart size={[0.92, 2.05, 0.94]} position={[0, -1.03, 0]} color="#313542" />
+      <group ref={rightLeg} position={[0.58, -0.5, 0]}>
+        <BlockPart size={[1.1, 2, 1.1]} position={[0, -1, 0]} color="#313542" />
       </group>
     </group>
   );
@@ -479,10 +479,10 @@ function PlayerController({
       ccd
       enabledRotations={[false, false, false]}
     >
-      <CapsuleCollider args={[2, 0.75]} friction={0} />
+      <CapsuleCollider args={[1.9, 0.9]} friction={0} />
       <CuboidCollider
         args={[0.48, 0.08, 0.42]}
-        position={[0, -2.82, 0]}
+        position={[0, -2.9, 0]}
         sensor
         onIntersectionEnter={() => {
           groundContacts.current += 1;
