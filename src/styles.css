@@ -1001,6 +1001,205 @@ h3,
   align-items: center;
 }
 
+.game-test-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 22px;
+}
+
+.game-test-heading h1 {
+  margin: 0 0 4px;
+  font-size: clamp(43px, 6vw, 72px);
+  letter-spacing: -3px;
+  line-height: 0.98;
+}
+
+.baseplate-player {
+  position: relative;
+  height: min(720px, 72vh);
+  min-height: 520px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 22px;
+  background: #8ec8ed;
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.36);
+  isolation: isolate;
+}
+
+.baseplate-player-loading {
+  display: grid;
+  place-items: center;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.08) 1px, transparent 1px),
+    #26334b;
+  background-size: 28px 28px;
+  color: #d8dcea;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.baseplate-player canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  outline: none;
+  cursor: crosshair;
+}
+
+.game-hud {
+  position: absolute;
+  z-index: 4;
+  top: 18px;
+  display: flex;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 12px;
+  background: rgba(15, 18, 27, 0.76);
+  color: #fff;
+  padding: 12px 14px;
+  backdrop-filter: blur(13px);
+  box-shadow: 0 12px 25px rgba(0, 0, 0, 0.15);
+  pointer-events: none;
+}
+
+.game-hud-left {
+  left: 18px;
+  min-width: 175px;
+  flex-direction: column;
+}
+
+.game-hud-left strong {
+  margin-top: 5px;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 15px;
+}
+
+.game-hud-left > span:last-child {
+  margin-top: 2px;
+  color: #c9d0dc;
+  font-size: 11px;
+}
+
+.game-build-label {
+  color: #bfa9ff;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+}
+
+.game-hud-right {
+  right: 18px;
+  gap: 11px;
+  color: #d7dce6;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.mouse-capture-hint {
+  position: absolute;
+  z-index: 4;
+  top: 50%;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 14px;
+  background: rgba(14, 16, 24, 0.78);
+  color: #fff;
+  padding: 13px 18px;
+  text-align: center;
+  backdrop-filter: blur(14px);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.mouse-capture-hint strong {
+  font-size: 12px;
+}
+
+.mouse-capture-hint span {
+  margin-top: 3px;
+  color: #aeb5c1;
+  font-size: 10px;
+}
+
+.game-position {
+  position: absolute;
+  z-index: 4;
+  right: 17px;
+  bottom: 15px;
+  border-radius: 7px;
+  background: rgba(15, 18, 27, 0.65);
+  color: rgba(255, 255, 255, 0.68);
+  padding: 5px 8px;
+  font-family: monospace;
+  font-size: 9px;
+  pointer-events: none;
+}
+
+.touch-controls {
+  position: absolute;
+  z-index: 6;
+  display: none;
+}
+
+.touch-controls button {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(17, 20, 30, 0.62);
+  color: #fff;
+  touch-action: none;
+  user-select: none;
+  backdrop-filter: blur(8px);
+}
+
+.touch-movement {
+  bottom: 18px;
+  left: 18px;
+  grid-template-columns: repeat(3, 42px);
+  grid-template-rows: repeat(2, 42px);
+  gap: 5px;
+}
+
+.touch-movement button {
+  border-radius: 9px;
+}
+
+.touch-forward {
+  grid-column: 2;
+}
+
+.touch-movement button:nth-child(2) {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.touch-movement button:nth-child(3) {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.touch-movement button:nth-child(4) {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.touch-actions {
+  right: 18px;
+  bottom: 20px;
+  gap: 8px;
+}
+
+.touch-actions button {
+  min-width: 64px;
+  border-radius: 999px;
+  padding: 12px 14px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .game-art-wide {
   aspect-ratio: 16 / 10.5;
   border-radius: 24px;
@@ -1525,6 +1724,10 @@ h3,
   .hero-copy {
     padding-left: 38px;
   }
+
+  .baseplate-player {
+    height: 620px;
+  }
 }
 
 @media (max-width: 680px) {
@@ -1667,6 +1870,29 @@ h3,
 
   .game-detail-hero {
     gap: 25px;
+  }
+
+  .game-test-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .baseplate-player {
+    height: 560px;
+    min-height: 500px;
+    border-radius: 16px;
+  }
+
+  .game-hud-right {
+    display: none;
+  }
+
+  .touch-controls {
+    display: grid;
+  }
+
+  .mouse-capture-hint {
+    display: none;
   }
 
   .game-detail-copy h1 {

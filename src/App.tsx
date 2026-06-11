@@ -11,7 +11,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import {
   Link,
   NavLink,
@@ -22,6 +22,8 @@ import {
   useParams,
 } from "react-router-dom";
 import { currentUser, games, type Game } from "./data";
+
+const BaseplateGame = lazy(() => import("./game/BaseplateGame"));
 
 const navItems = [
   { to: "/", label: "Home", icon: Home },
@@ -363,51 +365,42 @@ function GamePage() {
         <ChevronLeft size={18} />
         Back to games
       </Link>
-      <section className="game-detail-hero">
-        <GameArt game={game} wide />
-        <div className="game-detail-copy">
+      <section className="game-test-heading">
+        <div>
           <span className="eyebrow">{game.genre}</span>
           <h1>{game.title}</h1>
           <p className="creator-line">
             by <strong>{game.creator}</strong>
           </p>
-          <p className="game-description">{game.description}</p>
-          <div className="detail-stats">
-            <div>
-              <strong>{game.players}</strong>
-              <span>Playing now</span>
-            </div>
-            <div>
-              <strong>Offline</strong>
-              <span>Server status</span>
-            </div>
-            <div>
-              <strong>Private</strong>
-              <span>Access</span>
-            </div>
-          </div>
-          <button className="primary-button play-button">
-            <Gamepad2 size={21} fill="currentColor" />
-            Launch integration comes next
-          </button>
         </div>
+        <span className="build-badge">Physics prototype</span>
       </section>
+      <Suspense
+        fallback={
+          <div className="baseplate-player baseplate-player-loading">
+            Loading the Baseplate client...
+          </div>
+        }
+      >
+        <BaseplateGame />
+      </Suspense>
       <section className="detail-columns">
         <div className="detail-panel">
-          <span className="eyebrow">About this test</span>
-          <h2>The starting point for the game itself.</h2>
+          <span className="eyebrow">Avatar and movement test</span>
+          <h2>Six parts, clean proportions, real collision.</h2>
           <p>
-            Baseplate is where movement, camera controls, physics, building,
-            character spawning, and the launcher connection will be tested
-            before Polymons adds public games.
+            The current avatar has a head, torso, two arms, and two legs. Its
+            controller uses a capsule collider, acceleration, gravity,
+            grounded jumping, camera-relative movement, and physical crates
+            that can be pushed around.
           </p>
         </div>
         <div className="detail-panel rules-panel">
-          <span className="eyebrow">Good to know</span>
+          <span className="eyebrow">Test checklist</span>
           <ul>
-            <li>No account required yet</li>
-            <li>No remote game server yet</li>
-            <li>Not publicly playable</li>
+            <li>Walk, sprint, jump, and fall</li>
+            <li>Try the stairs and angled ramp</li>
+            <li>Push the colored physics blocks</li>
           </ul>
         </div>
       </section>
@@ -490,10 +483,10 @@ function CreatePage() {
             Baseplate is the only project for now. Creator publishing and
             public game listings come after the client can actually play.
           </p>
-          <button className="primary-button">
+          <Link to="/games/baseplate" className="primary-button">
             <Plus size={19} />
             Open Baseplate project
-          </button>
+          </Link>
         </div>
         <div className="create-blocks" aria-hidden="true">
           <span />

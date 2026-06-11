@@ -11,4 +11,5 @@ people, and hang out with friends.
 
 Polymons is in early development. The platform currently contains one private
 Baseplate game used to build and test the game client before online services
-are added.
+are added. Baseplate now includes a six-part block avatar, third-person camera,
+character movement, jumping, collision, and pushable physics blocks.
