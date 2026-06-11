@@ -8,6 +8,10 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "server:build": "tsc -p tsconfig.server.json",
+    "server:start": "node server-dist/index.js",
+    "server:dev": "tsx watch server/index.ts",
+    "server:test": "tsx --test server/server.test.ts",
     "supabase:push": "supabase db push --linked",
     "supabase:lint": "supabase db lint --linked --schema public,private --level warning --fail-on error",
     "supabase:advisors": "supabase db advisors --linked --type security --level warn --fail-on error"
@@ -15,26 +19,40 @@
   "dependencies": {
     "@react-three/fiber": "^9.6.1",
     "@react-three/rapier": "^2.2.0",
+    "@supabase/supabase-js": "^2.108.1",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.5.2",
+    "helmet": "^8.2.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.1.1",
-    "three": "^0.184.0"
+    "three": "^0.184.0",
+    "ws": "^8.21.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
     "@types/node": "^22.10.5",
     "@types/react": "^19.0.3",
     "@types/react-dom": "^19.0.2",
     "@types/three": "^0.184.1",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.3.4",
     "eslint": "^9.17.0",
     "eslint-plugin-react-hooks": "^5.0.0",
     "eslint-plugin-react-refresh": "^0.4.16",
     "globals": "^15.14.0",
     "supabase": "^2.106.0",
+    "tsx": "^4.22.4",
     "typescript": "~5.7.2",
     "typescript-eslint": "^8.18.2",
     "vite": "^6.0.5"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

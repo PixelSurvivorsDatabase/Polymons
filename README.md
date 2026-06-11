@@ -40,3 +40,34 @@ npm run supabase:push
 npm run supabase:lint
 npm run supabase:advisors
 ```
+
+## Polymons Server
+
+The Render web service contains the account API, launch-ticket API, and the
+first multiplayer WebSocket room. Render should use:
+
+```text
+Build Command: npm install && npm run server:build
+Start Command: npm run server:start
+Health Check Path: /health
+```
+
+Required environment variables:
+
+- `SUPABASE_URL`
+- `SUPABASE_SECRET_KEY`
+- `WEB_ORIGIN`
+- `PLAY_TICKET_SECRET`
+
+The Supabase secret key must exist only on Render. Never add it to the website
+or commit it to this repository.
+
+Initial API routes:
+
+- `POST /v1/accounts/signup`
+- `POST /v1/accounts/login`
+- `POST /v1/accounts/refresh`
+- `GET /v1/me`
+- `GET /v1/games/:gameId`
+- `POST /v1/play-sessions`
+- `WS /v1/connect?ticket=...`

@@ -1,0 +1,246 @@
+import type { IncomingMessage, Server } from "node:http";
+import type { Duplex } from "node:stream";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { WebSocket, WebSocketServer, type RawData } from "ws";
+import type { ServerConfig } from "./config.js";
+import { hashPlayTicket } from "./security.js";
+import { loadProfile, type PublicProfile } from "./supabase.js";
+import { clientMessageSchema } from "./validation.js";
+
+type Connection = {
+  gameId: string;
+  profile: PublicProfile;
+  messageCount: number;
+  messageWindowStartedAt: number;
+};
+
+type RoomPlayer = {
+  id: string;
+  username: string;
+  displayName: string;
+};
+
+function send(socket: WebSocket, message: object): void {
+  if (socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(message));
+  }
+}
+
+function rejectUpgrade(socket: Duplex, status: number): void {
+  socket.write(
+    `HTTP/1.1 ${status} ${status === 401 ? "Unauthorized" : "Not Found"}\r\nConnection: close\r\n\r\n`,
+  );
+  socket.destroy();
+}
+
+export function attachWebSocketServer(
+  server: Server,
+  config: ServerConfig,
+  admin: SupabaseClient,
+): () => void {
+  const webSocketServer = new WebSocketServer({
+    noServer: true,
+    maxPayload: 16 * 1024,
+  });
+  const connections = new Map<WebSocket, Connection>();
+  const rooms = new Map<string, Set<WebSocket>>();
+  const alive = new WeakMap<WebSocket, boolean>();
+
+  const broadcast = (
+    gameId: string,
+    message: object,
+    except?: WebSocket,
+  ) => {
+    for (const socket of rooms.get(gameId) ?? []) {
+      if (socket !== except) {
+        send(socket, message);
+      }
+    }
+  };
+
+  const handleUpgrade = async (
+    request: IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+  ) => {
+    const url = new URL(request.url ?? "/", "http://localhost");
+    if (url.pathname !== "/v1/connect") {
+      rejectUpgrade(socket, 404);
+      return;
+    }
+
+    const ticket = url.searchParams.get("ticket");
+    if (!ticket || ticket.length > 256) {
+      rejectUpgrade(socket, 401);
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const { data: playSession, error } = await admin
+      .from("play_sessions")
+      .update({
+        consumed_at: now,
+        server_id: config.serverId,
+      })
+      .eq("ticket_hash", hashPlayTicket(ticket, config.playTicketSecret))
+      .is("consumed_at", null)
+      .gt("expires_at", now)
+      .select("id, user_id, game_id")
+      .maybeSingle();
+
+    if (error || !playSession) {
+      rejectUpgrade(socket, 401);
+      return;
+    }
+
+    try {
+      const profile = await loadProfile(admin, playSession.user_id);
+      webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
+        connections.set(webSocket, {
+          gameId: playSession.game_id,
+          profile,
+          messageCount: 0,
+          messageWindowStartedAt: Date.now(),
+        });
+        webSocketServer.emit("connection", webSocket, request);
+      });
+    } catch {
+      rejectUpgrade(socket, 401);
+    }
+  };
+
+  server.on("upgrade", (request, socket, head) => {
+    void handleUpgrade(request, socket, head).catch((error: unknown) => {
+      console.error("WebSocket upgrade failed.", error);
+      if (!socket.destroyed) {
+        rejectUpgrade(socket, 401);
+      }
+    });
+  });
+
+  webSocketServer.on(
+    "connection",
+    (socket: WebSocket, request: IncomingMessage) => {
+      void request;
+      const connection = connections.get(socket);
+      if (!connection) {
+        socket.close(1011, "Connection state missing.");
+        return;
+      }
+
+      const room = rooms.get(connection.gameId) ?? new Set<WebSocket>();
+      rooms.set(connection.gameId, room);
+      const existingPlayers: RoomPlayer[] = [];
+      for (const peer of room) {
+        const peerConnection = connections.get(peer);
+        if (peerConnection) {
+          existingPlayers.push({
+            id: peerConnection.profile.id,
+            username: peerConnection.profile.username,
+            displayName: peerConnection.profile.displayName,
+          });
+        }
+      }
+      room.add(socket);
+      alive.set(socket, true);
+
+      const player = {
+        id: connection.profile.id,
+        username: connection.profile.username,
+        displayName: connection.profile.displayName,
+      };
+
+      send(socket, {
+        type: "welcome",
+        protocolVersion: 1,
+        gameId: connection.gameId,
+        player,
+        players: existingPlayers,
+      });
+      broadcast(
+        connection.gameId,
+        { type: "player_joined", player },
+        socket,
+      );
+
+      socket.on("pong", () => {
+        alive.set(socket, true);
+      });
+
+      socket.on("message", (raw: RawData) => {
+        const currentTime = Date.now();
+        if (currentTime - connection.messageWindowStartedAt >= 1_000) {
+          connection.messageWindowStartedAt = currentTime;
+          connection.messageCount = 0;
+        }
+        connection.messageCount += 1;
+        if (connection.messageCount > 30) {
+          socket.close(1008, "Message rate exceeded.");
+          return;
+        }
+
+        let message: unknown;
+        try {
+          message = JSON.parse(raw.toString());
+        } catch {
+          socket.close(1007, "Invalid JSON.");
+          return;
+        }
+
+        const parsed = clientMessageSchema.safeParse(message);
+        if (!parsed.success) {
+          socket.close(1008, "Invalid message.");
+          return;
+        }
+
+        if (parsed.data.type === "ping") {
+          send(socket, { type: "pong", sentAt: Date.now() });
+          return;
+        }
+
+        broadcast(
+          connection.gameId,
+          {
+            type: "player_state",
+            playerId: connection.profile.id,
+            sequence: parsed.data.sequence,
+            position: parsed.data.position,
+            rotationY: parsed.data.rotationY,
+          },
+          socket,
+        );
+      });
+
+      socket.on("close", () => {
+        connections.delete(socket);
+        room.delete(socket);
+        if (room.size === 0) {
+          rooms.delete(connection.gameId);
+        }
+        broadcast(connection.gameId, {
+          type: "player_left",
+          playerId: connection.profile.id,
+        });
+      });
+    },
+  );
+
+  const keepAlive = setInterval(() => {
+    for (const socket of webSocketServer.clients) {
+      if (alive.get(socket) === false) {
+        socket.terminate();
+        continue;
+      }
+      alive.set(socket, false);
+      socket.ping();
+    }
+  }, 30_000);
+
+  return () => {
+    clearInterval(keepAlive);
+    for (const socket of webSocketServer.clients) {
+      socket.close(1001, "Server shutting down.");
+    }
+    webSocketServer.close();
+  };
+}
