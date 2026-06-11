@@ -9,6 +9,7 @@ export const OFFICIAL_ACCOUNT = {
 } as const;
 
 const BAN_DURATION = "876000h";
+const PROVISIONAL_USERNAME = "locked_polymons";
 
 function lockedMetadata(user?: User) {
   return {
@@ -49,7 +50,7 @@ export async function ensureOfficialAccount(
       password: randomBytes(48).toString("base64url"),
       email_confirm: true,
       user_metadata: {
-        username: OFFICIAL_ACCOUNT.username,
+        username: PROVISIONAL_USERNAME,
         display_name: OFFICIAL_ACCOUNT.displayName,
       },
       app_metadata: lockedMetadata(),
@@ -59,11 +60,29 @@ export async function ensureOfficialAccount(
       throw error ?? new Error("Official account could not be created.");
     }
     user = data.user;
+
+    const { error: renameError } = await admin
+      .from("profiles")
+      .update({
+        username: OFFICIAL_ACCOUNT.username,
+        display_name: OFFICIAL_ACCOUNT.displayName,
+      })
+      .eq("id", user.id);
+
+    if (renameError) {
+      await admin.auth.admin.deleteUser(user.id);
+      throw renameError;
+    }
   }
 
   const { error: lockError } = await admin.auth.admin.updateUserById(user.id, {
     ban_duration: BAN_DURATION,
     app_metadata: lockedMetadata(user),
+    user_metadata: {
+      ...user.user_metadata,
+      username: OFFICIAL_ACCOUNT.username,
+      display_name: OFFICIAL_ACCOUNT.displayName,
+    },
   });
 
   if (lockError) {
