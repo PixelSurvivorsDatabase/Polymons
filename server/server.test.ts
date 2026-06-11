@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readConfig } from "./config.js";
+import { OFFICIAL_ACCOUNT, isLoginDisabled } from "./official-account.js";
 import {
   createPlayTicket,
   hashPlayTicket,
@@ -18,6 +19,17 @@ test("normalizes usernames and builds internal account identifiers", () => {
   );
   assert.equal(isReservedUsername("POLYMONS"), true);
   assert.equal(isReservedUsername("nova_7"), false);
+});
+
+test("keeps the official account reserved and login-disabled", () => {
+  assert.equal(OFFICIAL_ACCOUNT.username, "polymons");
+  assert.equal(isReservedUsername(OFFICIAL_ACCOUNT.username), true);
+  assert.equal(
+    isLoginDisabled({
+      app_metadata: { login_disabled: true },
+    } as unknown as Parameters<typeof isLoginDisabled>[0]),
+    true,
+  );
 });
 
 test("validates signup credentials", () => {

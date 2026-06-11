@@ -22,6 +22,7 @@ import {
   loadProfile,
   publicSession,
 } from "./supabase.js";
+import { isLoginDisabled } from "./official-account.js";
 import {
   loginSchema,
   playSessionSchema,
@@ -47,6 +48,10 @@ async function authenticatedUser(
   const { data, error } = await admin.auth.getUser(token);
 
   if (error || !data.user) {
+    throw new HttpError(401, "Invalid or expired session.");
+  }
+
+  if (isLoginDisabled(data.user)) {
     throw new HttpError(401, "Invalid or expired session.");
   }
 
@@ -156,6 +161,10 @@ export function createApp(
 
   app.post("/v1/accounts/login", accountLimiter, async (request, response) => {
     const input = parseBody(loginSchema, request.body);
+    if (isReservedUsername(input.username)) {
+      throw new HttpError(401, "Invalid username or password.");
+    }
+
     const auth = createAuthClient(config);
     const { data, error } = await auth.auth.signInWithPassword({
       email: internalEmailForUsername(input.username),
