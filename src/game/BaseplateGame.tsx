@@ -43,7 +43,7 @@ type Telemetry = {
   z: number;
 };
 
-const SPAWN = { x: 0, y: 3.2, z: 7 };
+const SPAWN = { x: 0, y: 2.7, z: 7 };
 const WORLD_UP = new Vector3(0, 1, 0);
 const movement = new Vector3();
 const forward = new Vector3();
@@ -51,7 +51,8 @@ const right = new Vector3();
 const cameraTarget = new Vector3();
 const desiredCameraPosition = new Vector3();
 const cameraRayDirection = new Vector3();
-const AVATAR_VISUAL_OFFSET = -0.28;
+const AVATAR_SCALE = 0.8;
+const AVATAR_VISUAL_OFFSET = -0.2;
 
 function createInputState(): InputState {
   return {
@@ -251,7 +252,7 @@ function BlockAvatar({
   useFrame((state, delta) => {
     if (!root.current) return;
 
-    const speedFactor = MathUtils.clamp(moving.current / 7, 0, 1);
+    const speedFactor = MathUtils.clamp(moving.current / 6.2, 0, 1);
     const walk = Math.sin(state.clock.elapsedTime * 10.5) * 0.5 * speedFactor;
     const targetFacing = facing.current;
     const currentFacing = root.current.rotation.y;
@@ -299,19 +300,26 @@ function BlockAvatar({
   });
 
   return (
-    <group ref={root} position={[0, AVATAR_VISUAL_OFFSET, 0]}>
+    <group
+      ref={root}
+      position={[0, AVATAR_VISUAL_OFFSET, 0]}
+      scale={AVATAR_SCALE}
+    >
       <group position={[0, 2.28, 0]}>
-        <BlockPart size={[2.15, 1.55, 1.6]} color="#e7bd91" />
-        <mesh position={[-0.38, 0.1, -0.806]}>
+        <mesh castShadow receiveShadow>
+          <cylinderGeometry args={[0.82, 0.82, 1.5, 24]} />
+          <meshStandardMaterial color="#e7bd91" roughness={0.72} />
+        </mesh>
+        <mesh position={[-0.28, 0.1, -0.805]}>
           <boxGeometry args={[0.15, 0.2, 0.035]} />
           <meshStandardMaterial color="#24202b" roughness={0.85} />
         </mesh>
-        <mesh position={[0.38, 0.1, -0.806]}>
+        <mesh position={[0.28, 0.1, -0.805]}>
           <boxGeometry args={[0.15, 0.2, 0.035]} />
           <meshStandardMaterial color="#24202b" roughness={0.85} />
         </mesh>
-        <mesh position={[0, -0.3, -0.81]}>
-          <boxGeometry args={[0.44, 0.075, 0.035]} />
+        <mesh position={[0, -0.3, -0.825]}>
+          <boxGeometry args={[0.4, 0.075, 0.035]} />
           <meshStandardMaterial color="#8e5b52" roughness={0.9} />
         </mesh>
       </group>
@@ -384,7 +392,7 @@ function PlayerController({
     if (movement.lengthSq() > 1) movement.normalize();
 
     const velocity = rigidBody.linvel();
-    const targetSpeed = input.current.sprint ? 11 : 7;
+    const targetSpeed = input.current.sprint ? 9.5 : 6.2;
     const acceleration = grounded.current ? 15 : 4.5;
     const smoothing = 1 - Math.exp(-acceleration * delta);
     const targetX = movement.x * targetSpeed;
@@ -400,7 +408,7 @@ function PlayerController({
       grounded.current &&
       jumpCooldown.current === 0
     ) {
-      nextVelocity.y = 9.4;
+      nextVelocity.y = 8.2;
       jumpCooldown.current = 0.2;
       groundContacts.current = 0;
     }
@@ -421,12 +429,12 @@ function PlayerController({
       return;
     }
 
-    cameraTarget.set(position.x, position.y + 0.65, position.z);
-    const distance = 9.5;
+    cameraTarget.set(position.x, position.y + 0.45, position.z);
+    const distance = 7.4;
     const horizontalDistance = Math.cos(input.current.pitch) * distance;
     desiredCameraPosition.set(
       position.x + Math.sin(input.current.yaw) * horizontalDistance,
-      position.y + 3.25 + Math.sin(input.current.pitch) * distance,
+      position.y + 2.5 + Math.sin(input.current.pitch) * distance,
       position.z + Math.cos(input.current.yaw) * horizontalDistance,
     );
     cameraRayDirection
@@ -479,10 +487,10 @@ function PlayerController({
       ccd
       enabledRotations={[false, false, false]}
     >
-      <CapsuleCollider args={[1.9, 0.9]} friction={0} />
+      <CapsuleCollider args={[1.5, 0.7]} friction={0} />
       <CuboidCollider
-        args={[0.48, 0.08, 0.42]}
-        position={[0, -2.9, 0]}
+        args={[0.4, 0.07, 0.36]}
+        position={[0, -2.28, 0]}
         sensor
         onIntersectionEnter={() => {
           groundContacts.current += 1;
@@ -673,7 +681,7 @@ export default function BaseplateGame() {
       <Canvas
         shadows="basic"
         dpr={[1, 1.75]}
-        camera={{ position: [0, 7, 15], fov: 54, near: 0.1, far: 140 }}
+        camera={{ position: [0, 5.5, 12], fov: 52, near: 0.1, far: 140 }}
         gl={{ antialias: true }}
       >
         <Suspense fallback={null}>
