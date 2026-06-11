@@ -9,18 +9,6 @@ people, and hang out with friends.
 
 ## Status
 
-Polymons is in early development. The current build is a static preview of the
-main website with mock games, profiles, friends, and creator pages.
-
-## Local development
-
-```sh
-npm install
-npm run dev
-```
-
-## Production build
-
-```sh
-npm run build
-```
+Polymons is in early development. The platform currently contains one private
+Baseplate game used to build and test the game client before online services
+are added.

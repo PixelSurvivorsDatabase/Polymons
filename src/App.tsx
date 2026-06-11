@@ -21,7 +21,7 @@ import {
   useLocation,
   useParams,
 } from "react-router-dom";
-import { currentUser, friends, games, type Game } from "./data";
+import { currentUser, games, type Game } from "./data";
 
 const navItems = [
   { to: "/", label: "Home", icon: Home },
@@ -205,6 +205,9 @@ function GameArt({ game, wide = false }: { game: Game; wide?: boolean }) {
         } as React.CSSProperties
       }
     >
+      {game.id === "baseplate" && (
+        <span className="baseplate-grid" aria-hidden="true" />
+      )}
       <span className="art-orbit art-orbit-one" />
       <span className="art-orbit art-orbit-two" />
       <strong>{game.glyph}</strong>
@@ -221,10 +224,10 @@ function GameCard({ game }: { game: Game }) {
         <h3>{game.title}</h3>
         <p>by {game.creator}</p>
         <div className="game-stats">
-          <span className="live-dot" />
-          <span>{game.players} playing</span>
+          <span className="test-dot" />
+          <span>Private test</span>
           <span className="stat-divider" />
-          <span>{game.rating}%</span>
+          <span>Offline</span>
         </div>
       </div>
     </Link>
@@ -257,26 +260,11 @@ function HomePage() {
     <>
       <section className="welcome-row">
         <div>
-          <span className="eyebrow">Wednesday, June 10</span>
+          <span className="eyebrow">Pre-alpha development</span>
           <h1>Hey, {currentUser.name}.</h1>
           <p>What are we playing?</p>
         </div>
-        <div className="friends-online">
-          <span className="eyebrow">Friends online</span>
-          <div className="avatar-stack">
-            {friends
-              .filter((friend) => friend.online)
-              .map((friend) => (
-                <Avatar
-                  key={friend.handle}
-                  name={friend.name}
-                  color={friend.color}
-                  size="small"
-                />
-              ))}
-            <span className="avatar-count">3</span>
-          </div>
-        </div>
+        <span className="build-badge">Pre-alpha build</span>
       </section>
 
       <section
@@ -289,105 +277,75 @@ function HomePage() {
         }
       >
         <div className="hero-copy">
-          <span className="hero-label">Featured game</span>
+          <span className="hero-label">Current test game</span>
           <h2>{featured.title}</h2>
           <p>{featured.description}</p>
           <div className="hero-actions">
             <Link to={`/games/${featured.id}`} className="primary-button">
               <Gamepad2 size={19} fill="currentColor" />
-              Play
+              Open Baseplate
             </Link>
             <Link to={`/games/${featured.id}`} className="secondary-button">
               Details
             </Link>
           </div>
           <div className="hero-meta">
-            <span>
-              <span className="live-dot" /> {featured.players} playing
-            </span>
-            <span>{featured.rating}% liked</span>
+            <span>Private test</span>
+            <span>No live servers yet</span>
           </div>
         </div>
         <div className="hero-art">
-          <div className="hero-planet">
-            <span>{featured.glyph}</span>
+          <div className="hero-baseplate">
+            <span className="baseplate-spawn" />
+            <span className="baseplate-block block-one" />
+            <span className="baseplate-block block-two" />
           </div>
-          <div className="hero-island island-one" />
-          <div className="hero-island island-two" />
-          <div className="hero-island island-three" />
         </div>
       </section>
 
       <section className="content-section">
-        <SectionHeading title="Jump back in" link="/discover" />
+        <SectionHeading title="Testing now" link="/discover" />
         <div className="game-grid">
-          {games.slice(1, 5).map((game) => (
+          {games.map((game) => (
             <GameCard key={game.id} game={game} />
           ))}
         </div>
       </section>
 
       <section className="content-section">
-        <SectionHeading title="Friends are playing" link="/friends" />
-        <div className="friend-playing-grid">
-          {friends
-            .filter((friend) => friend.game)
-            .map((friend) => (
-              <Link
-                to={`/games/${
-                  games.find((game) => game.title === friend.game)?.id ??
-                  games[0].id
-                }`}
-                className="friend-playing-card"
-                key={friend.handle}
-              >
-                <Avatar name={friend.name} color={friend.color} />
-                <div>
-                  <strong>{friend.name}</strong>
-                  <span>Playing {friend.game}</span>
-                </div>
-                <Gamepad2 size={20} />
-              </Link>
-            ))}
+        <SectionHeading title="Online play comes later" />
+        <div className="empty-state">
+          <Users size={25} />
+          <div>
+            <strong>First, make the game feel good.</strong>
+            <span>
+              Friends, accounts, and live servers will be connected after the
+              Baseplate client works.
+            </span>
+          </div>
         </div>
       </section>
     </>
   );
 }
 
-const genres = ["All games", "Adventure", "Racing", "Building", "RPG", "Party"];
-
 function DiscoverPage() {
-  const [genre, setGenre] = useState("All games");
-  const visibleGames =
-    genre === "All games" ? games : games.filter((game) => game.genre === genre);
   return (
     <>
       <section className="page-heading">
         <div>
-          <span className="eyebrow">Find your next favorite</span>
+          <span className="eyebrow">Private test library</span>
           <h1>Discover</h1>
         </div>
-        <p>Games made by people who care about making something fun.</p>
+        <p>Public games will appear here when the game client is ready.</p>
       </section>
-      <div className="filter-row" role="group" aria-label="Filter games by genre">
-        {genres.map((item) => (
-          <button
-            key={item}
-            className={genre === item ? "active" : ""}
-            onClick={() => setGenre(item)}
-          >
-            {item}
-          </button>
-        ))}
-      </div>
       <section className="content-section discover-section">
         <SectionHeading
-          title={genre === "All games" ? "Popular right now" : genre}
-          eyebrow={`${visibleGames.length} games`}
+          title="Development games"
+          eyebrow="1 private game"
         />
         <div className="game-grid discover-grid">
-          {visibleGames.map((game) => (
+          {games.map((game) => (
             <GameCard key={game.id} game={game} />
           ))}
         </div>
@@ -420,36 +378,36 @@ function GamePage() {
               <span>Playing now</span>
             </div>
             <div>
-              <strong>{game.rating}%</strong>
-              <span>Liked</span>
+              <strong>Offline</strong>
+              <span>Server status</span>
             </div>
             <div>
-              <strong>Everyone</strong>
-              <span>Age rating</span>
+              <strong>Private</strong>
+              <span>Access</span>
             </div>
           </div>
           <button className="primary-button play-button">
             <Gamepad2 size={21} fill="currentColor" />
-            Play {game.title}
+            Launch integration comes next
           </button>
         </div>
       </section>
       <section className="detail-columns">
         <div className="detail-panel">
-          <span className="eyebrow">About this game</span>
-          <h2>Grab some friends and jump in.</h2>
+          <span className="eyebrow">About this test</span>
+          <h2>The starting point for the game itself.</h2>
           <p>
-            This is placeholder copy for the first Polymons milestone. Game
-            creators will be able to write their own descriptions, add
-            screenshots, and tell players what makes their game worth playing.
+            Baseplate is where movement, camera controls, physics, building,
+            character spawning, and the launcher connection will be tested
+            before Polymons adds public games.
           </p>
         </div>
         <div className="detail-panel rules-panel">
           <span className="eyebrow">Good to know</span>
           <ul>
-            <li>Works with keyboard and controller</li>
-            <li>Made for 1–12 players</li>
-            <li>Last updated today</li>
+            <li>No account required yet</li>
+            <li>No remote game server yet</li>
+            <li>Not publicly playable</li>
           </ul>
         </div>
       </section>
@@ -462,45 +420,20 @@ function FriendsPage() {
     <>
       <section className="page-heading">
         <div>
-          <span className="eyebrow">Your people</span>
+          <span className="eyebrow">Not connected yet</span>
           <h1>Friends</h1>
         </div>
-        <button className="primary-button">
-          <Plus size={18} />
-          Add friend
-        </button>
       </section>
-      <section className="friends-layout">
-        <div className="friends-list">
-          <SectionHeading title="Online now" eyebrow="3 friends" />
-          {friends.map((friend) => (
-            <article className="friend-row" key={friend.handle}>
-              <div className="friend-avatar-wrap">
-                <Avatar name={friend.name} color={friend.color} />
-                <span className={friend.online ? "online" : ""} />
-              </div>
-              <div className="friend-copy">
-                <div>
-                  <strong>{friend.name}</strong>
-                  <span>{friend.handle}</span>
-                </div>
-                <p>{friend.status}</p>
-              </div>
-              {friend.game ? (
-                <button className="small-button">Join game</button>
-              ) : (
-                <button className="small-button muted">Message</button>
-              )}
-            </article>
-          ))}
+      <section className="large-empty-state">
+        <div className="side-card-art">
+          <Users size={44} />
         </div>
-        <aside className="friend-side-card">
-          <div className="side-card-art">
-            <Users size={44} />
-          </div>
-          <h2>Games are better together.</h2>
-          <p>See what friends are playing and jump into the same game.</p>
-        </aside>
+        <span className="eyebrow">Later milestone</span>
+        <h2>Friends will live here.</h2>
+        <p>
+          We will connect accounts, friend requests, presence, and joining
+          games after the Baseplate client and launcher are working.
+        </p>
       </section>
     </>
   );
@@ -522,22 +455,22 @@ function ProfilePage() {
       </section>
       <section className="profile-stats">
         <div>
-          <strong>42</strong>
+          <strong>0</strong>
           <span>Friends</span>
         </div>
         <div>
-          <strong>3</strong>
+          <strong>1</strong>
           <span>Games</span>
         </div>
         <div>
-          <strong>1.2K</strong>
+          <strong>0</strong>
           <span>Game visits</span>
         </div>
       </section>
       <section className="content-section">
         <SectionHeading title={`${currentUser.name}'s games`} />
         <div className="game-grid profile-games">
-          {games.slice(2, 5).map((game) => (
+          {games.map((game) => (
             <GameCard key={game.id} game={game} />
           ))}
         </div>
@@ -552,14 +485,14 @@ function CreatePage() {
       <section className="create-hero">
         <div>
           <span className="eyebrow">Creator tools</span>
-          <h1>Make something people want to play.</h1>
+          <h1>Build the first working game.</h1>
           <p>
-            Start a game, give it a name, and decide who can play it. The full
-            creator dashboard comes in a later milestone.
+            Baseplate is the only project for now. Creator publishing and
+            public game listings come after the client can actually play.
           </p>
           <button className="primary-button">
             <Plus size={19} />
-            Create a game
+            Open Baseplate project
           </button>
         </div>
         <div className="create-blocks" aria-hidden="true">
