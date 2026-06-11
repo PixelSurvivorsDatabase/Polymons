@@ -21,6 +21,10 @@
     "player:renderer": "tsc -p tsconfig.player-renderer.json && vite build --config vite.player.config.ts",
     "player:build": "npm run player:main && npm run player:renderer",
     "player:package": "npm run player:build && electron-builder --win portable",
+    "studio:main": "tsc -p tsconfig.studio.json && node scripts/copy-studio-assets.mjs",
+    "studio:renderer": "tsc -p tsconfig.studio-renderer.json && vite build --config vite.studio.config.ts",
+    "studio:build": "npm run studio:main && npm run studio:renderer",
+    "studio:package": "npm run studio:build && electron-builder --config electron-builder.studio.json --win portable",
     "supabase:push": "supabase db push --linked",
     "supabase:lint": "supabase db lint --linked --schema public,private --level warning --fail-on error",
     "supabase:advisors": "supabase db advisors --linked --type security --level warn --fail-on error"

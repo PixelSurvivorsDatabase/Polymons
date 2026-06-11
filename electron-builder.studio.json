@@ -1,0 +1,23 @@
+{
+  "appId": "com.polymons.studio",
+  "productName": "Poly Studio",
+  "asar": true,
+  "extraMetadata": {
+    "main": "studio-dist/main/main.js",
+    "productName": "Poly Studio"
+  },
+  "directories": {
+    "output": "studio-release"
+  },
+  "files": [
+    "studio-dist/**/*",
+    "package.json"
+  ],
+  "win": {
+    "target": [
+      "portable"
+    ],
+    "icon": "assets/studio/poly-studio-logo-dark.png",
+    "artifactName": "PolyStudio.exe"
+  }
+}
