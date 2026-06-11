@@ -17,17 +17,10 @@ export const games: Game[] = [
     creator: "Polymons",
     players: "0",
     rating: 0,
-    genre: "Internal test",
+    genre: "Sandbox",
     description:
-      "A clean testing ground for movement, physics, camera controls, building, and everything else the Polymons game client needs.",
+      "A clean open world for movement, physics, building, and whatever comes next.",
     colors: ["#7247d8", "#36a777"],
     glyph: "B",
   },
 ];
-
-export const currentUser = {
-  name: "Nova",
-  handle: "@novabyte",
-  bio: "Building Polymons one working piece at a time.",
-  joined: "June 2026",
-};

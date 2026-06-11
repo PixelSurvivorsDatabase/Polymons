@@ -1,8 +1,12 @@
 {
   "name": "polymons",
+  "productName": "Polymons Player",
+  "description": "The Polymons website, game server, and portable Windows Player.",
+  "author": "Polymons",
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "main": "player-dist/main/main.js",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -13,6 +17,10 @@
     "server:serve": "node server-dist/index.js",
     "server:dev": "tsx watch server/index.ts",
     "server:test": "tsx --test server/server.test.ts",
+    "player:main": "tsc -p tsconfig.player.json && node scripts/copy-player-assets.mjs",
+    "player:renderer": "tsc -p tsconfig.player-renderer.json && vite build --config vite.player.config.ts",
+    "player:build": "npm run player:main && npm run player:renderer",
+    "player:package": "npm run player:build && electron-builder --win portable",
     "supabase:push": "supabase db push --linked",
     "supabase:lint": "supabase db lint --linked --schema public,private --level warning --fail-on error",
     "supabase:advisors": "supabase db advisors --linked --type security --level warn --fail-on error"
@@ -43,6 +51,8 @@
     "@types/three": "^0.184.1",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^41.7.1",
+    "electron-builder": "^26.15.2",
     "eslint": "^9.17.0",
     "eslint-plugin-react-hooks": "^5.0.0",
     "eslint-plugin-react-refresh": "^0.4.16",
@@ -55,5 +65,24 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "build": {
+    "appId": "com.polymons.player",
+    "productName": "Polymons Player",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "player-dist/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "icon": "assets/polymons-logo.png",
+      "artifactName": "PolymonsPlayer.exe"
+    }
   }
 }

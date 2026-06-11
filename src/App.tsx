@@ -11,7 +11,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import {
   Link,
   NavLink,
@@ -21,7 +21,13 @@ import {
   useLocation,
   useParams,
 } from "react-router-dom";
-import { currentUser, games, type Game } from "./data";
+import {
+  createPlaySession,
+  playerLaunchUrl,
+  type PlaySession,
+} from "./api";
+import { useAuth } from "./auth";
+import { games, type Game } from "./data";
 
 const BaseplateGame = lazy(() => import("./game/BaseplateGame"));
 
@@ -63,6 +69,7 @@ function Logo() {
 }
 
 function Sidebar() {
+  const { user, showAuth } = useAuth();
   return (
     <aside className="sidebar">
       <Logo />
@@ -79,13 +86,23 @@ function Sidebar() {
           </NavLink>
         ))}
       </nav>
-      <div className="sidebar-user">
-        <Avatar name={currentUser.name} size="small" />
-        <div>
-          <strong>{currentUser.name}</strong>
-          <span>{currentUser.handle}</span>
-        </div>
-      </div>
+      {user ? (
+        <Link to="/profile" className="sidebar-user">
+          <Avatar name={user.displayName} size="small" />
+          <div>
+            <strong>{user.displayName}</strong>
+            <span>@{user.username}</span>
+          </div>
+        </Link>
+      ) : (
+        <button className="sidebar-user sidebar-sign-in" onClick={() => showAuth()}>
+          <Avatar name="P" size="small" />
+          <div>
+            <strong>Sign in</strong>
+            <span>Create or use an account</span>
+          </div>
+        </button>
+      )}
     </aside>
   );
 }
@@ -110,6 +127,7 @@ function MobileNav() {
 
 function Header() {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const { user, showAuth } = useAuth();
   return (
     <>
       <header className="topbar">
@@ -128,13 +146,23 @@ function Header() {
           <input aria-label="Search Polymons" placeholder="Search games and people" />
           <kbd>/</kbd>
         </label>
-        <button className="icon-button notification-button" aria-label="Notifications">
-          <Bell size={20} />
-          <span className="notification-dot" />
-        </button>
-        <Link className="topbar-avatar" to="/profile" aria-label="Your profile">
-          <Avatar name={currentUser.name} size="small" />
-        </Link>
+        {user ? (
+          <>
+            <button
+              className="icon-button notification-button"
+              aria-label="Notifications"
+            >
+              <Bell size={20} />
+            </button>
+            <Link className="topbar-avatar" to="/profile" aria-label="Your profile">
+              <Avatar name={user.displayName} size="small" />
+            </Link>
+          </>
+        ) : (
+          <button className="secondary-button header-sign-in" onClick={() => showAuth()}>
+            Sign in
+          </button>
+        )}
       </header>
       {mobileOpen && (
         <div className="mobile-drawer">
@@ -227,9 +255,9 @@ function GameCard({ game }: { game: Game }) {
         <p>by {game.creator}</p>
         <div className="game-stats">
           <span className="test-dot" />
-          <span>Private test</span>
+          <span>Playable</span>
           <span className="stat-divider" />
-          <span>Offline</span>
+          <span>Baseplate</span>
         </div>
       </div>
     </Link>
@@ -258,15 +286,20 @@ function SectionHeading({
 
 function HomePage() {
   const featured = games[0];
+  const { user, showAuth } = useAuth();
   return (
     <>
       <section className="welcome-row">
         <div>
-          <span className="eyebrow">Pre-alpha development</span>
-          <h1>Hey, {currentUser.name}.</h1>
+          <span className="eyebrow">Home</span>
+          <h1>{user ? `Hey, ${user.displayName}.` : "Welcome to Polymons."}</h1>
           <p>What are we playing?</p>
         </div>
-        <span className="build-badge">Pre-alpha build</span>
+        {!user && (
+          <button className="secondary-button" onClick={() => showAuth("signup")}>
+            Create account
+          </button>
+        )}
       </section>
 
       <section
@@ -279,7 +312,7 @@ function HomePage() {
         }
       >
         <div className="hero-copy">
-          <span className="hero-label">Current test game</span>
+          <span className="hero-label">Featured game</span>
           <h2>{featured.title}</h2>
           <p>{featured.description}</p>
           <div className="hero-actions">
@@ -292,8 +325,8 @@ function HomePage() {
             </Link>
           </div>
           <div className="hero-meta">
-            <span>Private test</span>
-            <span>No live servers yet</span>
+            <span>Playable now</span>
+            <span>Polymons Player or browser</span>
           </div>
         </div>
         <div className="hero-art">
@@ -306,7 +339,7 @@ function HomePage() {
       </section>
 
       <section className="content-section">
-        <SectionHeading title="Testing now" link="/discover" />
+        <SectionHeading title="Games" link="/discover" />
         <div className="game-grid">
           {games.map((game) => (
             <GameCard key={game.id} game={game} />
@@ -315,14 +348,14 @@ function HomePage() {
       </section>
 
       <section className="content-section">
-        <SectionHeading title="Online play comes later" />
+        <SectionHeading title="Play your way" />
         <div className="empty-state">
-          <Users size={25} />
+          <Gamepad2 size={25} />
           <div>
-            <strong>First, make the game feel good.</strong>
+            <strong>Use the Polymons Player or play in your browser.</strong>
             <span>
-              Friends, accounts, and live servers will be connected after the
-              Baseplate client works.
+              Both connect to the same Polymons game server and use the same
+              account.
             </span>
           </div>
         </div>
@@ -336,16 +369,13 @@ function DiscoverPage() {
     <>
       <section className="page-heading">
         <div>
-          <span className="eyebrow">Private test library</span>
+          <span className="eyebrow">Games</span>
           <h1>Discover</h1>
         </div>
-        <p>Public games will appear here when the game client is ready.</p>
+        <p>Find something to play.</p>
       </section>
       <section className="content-section discover-section">
-        <SectionHeading
-          title="Development games"
-          eyebrow="1 private game"
-        />
+        <SectionHeading title="All games" eyebrow="1 game" />
         <div className="game-grid discover-grid">
           {games.map((game) => (
             <GameCard key={game.id} game={game} />
@@ -359,6 +389,48 @@ function DiscoverPage() {
 function GamePage() {
   const { gameId } = useParams<{ gameId: string }>();
   const game = games.find((item) => item.id === gameId) ?? games[0];
+  const { session, showAuth, refresh } = useAuth();
+  const [launching, setLaunching] = useState<"player" | "browser" | null>(null);
+  const [launchError, setLaunchError] = useState("");
+  const [browserSession, setBrowserSession] = useState<PlaySession | null>(null);
+
+  async function getPlaySession() {
+    if (!session) {
+      showAuth();
+      return null;
+    }
+
+    try {
+      return (await createPlaySession(game.id, session.accessToken)).playSession;
+    } catch (error) {
+      const renewed = await refresh();
+      if (renewed) {
+        return (await createPlaySession(game.id, renewed.accessToken)).playSession;
+      }
+      throw error;
+    }
+  }
+
+  async function play(target: "player" | "browser") {
+    setLaunching(target);
+    setLaunchError("");
+    try {
+      const next = await getPlaySession();
+      if (!next) return;
+      if (target === "player") {
+        window.location.assign(playerLaunchUrl(next));
+      } else {
+        setBrowserSession(next);
+      }
+    } catch (error) {
+      setLaunchError(
+        error instanceof Error ? error.message : "Could not start the game.",
+      );
+    } finally {
+      setLaunching(null);
+    }
+  }
+
   return (
     <>
       <Link to="/discover" className="back-link">
@@ -373,21 +445,43 @@ function GamePage() {
             by <strong>{game.creator}</strong>
           </p>
         </div>
-        <span className="build-badge">Physics prototype</span>
+        <div className="game-launch-actions">
+          <button
+            className="primary-button"
+            onClick={() => void play("player")}
+            disabled={launching !== null}
+          >
+            <Gamepad2 size={19} fill="currentColor" />
+            {launching === "player" ? "Opening..." : "Play in Player"}
+          </button>
+          <button
+            className="secondary-button"
+            onClick={() => void play("browser")}
+            disabled={launching !== null}
+          >
+            {launching === "browser" ? "Connecting..." : "Play in browser"}
+          </button>
+        </div>
       </section>
-      <Suspense
-        fallback={
-          <div className="baseplate-player baseplate-player-loading">
-            Loading the Baseplate client...
+      {launchError && <div className="launch-error">{launchError}</div>}
+      {browserSession ? (
+        <BrowserGame playSession={browserSession} />
+      ) : (
+        <div className="game-launch-panel">
+          <GameArt game={game} wide />
+          <div>
+            <h2>Choose where to play</h2>
+            <p>
+              Open the Polymons Player or start Baseplate directly in this
+              browser.
+            </p>
           </div>
-        }
-      >
-        <BaseplateGame />
-      </Suspense>
+        </div>
+      )}
       <section className="detail-columns">
         <div className="detail-panel">
-          <span className="eyebrow">Avatar and movement test</span>
-          <h2>Six parts, clean proportions, real collision.</h2>
+          <span className="eyebrow">About</span>
+          <h2>A simple world with room to move.</h2>
           <p>
             The current avatar has a head, torso, two arms, and two legs. Its
             controller uses a capsule collider, acceleration, gravity,
@@ -396,7 +490,7 @@ function GamePage() {
           </p>
         </div>
         <div className="detail-panel rules-panel">
-          <span className="eyebrow">Test checklist</span>
+          <span className="eyebrow">Controls</span>
           <ul>
             <li>Walk, sprint, jump, and fall</li>
             <li>Try the stairs and angled ramp</li>
@@ -408,12 +502,42 @@ function GamePage() {
   );
 }
 
+function BrowserGame({ playSession }: { playSession: PlaySession }) {
+  const [connection, setConnection] = useState("Connecting...");
+
+  useEffect(() => {
+    const socket = new WebSocket(playSession.websocketUrl);
+    socket.addEventListener("open", () => {
+      setConnection("Connected");
+      socket.send(JSON.stringify({ type: "ping" }));
+    });
+    socket.addEventListener("close", () => setConnection("Disconnected"));
+    socket.addEventListener("error", () => setConnection("Connection failed"));
+    return () => socket.close();
+  }, [playSession.websocketUrl]);
+
+  return (
+    <div className="browser-game-wrap">
+      <span className="connection-pill">{connection}</span>
+      <Suspense
+        fallback={
+          <div className="baseplate-player baseplate-player-loading">
+            Loading Baseplate...
+          </div>
+        }
+      >
+        <BaseplateGame />
+      </Suspense>
+    </div>
+  );
+}
+
 function FriendsPage() {
   return (
     <>
       <section className="page-heading">
         <div>
-          <span className="eyebrow">Not connected yet</span>
+          <span className="eyebrow">Your people</span>
           <h1>Friends</h1>
         </div>
       </section>
@@ -421,30 +545,38 @@ function FriendsPage() {
         <div className="side-card-art">
           <Users size={44} />
         </div>
-        <span className="eyebrow">Later milestone</span>
-        <h2>Friends will live here.</h2>
-        <p>
-          We will connect accounts, friend requests, presence, and joining
-          games after the Baseplate client and launcher are working.
-        </p>
+        <span className="eyebrow">Friends</span>
+        <h2>No friends here yet.</h2>
+        <p>Find people you know and play games together.</p>
       </section>
     </>
   );
 }
 
 function ProfilePage() {
+  const { user, logout, showAuth } = useAuth();
+  if (!user) {
+    return (
+      <section className="large-empty-state">
+        <Avatar name="P" size="large" />
+        <h2>Sign in to see your profile.</h2>
+        <button className="primary-button" onClick={() => showAuth()}>
+          Sign in
+        </button>
+      </section>
+    );
+  }
   return (
     <>
       <section className="profile-hero">
         <div className="profile-glow" />
-        <Avatar name={currentUser.name} size="large" />
+        <Avatar name={user.displayName} size="large" />
         <div className="profile-copy">
-          <h1>{currentUser.name}</h1>
-          <span>{currentUser.handle}</span>
-          <p>{currentUser.bio}</p>
-          <small>Joined {currentUser.joined}</small>
+          <h1>{user.displayName}</h1>
+          <span>@{user.username}</span>
+          <p>Playing and building on Polymons.</p>
         </div>
-        <button className="secondary-button">Edit profile</button>
+        <button className="secondary-button" onClick={logout}>Sign out</button>
       </section>
       <section className="profile-stats">
         <div>
@@ -461,7 +593,7 @@ function ProfilePage() {
         </div>
       </section>
       <section className="content-section">
-        <SectionHeading title={`${currentUser.name}'s games`} />
+        <SectionHeading title={`${user.displayName}'s games`} />
         <div className="game-grid profile-games">
           {games.map((game) => (
             <GameCard key={game.id} game={game} />
@@ -478,10 +610,9 @@ function CreatePage() {
       <section className="create-hero">
         <div>
           <span className="eyebrow">Creator tools</span>
-          <h1>Build the first working game.</h1>
+          <h1>Build something worth playing.</h1>
           <p>
-            Baseplate is the only project for now. Creator publishing and
-            public game listings come after the client can actually play.
+            Start with Baseplate and shape it into your own game.
           </p>
           <Link to="/games/baseplate" className="primary-button">
             <Plus size={19} />

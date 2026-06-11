@@ -71,3 +71,19 @@ Initial API routes:
 - `GET /v1/games/:gameId`
 - `POST /v1/play-sessions`
 - `WS /v1/connect?ticket=...`
+
+## Polymons Player
+
+The Windows Player can sign in and launch Baseplate directly. The website can
+also request a one-use play ticket and open the Player through the
+`polymons://` protocol.
+
+Build the portable executable with:
+
+```powershell
+npm run player:package
+```
+
+The output is `release/PolymonsPlayer.exe`. Running the portable executable
+registers the protocol for its current path. Moving the file requires running
+it once from the new location.

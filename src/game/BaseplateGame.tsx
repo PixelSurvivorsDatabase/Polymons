@@ -685,7 +685,7 @@ export default function BaseplateGame() {
   return (
     <section
       className="baseplate-player"
-      aria-label="Playable Baseplate test"
+      aria-label="Playable Baseplate game"
       tabIndex={0}
       data-grounded={telemetry.grounded}
       data-speed={telemetry.speed.toFixed(2)}
@@ -707,7 +707,7 @@ export default function BaseplateGame() {
       </Canvas>
 
       <div className="game-hud game-hud-left">
-        <span className="game-build-label">BASEPLATE / CLIENT TEST 01</span>
+        <span className="game-build-label">BASEPLATE</span>
         <strong>Nova</strong>
         <span>
           {telemetry.grounded ? "Grounded" : "Airborne"} -{" "}
