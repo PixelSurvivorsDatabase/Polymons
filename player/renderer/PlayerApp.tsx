@@ -1,6 +1,7 @@
 import { Gamepad2, LogOut, Play, UserRound } from "lucide-react";
 import { lazy, Suspense, useEffect, useState } from "react";
 import logo from "../../assets/polymons-logo.png";
+import { useMultiplayer } from "../../src/game/multiplayer";
 
 const BaseplateGame = lazy(
   () => import("../../src/game/BaseplateGame"),
@@ -10,7 +11,6 @@ export default function PlayerApp() {
   const [auth, setAuth] = useState<PlayerAuth | null>(null);
   const [ready, setReady] = useState(false);
   const [launch, setLaunch] = useState<PlayerLaunch | null>(null);
-  const [connection, setConnection] = useState("Not connected");
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
 
@@ -25,19 +25,6 @@ export default function PlayerApp() {
     });
     return window.polymons.onLaunch(setLaunch);
   }, []);
-
-  useEffect(() => {
-    if (!launch) return;
-    const socket = new WebSocket(launch.websocketUrl);
-    setConnection("Connecting");
-    socket.addEventListener("open", () => {
-      setConnection("Connected");
-      socket.send(JSON.stringify({ type: "ping" }));
-    });
-    socket.addEventListener("close", () => setConnection("Disconnected"));
-    socket.addEventListener("error", () => setConnection("Connection failed"));
-    return () => socket.close();
-  }, [launch]);
 
   async function playBaseplate() {
     setStarting(true);
@@ -62,23 +49,7 @@ export default function PlayerApp() {
   }
 
   if (launch) {
-    return (
-      <main className="game-screen">
-        <header className="player-bar">
-          <div className="player-brand">
-            <img src={logo} alt="" />
-            <strong>Polymons Player</strong>
-          </div>
-          <span className="player-connection">{connection}</span>
-          <button onClick={() => setLaunch(null)}>Leave game</button>
-        </header>
-        <section className="player-game">
-          <Suspense fallback={<div className="player-loading">Loading Baseplate...</div>}>
-            <BaseplateGame />
-          </Suspense>
-        </section>
-      </main>
-    );
+    return <PlayerGame launch={launch} onLeave={() => setLaunch(null)} />;
   }
 
   if (!auth) {
@@ -130,6 +101,41 @@ export default function PlayerApp() {
             </button>
           </div>
         </article>
+      </section>
+    </main>
+  );
+}
+
+function PlayerGame({
+  launch,
+  onLeave,
+}: {
+  launch: PlayerLaunch;
+  onLeave: () => void;
+}) {
+  const { connection, remotePlayers, sendState } = useMultiplayer(
+    launch.websocketUrl,
+  );
+
+  return (
+    <main className="game-screen">
+      <header className="player-bar">
+        <div className="player-brand">
+          <img src={logo} alt="" />
+          <strong>Polymons Player</strong>
+        </div>
+        <span className="player-connection">{connection}</span>
+        <button onClick={onLeave}>Leave game</button>
+      </header>
+      <section className="player-game">
+        <Suspense
+          fallback={<div className="player-loading">Loading Baseplate...</div>}
+        >
+          <BaseplateGame
+            remotePlayers={remotePlayers}
+            onPlayerState={sendState}
+          />
+        </Suspense>
       </section>
     </main>
   );

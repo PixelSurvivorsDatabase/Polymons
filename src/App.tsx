@@ -11,7 +11,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import {
   Link,
   NavLink,
@@ -28,6 +28,7 @@ import {
 } from "./api";
 import { useAuth } from "./auth";
 import { games, type Game } from "./data";
+import { useMultiplayer } from "./game/multiplayer";
 
 const BaseplateGame = lazy(() => import("./game/BaseplateGame"));
 
@@ -503,18 +504,9 @@ function GamePage() {
 }
 
 function BrowserGame({ playSession }: { playSession: PlaySession }) {
-  const [connection, setConnection] = useState("Connecting...");
-
-  useEffect(() => {
-    const socket = new WebSocket(playSession.websocketUrl);
-    socket.addEventListener("open", () => {
-      setConnection("Connected");
-      socket.send(JSON.stringify({ type: "ping" }));
-    });
-    socket.addEventListener("close", () => setConnection("Disconnected"));
-    socket.addEventListener("error", () => setConnection("Connection failed"));
-    return () => socket.close();
-  }, [playSession.websocketUrl]);
+  const { connection, remotePlayers, sendState } = useMultiplayer(
+    playSession.websocketUrl,
+  );
 
   return (
     <div className="browser-game-wrap">
@@ -526,7 +518,10 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
           </div>
         }
       >
-        <BaseplateGame />
+        <BaseplateGame
+          remotePlayers={remotePlayers}
+          onPlayerState={sendState}
+        />
       </Suspense>
     </div>
   );

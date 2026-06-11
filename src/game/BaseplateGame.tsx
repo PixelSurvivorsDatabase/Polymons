@@ -23,6 +23,7 @@ import {
   Vector2,
   Vector3,
 } from "three";
+import type { PlayerTransform, RemotePlayer } from "./multiplayer";
 
 type InputState = {
   forward: boolean;
@@ -42,6 +43,7 @@ type Telemetry = {
   x: number;
   y: number;
   z: number;
+  rotationY: number;
 };
 
 const SPAWN = { x: 0, y: 2.7, z: 7 };
@@ -356,12 +358,56 @@ function BlockAvatar({
   );
 }
 
+function RemoteBlockAvatar({ player }: { player: RemotePlayer }) {
+  const root = useRef<Group>(null);
+  const target = useRef(new Vector3(...player.state.position));
+  const moving = useRef(0);
+  const grounded = useRef(true);
+  const facing = useRef(player.state.rotationY);
+
+  useEffect(() => {
+    const next = new Vector3(...player.state.position);
+    moving.current = Math.min(
+      9.5,
+      next.distanceTo(target.current) / 0.15,
+    );
+    target.current.copy(next);
+    facing.current = player.state.rotationY;
+  }, [player.state]);
+
+  useFrame((_state, delta) => {
+    if (!root.current) return;
+    const distance = root.current.position.distanceTo(target.current);
+    if (distance > 12) {
+      root.current.position.copy(target.current);
+    } else {
+      root.current.position.lerp(
+        target.current,
+        1 - Math.exp(-14 * delta),
+      );
+    }
+    moving.current *= Math.exp(-5 * delta);
+  });
+
+  return (
+    <group
+      ref={root}
+      name={`remote-player-${player.username}`}
+      position={player.state.position}
+    >
+      <BlockAvatar moving={moving} grounded={grounded} facing={facing} />
+    </group>
+  );
+}
+
 function PlayerController({
   input,
   onTelemetry,
+  onPlayerState,
 }: {
   input: MutableRefObject<InputState>;
   onTelemetry: (telemetry: Telemetry) => void;
+  onPlayerState?: (state: Omit<PlayerTransform, "sequence">) => void;
 }) {
   const body = useRef<RapierRigidBody>(null);
   const groundContacts = useRef(0);
@@ -478,12 +524,18 @@ function PlayerController({
 
     if (state.clock.elapsedTime - lastTelemetry.current > 0.15) {
       lastTelemetry.current = state.clock.elapsedTime;
-      onTelemetry({
+      const telemetry = {
         grounded: grounded.current,
         speed: horizontalSpeed,
         x: position.x,
         y: position.y,
         z: position.z,
+        rotationY: facing.current,
+      };
+      onTelemetry(telemetry);
+      onPlayerState?.({
+        position: [position.x, position.y, position.z],
+        rotationY: facing.current,
       });
     }
   });
@@ -583,17 +635,28 @@ function Scene({
   input,
   onTelemetry,
   onPointerLock,
+  remotePlayers,
+  onPlayerState,
 }: {
   input: MutableRefObject<InputState>;
   onTelemetry: (telemetry: Telemetry) => void;
   onPointerLock: (locked: boolean) => void;
+  remotePlayers: RemotePlayer[];
+  onPlayerState?: (state: Omit<PlayerTransform, "sequence">) => void;
 }) {
   return (
     <>
       <MouseLook input={input} onPointerLock={onPointerLock} />
       <BaseplateWorld />
       <Physics gravity={[0, -24, 0]} timeStep="vary" colliders={false}>
-        <PlayerController input={input} onTelemetry={onTelemetry} />
+        <PlayerController
+          input={input}
+          onTelemetry={onTelemetry}
+          onPlayerState={onPlayerState}
+        />
+        {remotePlayers.map((player) => (
+          <RemoteBlockAvatar key={player.id} player={player} />
+        ))}
         <RigidBody type="fixed" colliders={false} name="baseplate">
           <CuboidCollider args={[30, 0.5, 30]} position={[0, -0.5, 0]} friction={1} />
           <mesh position={[0, -0.5, 0]} receiveShadow>
@@ -663,7 +726,13 @@ function TouchButton({
   );
 }
 
-export default function BaseplateGame() {
+export default function BaseplateGame({
+  remotePlayers = [],
+  onPlayerState,
+}: {
+  remotePlayers?: RemotePlayer[];
+  onPlayerState?: (state: Omit<PlayerTransform, "sequence">) => void;
+}) {
   const input = useRef<InputState>(createInputState());
   const [pointerLocked, setPointerLocked] = useState(false);
   const [telemetry, setTelemetry] = useState<Telemetry>({
@@ -672,6 +741,7 @@ export default function BaseplateGame() {
     x: SPAWN.x,
     y: SPAWN.y,
     z: SPAWN.z,
+    rotationY: 0,
   });
   useKeyboard(input);
 
@@ -690,6 +760,7 @@ export default function BaseplateGame() {
       data-grounded={telemetry.grounded}
       data-speed={telemetry.speed.toFixed(2)}
       data-position={`${telemetry.x.toFixed(2)},${telemetry.y.toFixed(2)},${telemetry.z.toFixed(2)}`}
+      data-remote-players={remotePlayers.length}
     >
       <Canvas
         shadows="basic"
@@ -702,6 +773,8 @@ export default function BaseplateGame() {
             input={input}
             onTelemetry={setTelemetry}
             onPointerLock={setPointerLocked}
+            remotePlayers={remotePlayers}
+            onPlayerState={onPlayerState}
           />
         </Suspense>
       </Canvas>
@@ -712,6 +785,10 @@ export default function BaseplateGame() {
         <span>
           {telemetry.grounded ? "Grounded" : "Airborne"} -{" "}
           {telemetry.speed.toFixed(1)} studs/s
+        </span>
+        <span>
+          {remotePlayers.length + 1}{" "}
+          {remotePlayers.length === 0 ? "player" : "players"} online
         </span>
       </div>
 

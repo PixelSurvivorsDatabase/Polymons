@@ -1,4 +1,5 @@
 import type { IncomingMessage, Server } from "node:http";
+import { randomUUID } from "node:crypto";
 import type { Duplex } from "node:stream";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
@@ -8,16 +9,31 @@ import { loadProfile, type PublicProfile } from "./supabase.js";
 import { clientMessageSchema } from "./validation.js";
 
 type Connection = {
+  id: string;
   gameId: string;
   profile: PublicProfile;
+  state: PlayerState;
   messageCount: number;
   messageWindowStartedAt: number;
+};
+
+type PlayerState = {
+  sequence: number;
+  position: [number, number, number];
+  rotationY: number;
 };
 
 type RoomPlayer = {
   id: string;
   username: string;
   displayName: string;
+  state: PlayerState;
+};
+
+const SPAWN_STATE: PlayerState = {
+  sequence: 0,
+  position: [0, 2.7, 7],
+  rotationY: 0,
 };
 
 function send(socket: WebSocket, message: object): void {
@@ -97,8 +113,10 @@ export function attachWebSocketServer(
       const profile = await loadProfile(admin, playSession.user_id);
       webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
         connections.set(webSocket, {
+          id: randomUUID(),
           gameId: playSession.game_id,
           profile,
+          state: { ...SPAWN_STATE },
           messageCount: 0,
           messageWindowStartedAt: Date.now(),
         });
@@ -135,9 +153,10 @@ export function attachWebSocketServer(
         const peerConnection = connections.get(peer);
         if (peerConnection) {
           existingPlayers.push({
-            id: peerConnection.profile.id,
+            id: peerConnection.id,
             username: peerConnection.profile.username,
             displayName: peerConnection.profile.displayName,
+            state: peerConnection.state,
           });
         }
       }
@@ -145,9 +164,10 @@ export function attachWebSocketServer(
       alive.set(socket, true);
 
       const player = {
-        id: connection.profile.id,
+        id: connection.id,
         username: connection.profile.username,
         displayName: connection.profile.displayName,
+        state: connection.state,
       };
 
       send(socket, {
@@ -198,14 +218,17 @@ export function attachWebSocketServer(
           return;
         }
 
+        connection.state = {
+          sequence: parsed.data.sequence,
+          position: parsed.data.position,
+          rotationY: parsed.data.rotationY,
+        };
         broadcast(
           connection.gameId,
           {
             type: "player_state",
-            playerId: connection.profile.id,
-            sequence: parsed.data.sequence,
-            position: parsed.data.position,
-            rotationY: parsed.data.rotationY,
+            playerId: connection.id,
+            ...connection.state,
           },
           socket,
         );
@@ -219,7 +242,7 @@ export function attachWebSocketServer(
         }
         broadcast(connection.gameId, {
           type: "player_left",
-          playerId: connection.profile.id,
+          playerId: connection.id,
         });
       });
     },
