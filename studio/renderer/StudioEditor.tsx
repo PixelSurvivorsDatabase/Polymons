@@ -2,13 +2,16 @@ import { Canvas, useThree } from "@react-three/fiber";
 import {
   Box,
   ChevronDown,
+  ChevronRight,
   Code2,
+  Database,
   FileCode2,
   Folder,
   FolderOpen,
   Grid3X3,
   LayoutPanelTop,
   Monitor,
+  Package,
   MousePointer2,
   Move3D,
   Play,
@@ -46,6 +49,7 @@ type Selection =
   | { type: "gui"; id: string }
   | { type: "script"; id: string }
   | { type: "player"; id: "LocalPlayer" }
+  | { type: "service"; id: string }
   | null;
 
 const languageExtension: Record<StudioLanguage, string> = {
@@ -65,6 +69,13 @@ function starterSource(
   kind: StudioScript["kind"],
 ): string {
   if (language === "cpp") {
+    if (kind === "moduleScript") {
+      return `#include <poly/module.hpp>
+
+Module::Export("WalkSpeed", 22);
+Module::Export("Accent", "#6F49BB");
+`;
+    }
     return kind === "script"
       ? `#include <poly/server.hpp>
 
@@ -80,6 +91,13 @@ Console::Log("Client script started");
 `;
   }
   if (language === "csharp") {
+    if (kind === "moduleScript") {
+      return `using Poly;
+
+Module.Export("WalkSpeed", 22);
+Module.Export("Accent", "#6F49BB");
+`;
+    }
     return kind === "script"
       ? `using Poly;
 
@@ -92,6 +110,13 @@ Poly.Log("Server script started");
 var player = Players.LocalPlayer;
 player.WalkSpeed = 18;
 Poly.Log("Client script started");
+`;
+  }
+  if (kind === "moduleScript") {
+    return `return {
+    WalkSpeed = 22,
+    Accent = "#6F49BB",
+}
 `;
   }
   return kind === "script"
@@ -145,7 +170,35 @@ function guiDefault(
           : "",
     textColor: "#FFFFFF",
     visible: true,
+    rotation: 0,
+    textSize: 16,
+    borderRadius: 7,
+    zIndex: 1,
   };
+}
+
+function scriptParentOptions(
+  kind: StudioScript["kind"],
+  gui: StudioGuiObject[],
+): Array<{ value: string; label: string }> {
+  const services =
+    kind === "script"
+      ? ["ServerScriptService", "Workspace"]
+      : kind === "localScript"
+        ? ["StarterPlayerScripts", "StarterGui"]
+        : [
+            "ReplicatedStorage",
+            "ServerScriptService",
+            "ServerStorage",
+            "StarterPlayerScripts",
+            "StarterGui",
+          ];
+  return [
+    ...services.map((service) => ({ value: service, label: service })),
+    ...gui
+      .filter((item) => item.type === "screenGui" || item.type === "frame")
+      .map((item) => ({ value: item.id, label: `StarterGui / ${item.name}` })),
+  ];
 }
 
 export default function StudioEditor({
@@ -233,6 +286,10 @@ export default function StudioEditor({
       color: "#30254D",
       anchored: true,
       visible: true,
+      transparency: 0,
+      material: "plastic",
+      canCollide: true,
+      castShadow: true,
     };
     updateProject((current) => ({
       ...current,
@@ -243,17 +300,26 @@ export default function StudioEditor({
   }
 
   function addScript(kind: StudioScript["kind"]) {
-    const parent =
-      kind === "script"
-        ? "ServerScriptService"
+    const options = scriptParentOptions(kind, project.gui);
+    const selectedParent =
+      selection?.type === "service"
+        ? selection.id
         : selection?.type === "gui"
           ? selection.id
-          : "StarterPlayerScripts";
+          : null;
+    const parent =
+      options.some((option) => option.value === selectedParent)
+        ? selectedParent!
+        : options[0].value;
     const next: StudioScript = {
       id: crypto.randomUUID(),
       name: nextName(
         project.scripts.map((item) => item.name),
-        kind === "script" ? "Script" : "LocalScript",
+        kind === "script"
+          ? "Script"
+          : kind === "localScript"
+            ? "LocalScript"
+            : "ModuleScript",
       ),
       kind,
       parent,
@@ -392,6 +458,7 @@ export default function StudioEditor({
           <button onClick={addPart}><Plus size={14} /> Part</button>
           <button onClick={() => addScript("script")}><FileCode2 size={14} /> Script</button>
           <button onClick={() => addScript("localScript")}><Code2 size={14} /> LocalScript</button>
+          <button onClick={() => addScript("moduleScript")}><Package size={14} /> Module</button>
           <button onClick={() => addGui("screenGui")}><Monitor size={14} /> ScreenGui</button>
           <button onClick={() => addGui("frame")}><Square size={14} /> Frame</button>
           <button onClick={() => addGui("textLabel")}><Type size={14} /> Text</button>
@@ -439,7 +506,7 @@ export default function StudioEditor({
             setSelection(next);
             if (next.type === "script") setWorkspace("script");
             else if (next.type === "gui") setWorkspace("ui");
-            else setWorkspace("scene");
+            else if (next.type !== "service") setWorkspace("scene");
           }}
         />
 
@@ -544,19 +611,21 @@ function Explorer({
   selection: Selection;
   onSelect: (selection: Exclude<Selection, null>) => void;
 }) {
-  const serverScripts = project.scripts.filter(
-    (script) => script.parent === "ServerScriptService",
-  );
-  const playerScripts = project.scripts.filter(
-    (script) => script.parent === "StarterPlayerScripts",
-  );
+  const scriptsAt = (parent: string) =>
+    project.scripts.filter((script) => script.parent === parent);
   const guiRoots = project.gui.filter((gui) => gui.parentId === null);
+  const stores = Object.keys(project.dataStores).sort();
 
   return (
     <aside className="explorer-panel">
       <PanelHeading icon={<Folder size={15} />} title="Explorer" />
       <div className="tree">
-        <TreeRoot icon={<Grid3X3 size={14} />} label="Workspace">
+        <TreeRoot
+          icon={<Grid3X3 size={14} />}
+          label="Workspace"
+          active={selection?.type === "service" && selection.id === "Workspace"}
+          onSelect={() => onSelect({ type: "service", id: "Workspace" })}
+        >
           {project.objects.map((object) => (
             <TreeItem
               key={object.id}
@@ -566,9 +635,7 @@ function Explorer({
               onClick={() => onSelect({ type: "world", id: object.id })}
             />
           ))}
-        </TreeRoot>
-        <TreeRoot icon={<Server size={14} />} label="ServerScriptService">
-          {serverScripts.map((script) => (
+          {scriptsAt("Workspace").map((script) => (
             <ScriptTreeItem
               key={script.id}
               script={script}
@@ -577,7 +644,57 @@ function Explorer({
             />
           ))}
         </TreeRoot>
-        <TreeRoot icon={<UserRound size={14} />} label="Players">
+        <TreeRoot
+          icon={<Server size={14} />}
+          label="ServerScriptService"
+          active={selection?.type === "service" && selection.id === "ServerScriptService"}
+          onSelect={() => onSelect({ type: "service", id: "ServerScriptService" })}
+        >
+          {scriptsAt("ServerScriptService").map((script) => (
+            <ScriptTreeItem
+              key={script.id}
+              script={script}
+              active={selection?.type === "script" && selection.id === script.id}
+              onClick={() => onSelect({ type: "script", id: script.id })}
+            />
+          ))}
+        </TreeRoot>
+        <TreeRoot
+          icon={<Package size={14} />}
+          label="ReplicatedStorage"
+          active={selection?.type === "service" && selection.id === "ReplicatedStorage"}
+          onSelect={() => onSelect({ type: "service", id: "ReplicatedStorage" })}
+        >
+          {scriptsAt("ReplicatedStorage").map((script) => (
+            <ScriptTreeItem
+              key={script.id}
+              script={script}
+              active={selection?.type === "script" && selection.id === script.id}
+              onClick={() => onSelect({ type: "script", id: script.id })}
+            />
+          ))}
+        </TreeRoot>
+        <TreeRoot
+          icon={<Folder size={14} />}
+          label="ServerStorage"
+          active={selection?.type === "service" && selection.id === "ServerStorage"}
+          onSelect={() => onSelect({ type: "service", id: "ServerStorage" })}
+        >
+          {scriptsAt("ServerStorage").map((script) => (
+            <ScriptTreeItem
+              key={script.id}
+              script={script}
+              active={selection?.type === "script" && selection.id === script.id}
+              onClick={() => onSelect({ type: "script", id: script.id })}
+            />
+          ))}
+        </TreeRoot>
+        <TreeRoot
+          icon={<UserRound size={14} />}
+          label="Players"
+          active={selection?.type === "service" && selection.id === "Players"}
+          onSelect={() => onSelect({ type: "service", id: "Players" })}
+        >
           <TreeItem
             active={selection?.type === "player"}
             icon={<UserRound size={14} />}
@@ -585,13 +702,17 @@ function Explorer({
             onClick={() => onSelect({ type: "player", id: "LocalPlayer" })}
           />
         </TreeRoot>
-        <TreeRoot icon={<UserRound size={14} />} label="StarterPlayer">
+        <TreeRoot
+          icon={<UserRound size={14} />}
+          label="StarterPlayer"
+          active={selection?.type === "service" && selection.id === "StarterPlayerScripts"}
+          onSelect={() => onSelect({ type: "service", id: "StarterPlayerScripts" })}
+        >
           <div className="tree-nested-root">
-            <ChevronDown size={12} />
             <Folder size={13} />
             <strong>StarterPlayerScripts</strong>
           </div>
-          {playerScripts.map((script) => (
+          {scriptsAt("StarterPlayerScripts").map((script) => (
             <ScriptTreeItem
               key={script.id}
               script={script}
@@ -601,7 +722,20 @@ function Explorer({
             />
           ))}
         </TreeRoot>
-        <TreeRoot icon={<Monitor size={14} />} label="StarterGui">
+        <TreeRoot
+          icon={<Monitor size={14} />}
+          label="StarterGui"
+          active={selection?.type === "service" && selection.id === "StarterGui"}
+          onSelect={() => onSelect({ type: "service", id: "StarterGui" })}
+        >
+          {scriptsAt("StarterGui").map((script) => (
+            <ScriptTreeItem
+              key={script.id}
+              script={script}
+              active={selection?.type === "script" && selection.id === script.id}
+              onClick={() => onSelect({ type: "script", id: script.id })}
+            />
+          ))}
           {guiRoots.map((gui) => (
             <GuiTree
               key={gui.id}
@@ -609,6 +743,22 @@ function Explorer({
               project={project}
               selection={selection}
               onSelect={onSelect}
+            />
+          ))}
+        </TreeRoot>
+        <TreeRoot
+          icon={<Database size={14} />}
+          label="DataStoreService"
+          active={selection?.type === "service" && selection.id === "DataStoreService"}
+          onSelect={() => onSelect({ type: "service", id: "DataStoreService" })}
+        >
+          {stores.map((store) => (
+            <TreeItem
+              key={store}
+              active={false}
+              icon={<Database size={13} />}
+              label={store}
+              onClick={() => onSelect({ type: "service", id: "DataStoreService" })}
             />
           ))}
         </TreeRoot>
@@ -620,20 +770,33 @@ function Explorer({
 function TreeRoot({
   icon,
   label,
+  active,
+  onSelect,
   children,
 }: {
   icon: ReactNode;
   label: string;
+  active: boolean;
+  onSelect: () => void;
   children: ReactNode;
 }) {
+  const [expanded, setExpanded] = useState(true);
   return (
     <div className="tree-service">
-      <div className="tree-root">
-        <ChevronDown size={13} />
-        {icon}
-        <strong>{label}</strong>
+      <div className={active ? "tree-root active" : "tree-root"}>
+        <button
+          className="tree-expander"
+          title={expanded ? `Collapse ${label}` : `Expand ${label}`}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        </button>
+        <button className="tree-root-select" onClick={onSelect}>
+          {icon}
+          <strong>{label}</strong>
+        </button>
       </div>
-      {children}
+      {expanded && children}
     </div>
   );
 }
@@ -797,7 +960,7 @@ function SceneViewport({
             position={object.position}
             rotation={object.rotation}
             scale={object.scale}
-            castShadow
+            castShadow={object.castShadow}
             receiveShadow
             onClick={(event) => {
               event.stopPropagation();
@@ -807,9 +970,26 @@ function SceneViewport({
             <boxGeometry args={[1, 1, 1]} />
             <meshStandardMaterial
               color={object.color}
-              roughness={0.7}
+              transparent={object.transparency > 0}
+              opacity={1 - object.transparency}
+              roughness={
+                object.material === "metal"
+                  ? 0.24
+                  : object.material === "neon"
+                    ? 0.35
+                    : object.material === "wood"
+                      ? 0.9
+                      : 0.7
+              }
+              metalness={object.material === "metal" ? 0.82 : 0}
               emissive={selectedWorldId === object.id ? "#2B174D" : "#000000"}
-              emissiveIntensity={selectedWorldId === object.id ? 0.75 : 0}
+              emissiveIntensity={
+                object.material === "neon"
+                  ? 0.9
+                  : selectedWorldId === object.id
+                    ? 0.75
+                    : 0
+              }
             />
             {selectedWorldId === object.id && (
               <mesh scale={1.012}>
@@ -903,6 +1083,10 @@ function GuiPreviewNode({
         backgroundColor: object.backgroundColor,
         opacity: 1 - object.backgroundTransparency,
         color: object.textColor,
+        transform: `rotate(${object.rotation}deg)`,
+        fontSize: `${object.textSize}px`,
+        borderRadius: `${object.borderRadius}px`,
+        zIndex: object.zIndex,
       }}
       onClick={(event) => {
         event.stopPropagation();
@@ -973,7 +1157,21 @@ function Properties({
           </PropertySection>
           <PropertySection title="Appearance">
             <ColorField label="Color" value={world.color} onChange={(color) => onWorldChange({ color })} />
+            <SelectField
+              label="Material"
+              value={world.material}
+              options={[
+                { value: "plastic", label: "Plastic" },
+                { value: "metal", label: "Metal" },
+                { value: "wood", label: "Wood" },
+                { value: "neon", label: "Neon" },
+              ]}
+              onChange={(material) => onWorldChange({ material: material as StudioObject["material"] })}
+            />
+            <NumberField label="Transparency" value={world.transparency} minimum={0} maximum={1} step={0.05} onChange={(transparency) => onWorldChange({ transparency })} />
             <ToggleField label="Anchored" value={world.anchored} onChange={(anchored) => onWorldChange({ anchored })} />
+            <ToggleField label="CanCollide" value={world.canCollide} onChange={(canCollide) => onWorldChange({ canCollide })} />
+            <ToggleField label="CastShadow" value={world.castShadow} onChange={(castShadow) => onWorldChange({ castShadow })} />
             <ToggleField label="Visible" value={world.visible !== false} onChange={(visible) => onWorldChange({ visible })} />
           </PropertySection>
           {world.type === "part" && <DeleteButton onClick={onDelete} />}
@@ -986,14 +1184,18 @@ function Properties({
               <PropertySection title="Layout">
                 <Vector2Field label="Position (scale)" value={gui.position} onChange={(position) => onGuiChange({ position })} />
                 <Vector2Field label="Size (scale)" value={gui.size} minimum={0.01} onChange={(size) => onGuiChange({ size })} />
+                <NumberField label="Rotation" value={gui.rotation} minimum={-360} maximum={360} step={1} onChange={(rotation) => onGuiChange({ rotation })} />
+                <NumberField label="ZIndex" value={gui.zIndex} minimum={0} maximum={1000} step={1} onChange={(zIndex) => onGuiChange({ zIndex })} />
               </PropertySection>
               <PropertySection title="Appearance">
                 <ColorField label="Background" value={gui.backgroundColor} onChange={(backgroundColor) => onGuiChange({ backgroundColor })} />
                 <NumberField label="Transparency" value={gui.backgroundTransparency} minimum={0} maximum={1} step={0.05} onChange={(backgroundTransparency) => onGuiChange({ backgroundTransparency })} />
+                <NumberField label="Corner radius" value={gui.borderRadius} minimum={0} maximum={100} step={1} onChange={(borderRadius) => onGuiChange({ borderRadius })} />
                 {(gui.type === "textLabel" || gui.type === "textButton") && (
                   <>
                     <TextField label="Text" value={gui.text} onChange={(text) => onGuiChange({ text })} />
                     <ColorField label="Text color" value={gui.textColor} onChange={(textColor) => onGuiChange({ textColor })} />
+                    <NumberField label="Text size" value={gui.textSize} minimum={1} maximum={200} step={1} onChange={(textSize) => onGuiChange({ textSize })} />
                   </>
                 )}
               </PropertySection>
@@ -1006,8 +1208,22 @@ function Properties({
         <div className="properties-content">
           <NameField value={script.name} onChange={(name) => onScriptChange({ name })} />
           <PropertySection title="Execution">
-            <ReadOnlyField label="Type" value={script.kind === "script" ? "Server Script" : "LocalScript"} />
-            <ReadOnlyField label="Parent" value={script.parent} />
+            <ReadOnlyField
+              label="Type"
+              value={
+                script.kind === "script"
+                  ? "Server Script"
+                  : script.kind === "localScript"
+                    ? "LocalScript"
+                    : "ModuleScript"
+              }
+            />
+            <SelectField
+              label="Parent"
+              value={script.parent}
+              options={scriptParentOptions(script.kind, project.gui)}
+              onChange={(parent) => onScriptChange({ parent })}
+            />
             <ReadOnlyField label="Language" value={languageName[project.language]} />
           </PropertySection>
           <DeleteButton onClick={onDelete} />
@@ -1018,6 +1234,28 @@ function Properties({
           <PropertySection title="Character">
             <NumberField label="WalkSpeed" value={project.playerSettings.walkSpeed} minimum={1} maximum={500} step={1} onChange={(walkSpeed) => onPlayerChange({ walkSpeed })} />
             <NumberField label="JumpPower" value={project.playerSettings.jumpPower} minimum={1} maximum={500} step={0.5} onChange={(jumpPower) => onPlayerChange({ jumpPower })} />
+            <NumberField label="MaxHealth" value={project.playerSettings.maxHealth} minimum={1} maximum={500} step={1} onChange={(maxHealth) => onPlayerChange({ maxHealth })} />
+          </PropertySection>
+          <PropertySection title="Camera">
+            <NumberField label="Field of view" value={project.playerSettings.cameraFieldOfView} minimum={20} maximum={120} step={1} onChange={(cameraFieldOfView) => onPlayerChange({ cameraFieldOfView })} />
+          </PropertySection>
+        </div>
+      ) : selection.type === "service" ? (
+        <div className="properties-content">
+          <ReadOnlyField label="Name" value={selection.id} />
+          <PropertySection title="Service">
+            <ReadOnlyField
+              label="Purpose"
+              value={
+                selection.id === "DataStoreService"
+                  ? "Persistent server data"
+                  : selection.id === "ReplicatedStorage"
+                    ? "Shared modules"
+                    : selection.id === "ServerStorage"
+                      ? "Server-only modules"
+                      : "Project container"
+              }
+            />
           </PropertySection>
         </div>
       ) : null}
@@ -1052,6 +1290,31 @@ function ReadOnlyField({ label, value }: { label: string; value: string }) {
     <label className="property-name">
       {label}
       <input value={value} readOnly />
+    </label>
+  );
+}
+
+function SelectField({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="property-name">
+      {label}
+      <select value={value} onChange={(event) => onChange(event.target.value)}>
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
     </label>
   );
 }
@@ -1207,13 +1470,19 @@ function ScriptWorkspace({
     }),
     [diagnostics],
   );
+  const executionLabel =
+    script.kind === "script"
+      ? "Server"
+      : script.kind === "localScript"
+        ? "Client"
+        : "Module";
   return (
     <div className="script-workspace">
       <header className="script-tabbar">
         <div className="script-tab active">
           <FileCode2 size={15} />
           {script.name}{languageExtension[project.language]}
-          <small>{script.kind === "script" ? "Server" : "Client"}</small>
+          <small>{executionLabel}</small>
         </div>
       </header>
       <CodeEditor
@@ -1242,7 +1511,7 @@ function ScriptWorkspace({
       </div>
       <footer className="script-status">
         <span>{languageName[project.language]}</span>
-        <span>{script.kind === "script" ? "Server" : "Client"}</span>
+        <span>{executionLabel}</span>
         <span>UTF-8</span>
         <span>{script.source.split("\n").length} lines</span>
       </footer>

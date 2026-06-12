@@ -1,5 +1,5 @@
 import { Gamepad2, LogOut, Play, UserRound } from "lucide-react";
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import logo from "../../assets/polymons-logo.png";
 import { useMultiplayer } from "../../src/game/multiplayer";
 import {
@@ -192,7 +192,19 @@ function StudioPlayerGame({
       });
   }, [launch.projectId]);
 
-  const runtime = project ? runPolyProject(project) : null;
+  const runtime = useMemo(
+    () => (project ? runPolyProject(project) : null),
+    [project],
+  );
+
+  useEffect(() => {
+    if (!runtime) return;
+    void window.polymons
+      .saveStudioDataStores(launch.projectId, runtime.project.dataStores)
+      .catch((saveError) => {
+        console.error("Could not save local project data.", saveError);
+      });
+  }, [launch.projectId, runtime]);
 
   return (
     <main className="game-screen">

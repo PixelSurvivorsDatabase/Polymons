@@ -66,6 +66,10 @@ function configureMonaco() {
       "workspace",
       "Players",
       "PlayerGui",
+      "ReplicatedStorage",
+      "DataStoreService",
+      "Modules",
+      "Module",
       "Vector2",
       "Vector3",
       "print",
@@ -241,14 +245,56 @@ export default function CodeEditor({
             "Size",
             "Color",
             "Anchored",
+            "Transparency",
+            "Material",
+            "CanCollide",
+            "CastShadow",
             "Visible",
             "Text",
             "TextColor",
             "BackgroundColor",
             "BackgroundTransparency",
+            "TextSize",
+            "BorderRadius",
+            "ZIndex",
             "WalkSpeed",
             "JumpPower",
+            "CameraFieldOfView",
+            "MaxHealth",
           ];
+          const isLuau = projectRef.current.language === "luau";
+          const isCpp = projectRef.current.language === "cpp";
+          const findLabel = isLuau
+            ? "Workspace:FindFirstChild"
+            : "Workspace.Find";
+          const findText = isLuau
+            ? 'Workspace:FindFirstChild("${1:Part}")'
+            : 'Workspace.Find("${1:Part}")';
+          const requireLabel = isLuau
+            ? "require"
+            : isCpp
+              ? "Modules::Require"
+              : "Modules.Require";
+          const requireText = isLuau
+            ? 'require("${1:ModuleScript}")'
+            : isCpp
+              ? 'Modules::Require("${1:ModuleScript}")'
+              : 'Modules.Require("${1:ModuleScript}")';
+          const dataStoreLabel = isLuau
+            ? "DataStoreService:GetDataStore"
+            : isCpp
+              ? "DataStoreService::GetDataStore"
+              : "DataStoreService.GetDataStore";
+          const dataStoreText = isLuau
+            ? 'DataStoreService:GetDataStore("${1:PlayerData}")'
+            : isCpp
+              ? 'DataStoreService::GetDataStore("${1:PlayerData}")'
+              : 'DataStoreService.GetDataStore("${1:PlayerData}")';
+          const vectorText = isLuau
+            ? "Vector3.new(${1:0}, ${2:0}, ${3:0})"
+            : isCpp
+              ? "Vector3(${1:0}, ${2:0}, ${3:0})"
+              : "new Vector3(${1:0}, ${2:0}, ${3:0})";
           return {
             suggestions: [
               ...names.map((name) => ({
@@ -266,9 +312,9 @@ export default function CodeEditor({
                 range,
               })),
               {
-                label: "Workspace:FindFirstChild",
+                label: findLabel,
                 kind: monaco.languages.CompletionItemKind.Method,
-                insertText: 'Workspace:FindFirstChild("${1:Part}")',
+                insertText: findText,
                 insertTextRules:
                   monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
                 detail: "Find a Workspace object by name",
@@ -284,9 +330,27 @@ export default function CodeEditor({
               {
                 label: "Vector3.new",
                 kind: monaco.languages.CompletionItemKind.Constructor,
-                insertText: "Vector3.new(${1:0}, ${2:0}, ${3:0})",
+                insertText: vectorText,
                 insertTextRules:
                   monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                range,
+              },
+              {
+                label: requireLabel,
+                kind: monaco.languages.CompletionItemKind.Module,
+                insertText: requireText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: "Load a ModuleScript by name",
+                range,
+              },
+              {
+                label: dataStoreLabel,
+                kind: monaco.languages.CompletionItemKind.Method,
+                insertText: dataStoreText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: "Open a persistent server data store",
                 range,
               },
             ],

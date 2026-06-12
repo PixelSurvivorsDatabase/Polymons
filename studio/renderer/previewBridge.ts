@@ -3,6 +3,13 @@ function createStarterScript(
   kind: StudioScript["kind"],
 ): string {
   if (language === "cpp") {
+    if (kind === "moduleScript") {
+      return `#include <poly/module.hpp>
+
+Module::Export("WalkSpeed", 22);
+Module::Export("Accent", "#6F49BB");
+`;
+    }
     return kind === "script"
       ? `#include <poly/server.hpp>
 
@@ -16,6 +23,13 @@ player.WalkSpeed = 18;
 `;
   }
   if (language === "csharp") {
+    if (kind === "moduleScript") {
+      return `using Poly;
+
+Module.Export("WalkSpeed", 22);
+Module.Export("Accent", "#6F49BB");
+`;
+    }
     return kind === "script"
       ? `using Poly;
 
@@ -26,6 +40,13 @@ part.Color = "#6F49BB";
 
 var player = Players.LocalPlayer;
 player.WalkSpeed = 18;
+`;
+  }
+  if (kind === "moduleScript") {
+    return `return {
+    WalkSpeed = 22,
+    Accent = "#6F49BB",
+}
 `;
   }
   return kind === "script"
@@ -62,6 +83,10 @@ function createPreviewProject(
         color: "#405946",
         anchored: true,
         visible: true,
+        transparency: 0,
+        material: "plastic",
+        canCollide: true,
+        castShadow: true,
       },
       {
         id: crypto.randomUUID(),
@@ -73,6 +98,10 @@ function createPreviewProject(
         color: "#5b3d91",
         anchored: true,
         visible: true,
+        transparency: 0,
+        material: "neon",
+        canCollide: true,
+        castShadow: true,
       },
       {
         id: crypto.randomUUID(),
@@ -84,6 +113,10 @@ function createPreviewProject(
         color: "#342856",
         anchored: true,
         visible: true,
+        transparency: 0,
+        material: "plastic",
+        canCollide: true,
+        castShadow: true,
       },
     ],
     scripts: [
@@ -103,7 +136,13 @@ function createPreviewProject(
       },
     ],
     gui: [],
-    playerSettings: { walkSpeed: 18, jumpPower: 10.5 },
+    playerSettings: {
+      walkSpeed: 18,
+      jumpPower: 10.5,
+      cameraFieldOfView: 52,
+      maxHealth: 100,
+    },
+    dataStores: {},
   };
 }
 

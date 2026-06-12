@@ -623,16 +623,30 @@ function PhysicsCrate({
 
 function ProjectBlock({ object }: { object: PolyWorldObject }) {
   if (object.visible === false) return null;
+  const material = {
+    plastic: { roughness: 0.72, metalness: 0, emissiveIntensity: 0 },
+    metal: { roughness: 0.28, metalness: 0.82, emissiveIntensity: 0 },
+    wood: { roughness: 0.94, metalness: 0, emissiveIntensity: 0 },
+    neon: { roughness: 0.35, metalness: 0.05, emissiveIntensity: 0.65 },
+  }[object.material];
   const content = (
-    <mesh castShadow receiveShadow>
+    <mesh castShadow={object.castShadow} receiveShadow>
       <boxGeometry args={object.scale} />
-      <meshStandardMaterial color={object.color} roughness={0.74} />
+      <meshStandardMaterial
+        color={object.color}
+        roughness={material.roughness}
+        metalness={material.metalness}
+        emissive={object.material === "neon" ? object.color : "#000000"}
+        emissiveIntensity={material.emissiveIntensity}
+        transparent={object.transparency > 0}
+        opacity={1 - object.transparency}
+      />
     </mesh>
   );
   return (
     <RigidBody
       type={object.anchored ? "fixed" : "dynamic"}
-      colliders="cuboid"
+      colliders={object.canCollide ? "cuboid" : false}
       position={object.position}
       rotation={object.rotation}
       restitution={0.03}
@@ -805,6 +819,10 @@ function GuiNode({
     color: object.textColor,
     backgroundColor: object.backgroundColor,
     opacity: 1 - object.backgroundTransparency,
+    transform: `rotate(${object.rotation}deg)`,
+    fontSize: `${object.textSize}px`,
+    borderRadius: `${object.borderRadius}px`,
+    zIndex: object.zIndex,
   };
   const className = `poly-gui-object poly-gui-${object.type}`;
   if (object.type === "textButton") {
@@ -845,7 +863,12 @@ export default function BaseplateGame({
   onPlayerState,
   worldObjects,
   guiObjects = [],
-  playerSettings = { walkSpeed: 18, jumpPower: 10.5 },
+  playerSettings = {
+    walkSpeed: 18,
+    jumpPower: 10.5,
+    cameraFieldOfView: 52,
+    maxHealth: 100,
+  },
   projectName = "Baseplate",
 }: {
   remotePlayers?: RemotePlayer[];
@@ -895,7 +918,12 @@ export default function BaseplateGame({
       <Canvas
         shadows="basic"
         dpr={[1, 1.75]}
-        camera={{ position: [0, 5.5, 12], fov: 52, near: 0.1, far: 140 }}
+        camera={{
+          position: [0, 5.5, 12],
+          fov: playerSettings.cameraFieldOfView,
+          near: 0.1,
+          far: 140,
+        }}
         gl={{ antialias: true }}
       >
         <Suspense fallback={null}>
@@ -923,6 +951,7 @@ export default function BaseplateGame({
           {remotePlayers.length + 1}{" "}
           {remotePlayers.length === 0 ? "player" : "players"} online
         </span>
+        <span>{playerSettings.maxHealth} max health</span>
       </div>
 
       <ProjectGui objects={guiObjects} />

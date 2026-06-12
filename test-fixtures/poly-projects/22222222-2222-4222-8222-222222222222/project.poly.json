@@ -15,7 +15,11 @@
       "scale": [40, 1, 40],
       "color": "#405946",
       "anchored": true,
-      "visible": true
+      "visible": true,
+      "transparency": 0,
+      "material": "plastic",
+      "canCollide": true,
+      "castShadow": true
     },
     {
       "id": "spawn",
@@ -26,7 +30,11 @@
       "scale": [4, 0.3, 4],
       "color": "#5B3D91",
       "anchored": true,
-      "visible": true
+      "visible": true,
+      "transparency": 0,
+      "material": "neon",
+      "canCollide": true,
+      "castShadow": true
     },
     {
       "id": "part",
@@ -37,7 +45,11 @@
       "scale": [4, 4, 4],
       "color": "#342856",
       "anchored": true,
-      "visible": true
+      "visible": true,
+      "transparency": 0,
+      "material": "plastic",
+      "canCollide": true,
+      "castShadow": true
     }
   ],
   "scripts": [
@@ -68,7 +80,11 @@
       "backgroundTransparency": 1,
       "text": "",
       "textColor": "#FFFFFF",
-      "visible": true
+      "visible": true,
+      "rotation": 0,
+      "textSize": 16,
+      "borderRadius": 0,
+      "zIndex": 1
     },
     {
       "id": "status",
@@ -81,11 +97,18 @@
       "backgroundTransparency": 0.08,
       "text": "Loading",
       "textColor": "#FFFFFF",
-      "visible": true
+      "visible": true,
+      "rotation": 0,
+      "textSize": 16,
+      "borderRadius": 7,
+      "zIndex": 1
     }
   ],
   "playerSettings": {
     "walkSpeed": 18,
-    "jumpPower": 10.5
-  }
+    "jumpPower": 10.5,
+    "cameraFieldOfView": 55,
+    "maxHealth": 100
+  },
+  "dataStores": {}
 }

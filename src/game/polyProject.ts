@@ -1,5 +1,5 @@
 export type PolyLanguage = "luau" | "cpp" | "csharp";
-export type PolyScriptKind = "script" | "localScript";
+export type PolyScriptKind = "script" | "localScript" | "moduleScript";
 export type PolyScriptParent =
   | "ServerScriptService"
   | "StarterPlayerScripts"
@@ -15,6 +15,10 @@ export type PolyWorldObject = {
   color: string;
   anchored: boolean;
   visible?: boolean;
+  transparency: number;
+  material: "plastic" | "metal" | "wood" | "neon";
+  canCollide: boolean;
+  castShadow: boolean;
 };
 
 export type PolyGuiObject = {
@@ -29,6 +33,10 @@ export type PolyGuiObject = {
   text: string;
   textColor: string;
   visible: boolean;
+  rotation: number;
+  textSize: number;
+  borderRadius: number;
+  zIndex: number;
 };
 
 export type PolyScript = {
@@ -42,7 +50,11 @@ export type PolyScript = {
 export type PolyPlayerSettings = {
   walkSpeed: number;
   jumpPower: number;
+  cameraFieldOfView: number;
+  maxHealth: number;
 };
+
+export type PolyStoredValue = string | number | boolean | null;
 
 export type PolyProject = {
   version: 2;
@@ -55,6 +67,7 @@ export type PolyProject = {
   scripts: PolyScript[];
   gui: PolyGuiObject[];
   playerSettings: PolyPlayerSettings;
+  dataStores: Record<string, Record<string, PolyStoredValue>>;
 };
 
 export type PolyDiagnostic = {
@@ -88,6 +101,10 @@ const WORLD_PROPERTIES = new Set([
   "Color",
   "Anchored",
   "Visible",
+  "Transparency",
+  "Material",
+  "CanCollide",
+  "CastShadow",
 ]);
 const GUI_PROPERTIES = new Set([
   "Name",
@@ -98,11 +115,58 @@ const GUI_PROPERTIES = new Set([
   "Text",
   "TextColor",
   "Visible",
+  "Rotation",
+  "TextSize",
+  "BorderRadius",
+  "ZIndex",
 ]);
-const PLAYER_PROPERTIES = new Set(["WalkSpeed", "JumpPower"]);
+const PLAYER_PROPERTIES = new Set([
+  "WalkSpeed",
+  "JumpPower",
+  "CameraFieldOfView",
+  "MaxHealth",
+]);
+
+const SERVER_SCRIPT_PARENTS = new Set(["Workspace", "ServerScriptService"]);
+const LOCAL_SCRIPT_PARENTS = new Set(["StarterPlayerScripts", "StarterGui"]);
+const MODULE_SCRIPT_PARENTS = new Set([
+  "ReplicatedStorage",
+  "ServerScriptService",
+  "ServerStorage",
+  "StarterPlayerScripts",
+  "StarterGui",
+]);
 
 function cloneProject(project: PolyProject): PolyProject {
   return structuredClone(project);
+}
+
+export function normalizePolyProject(project: PolyProject): PolyProject {
+  const normalized = cloneProject(project);
+  normalized.objects = normalized.objects.map((object) => ({
+    ...object,
+    visible: object.visible ?? true,
+    transparency: object.transparency ?? 0,
+    material: object.material ?? "plastic",
+    canCollide: object.canCollide ?? true,
+    castShadow: object.castShadow ?? true,
+  }));
+  normalized.gui = normalized.gui.map((gui) => ({
+    ...gui,
+    rotation: gui.rotation ?? 0,
+    textSize: gui.textSize ?? 16,
+    borderRadius: gui.borderRadius ?? 7,
+    zIndex: gui.zIndex ?? 1,
+  }));
+  normalized.playerSettings = {
+    walkSpeed: normalized.playerSettings?.walkSpeed ?? 18,
+    jumpPower: normalized.playerSettings?.jumpPower ?? 10.5,
+    cameraFieldOfView:
+      normalized.playerSettings?.cameraFieldOfView ?? 55,
+    maxHealth: normalized.playerSettings?.maxHealth ?? 100,
+  };
+  normalized.dataStores ??= {};
+  return normalized;
 }
 
 function lineDiagnostic(
@@ -217,6 +281,87 @@ function parseNumber(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function parseStoredValue(value: string): PolyStoredValue | undefined {
+  const stringValue = parseString(value);
+  if (stringValue !== null) return stringValue;
+  const booleanValue = parseBoolean(value);
+  if (booleanValue !== null) return booleanValue;
+  const numberValue = parseNumber(value);
+  if (numberValue !== null) return numberValue;
+  if (value.trim().replace(/;$/, "") === "nil" || value.trim() === "null") {
+    return null;
+  }
+  return undefined;
+}
+
+function rawStoredValue(value: PolyStoredValue): string {
+  if (typeof value === "string") return JSON.stringify(value);
+  if (value === null) return "nil";
+  return String(value);
+}
+
+function moduleExports(script: PolyScript): Record<string, PolyStoredValue> {
+  const exports: Record<string, PolyStoredValue> = {};
+  const source =
+    script.source.match(/return\s*\{([\s\S]*?)\}/)?.[1] ?? script.source;
+  const pattern =
+    /(?:Module(?:::|\.)Export\(\s*["']([A-Za-z_]\w*)["']\s*,\s*([^)\n]+)\)|([A-Za-z_]\w*)\s*=\s*([^,\n}]+))/g;
+  for (const match of source.matchAll(pattern)) {
+    const key = match[1] ?? match[3];
+    const raw = match[2] ?? match[4];
+    const value = parseStoredValue(raw);
+    if (key && value !== undefined) exports[key] = value;
+  }
+  return exports;
+}
+
+function findModuleDeclaration(
+  source: string,
+  project: PolyProject,
+): {
+  variable: string;
+  module: PolyScript | null;
+  requestedName: string;
+} | null {
+  const match = source.match(
+    /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*(?:require|Modules(?:::|\.)Require)\(\s*["']([^"']+)["']\s*\)\s*;?/,
+  );
+  if (!match) return null;
+  return {
+    variable: match[1],
+    module:
+      project.scripts.find(
+        (script) =>
+          script.kind === "moduleScript" && script.name === match[2],
+      ) ?? null,
+    requestedName: match[2],
+  };
+}
+
+function findDataStoreDeclaration(
+  source: string,
+): { variable: string; storeName: string } | null {
+  const match = source.match(
+    /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*DataStoreService(?::GetDataStore|\.GetDataStore|::GetDataStore)\(\s*["']([^"']+)["']\s*\)\s*;?/,
+  );
+  return match ? { variable: match[1], storeName: match[2] } : null;
+}
+
+function resolveRawValue(
+  rawValue: string,
+  values: Map<string, PolyStoredValue>,
+  modules: Map<string, Record<string, PolyStoredValue>>,
+): string {
+  const normalized = rawValue.trim().replace(/;$/, "");
+  if (values.has(normalized)) return rawStoredValue(values.get(normalized)!);
+  const moduleValue = normalized.match(/^([A-Za-z_]\w*)\.([A-Za-z_]\w*)$/);
+  if (moduleValue) {
+    const value = modules.get(moduleValue[1])?.[moduleValue[2]];
+    if (value !== undefined) return rawStoredValue(value);
+  }
+  return rawValue;
+}
+
 function propertySetFor(reference: Reference): Set<string> {
   if (reference.kind === "world") return WORLD_PROPERTIES;
   if (reference.kind === "gui") return GUI_PROPERTIES;
@@ -254,6 +399,26 @@ function assignProperty(
       const value = parseBoolean(rawValue);
       if (value === null) return "Visible must be true or false.";
       object.visible = value;
+    } else if (property === "Transparency") {
+      const value = parseNumber(rawValue);
+      if (value === null || value < 0 || value > 1) {
+        return "Transparency must be between 0 and 1.";
+      }
+      object.transparency = value;
+    } else if (property === "Material") {
+      const value = parseString(rawValue)?.toLowerCase();
+      if (!value || !["plastic", "metal", "wood", "neon"].includes(value)) {
+        return "Material must be Plastic, Metal, Wood, or Neon.";
+      }
+      object.material = value as PolyWorldObject["material"];
+    } else if (property === "CanCollide") {
+      const value = parseBoolean(rawValue);
+      if (value === null) return "CanCollide must be true or false.";
+      object.canCollide = value;
+    } else if (property === "CastShadow") {
+      const value = parseBoolean(rawValue);
+      if (value === null) return "CastShadow must be true or false.";
+      object.castShadow = value;
     } else {
       const value = parseNumbers(rawValue, 3);
       if (!value) return `${property} must be Vector3.new(x, y, z).`;
@@ -291,6 +456,15 @@ function assignProperty(
         return "BackgroundTransparency must be between 0 and 1.";
       }
       gui.backgroundTransparency = value;
+    } else if (
+      ["Rotation", "TextSize", "BorderRadius", "ZIndex"].includes(property)
+    ) {
+      const value = parseNumber(rawValue);
+      if (value === null) return `${property} must be a number.`;
+      if (property === "Rotation") gui.rotation = value;
+      if (property === "TextSize") gui.textSize = Math.max(1, value);
+      if (property === "BorderRadius") gui.borderRadius = Math.max(0, value);
+      if (property === "ZIndex") gui.zIndex = Math.round(value);
     } else {
       const value = parseNumbers(rawValue, 2);
       if (!value) return `${property} must be Vector2.new(x, y).`;
@@ -307,6 +481,13 @@ function assignProperty(
   }
   if (property === "WalkSpeed") project.playerSettings.walkSpeed = value;
   if (property === "JumpPower") project.playerSettings.jumpPower = value;
+  if (property === "CameraFieldOfView") {
+    if (value < 20 || value > 120) {
+      return "CameraFieldOfView must be between 20 and 120.";
+    }
+    project.playerSettings.cameraFieldOfView = value;
+  }
+  if (property === "MaxHealth") project.playerSettings.maxHealth = value;
   return null;
 }
 
@@ -450,18 +631,107 @@ export function analyzePolyScript(
   script: PolyScript,
   project: PolyProject,
 ): PolyDiagnostic[] {
+  project = normalizePolyProject(project);
   const diagnostics = [
     ...delimiterDiagnostics(script.source),
     ...syntaxDiagnostics(script, project.language),
   ];
   const validationProject = cloneProject(project);
   const variables = new Map<string, Reference>();
+  const modules = new Map<string, Record<string, PolyStoredValue>>();
+  const stores = new Map<string, string>();
+  const values = new Map<string, PolyStoredValue>();
   const lines = script.source.split("\n");
 
   lines.forEach((source, index) => {
     const line = index + 1;
     const trimmed = source.trim();
     if (!trimmed || trimmed.startsWith("--") || trimmed.startsWith("//")) return;
+
+    const moduleDeclaration = findModuleDeclaration(source, project);
+    if (moduleDeclaration) {
+      if (!moduleDeclaration.module) {
+        diagnostics.push(
+          lineDiagnostic(
+            line,
+            source,
+            `No ModuleScript named "${moduleDeclaration.requestedName}" exists.`,
+          ),
+        );
+      } else {
+        modules.set(
+          moduleDeclaration.variable,
+          moduleExports(moduleDeclaration.module),
+        );
+      }
+      return;
+    }
+
+    const dataStoreDeclaration = findDataStoreDeclaration(source);
+    if (dataStoreDeclaration) {
+      if (script.kind === "localScript") {
+        diagnostics.push(
+          lineDiagnostic(
+            line,
+            source,
+            "LocalScripts cannot access DataStoreService.",
+          ),
+        );
+      } else {
+        stores.set(
+          dataStoreDeclaration.variable,
+          dataStoreDeclaration.storeName,
+        );
+      }
+      return;
+    }
+
+    const dataGet = source.match(
+      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)(?::|\.)(?:GetAsync|Get)\(\s*["']([^"']+)["']\s*\)\s*;?/,
+    );
+    if (dataGet) {
+      const storeName = stores.get(dataGet[2]);
+      if (!storeName) {
+        diagnostics.push(
+          lineDiagnostic(line, source, `Unknown data store variable ${dataGet[2]}.`),
+        );
+      } else {
+        values.set(
+          dataGet[1],
+          validationProject.dataStores[storeName]?.[dataGet[3]] ?? null,
+        );
+      }
+      return;
+    }
+
+    const dataSet = source.match(
+      /^\s*([A-Za-z_]\w*)(?::|\.)(?:SetAsync|Set)\(\s*["']([^"']+)["']\s*,\s*(.+?)\s*\)\s*;?\s*$/,
+    );
+    if (dataSet) {
+      if (!stores.has(dataSet[1])) {
+        diagnostics.push(
+          lineDiagnostic(line, source, `Unknown data store variable ${dataSet[1]}.`),
+        );
+      } else {
+        const value = parseStoredValue(
+          resolveRawValue(dataSet[3], values, modules),
+        );
+        if (value === undefined) {
+          diagnostics.push(
+            lineDiagnostic(
+              line,
+              source,
+              "Data store values must be strings, numbers, booleans, or nil.",
+            ),
+          );
+          return;
+        }
+        const storeName = stores.get(dataSet[1])!;
+        validationProject.dataStores[storeName] ??= {};
+        validationProject.dataStores[storeName][dataSet[2]] = value;
+      }
+      return;
+    }
 
     const declaration = findReferenceDeclaration(source, project);
     if (declaration) {
@@ -537,7 +807,7 @@ export function analyzePolyScript(
           validationProject,
           reference,
           assignment[2],
-          assignment[3],
+          resolveRawValue(assignment[3], values, modules),
         );
         if (valueError) {
           diagnostics.push(lineDiagnostic(line, source, valueError));
@@ -546,28 +816,43 @@ export function analyzePolyScript(
     }
   });
 
+  const guiParent = project.gui.some((item) => item.id === script.parent);
   if (
-    script.kind === "localScript" &&
-    script.parent === "ServerScriptService"
+    script.kind === "script" &&
+    !SERVER_SCRIPT_PARENTS.has(script.parent)
   ) {
     diagnostics.push({
       line: 1,
       column: 1,
       endColumn: 2,
       severity: "error",
-      message: "LocalScripts do not run in ServerScriptService.",
+      message: "Server Scripts must be in Workspace or ServerScriptService.",
     });
   }
   if (
-    script.kind === "script" &&
-    script.parent === "StarterPlayerScripts"
+    script.kind === "localScript" &&
+    !LOCAL_SCRIPT_PARENTS.has(script.parent) &&
+    !guiParent
   ) {
     diagnostics.push({
       line: 1,
       column: 1,
       endColumn: 2,
       severity: "error",
-      message: "Server Scripts do not run in StarterPlayerScripts.",
+      message: "LocalScripts must be in StarterPlayerScripts or StarterGui.",
+    });
+  }
+  if (
+    script.kind === "moduleScript" &&
+    !MODULE_SCRIPT_PARENTS.has(script.parent) &&
+    !guiParent
+  ) {
+    diagnostics.push({
+      line: 1,
+      column: 1,
+      endColumn: 2,
+      severity: "error",
+      message: "ModuleScripts must be in a script or shared storage container.",
     });
   }
   return diagnostics;
@@ -590,7 +875,51 @@ function executeScript(
   output: PolyRuntimeResult["output"],
 ): void {
   const variables = new Map<string, Reference>();
+  const modules = new Map<string, Record<string, PolyStoredValue>>();
+  const stores = new Map<string, string>();
+  const values = new Map<string, PolyStoredValue>();
   for (const source of script.source.split("\n")) {
+    const moduleDeclaration = findModuleDeclaration(source, project);
+    if (moduleDeclaration?.module) {
+      modules.set(
+        moduleDeclaration.variable,
+        moduleExports(moduleDeclaration.module),
+      );
+      continue;
+    }
+    const dataStoreDeclaration = findDataStoreDeclaration(source);
+    if (dataStoreDeclaration) {
+      stores.set(dataStoreDeclaration.variable, dataStoreDeclaration.storeName);
+      project.dataStores[dataStoreDeclaration.storeName] ??= {};
+      continue;
+    }
+    const dataGet = source.match(
+      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)(?::|\.)(?:GetAsync|Get)\(\s*["']([^"']+)["']\s*\)\s*;?/,
+    );
+    if (dataGet) {
+      const storeName = stores.get(dataGet[2]);
+      if (storeName) {
+        values.set(
+          dataGet[1],
+          project.dataStores[storeName]?.[dataGet[3]] ?? null,
+        );
+      }
+      continue;
+    }
+    const dataSet = source.match(
+      /^\s*([A-Za-z_]\w*)(?::|\.)(?:SetAsync|Set)\(\s*["']([^"']+)["']\s*,\s*(.+?)\s*\)\s*;?\s*$/,
+    );
+    if (dataSet) {
+      const storeName = stores.get(dataSet[1]);
+      const value = parseStoredValue(
+        resolveRawValue(dataSet[3], values, modules),
+      );
+      if (storeName && value !== undefined) {
+        project.dataStores[storeName] ??= {};
+        project.dataStores[storeName][dataSet[2]] = value;
+      }
+      continue;
+    }
     const declaration = findReferenceDeclaration(source, project);
     if (declaration?.reference) {
       variables.set(declaration.variable, declaration.reference);
@@ -617,7 +946,7 @@ function executeScript(
       project,
       reference,
       assignment[2],
-      assignment[3],
+      resolveRawValue(assignment[3], values, modules),
     );
     if (error) {
       output.push({ level: "error", message: error, scriptName: script.name });
@@ -626,7 +955,7 @@ function executeScript(
 }
 
 export function runPolyProject(input: PolyProject): PolyRuntimeResult {
-  const project = cloneProject(input);
+  const project = normalizePolyProject(input);
   const diagnostics = project.scripts.flatMap((script) =>
     analyzePolyScript(script, project).map((diagnostic) => ({
       ...diagnostic,

@@ -41,6 +41,10 @@ interface Window {
       gameId: string,
     ) => Promise<{ playSession: { websocketUrl: string } }>;
     loadStudioProject: (id: string) => Promise<import("../../src/game/polyProject").PolyProject>;
+    saveStudioDataStores: (
+      id: string,
+      dataStores: import("../../src/game/polyProject").PolyProject["dataStores"],
+    ) => Promise<void>;
     getLaunch: () => Promise<PlayerLaunch | null>;
     onLaunch: (callback: (launch: PlayerLaunch) => void) => () => void;
     onAuthChanged: (callback: (auth: PlayerAuth) => void) => () => void;

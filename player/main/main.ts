@@ -75,17 +75,81 @@ function validateProjectId(id: string): void {
   }
 }
 
+function projectDataPath(id: string): string {
+  validateProjectId(id);
+  return join(projectsRoot(), id, "data-stores.json");
+}
+
+function validateDataStores(value: unknown): asserts value is Record<
+  string,
+  Record<string, string | number | boolean | null>
+> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Invalid project data stores.");
+  }
+  const stores = Object.entries(value);
+  if (stores.length > 100) throw new Error("Too many project data stores.");
+  for (const [storeName, store] of stores) {
+    if (
+      storeName.length < 1 ||
+      storeName.length > 64 ||
+      !store ||
+      typeof store !== "object" ||
+      Array.isArray(store)
+    ) {
+      throw new Error("Invalid project data store.");
+    }
+    const entries = Object.entries(store);
+    if (entries.length > 5_000) throw new Error("Project data store is too large.");
+    for (const [key, entry] of entries) {
+      if (
+        key.length < 1 ||
+        key.length > 128 ||
+        !(
+          entry === null ||
+          typeof entry === "string" ||
+          typeof entry === "number" ||
+          typeof entry === "boolean"
+        )
+      ) {
+        throw new Error("Invalid project data entry.");
+      }
+    }
+  }
+}
+
 async function loadStudioProject(id: string): Promise<unknown> {
   validateProjectId(id);
   const path = join(projectsRoot(), id, "project.poly.json");
   const project = JSON.parse(await readFile(path, "utf8")) as {
     id?: unknown;
     version?: unknown;
+    dataStores?: unknown;
   };
   if (project.id !== id || project.version !== 2) {
     throw new Error("This Studio project needs to be opened and saved again.");
   }
+  const persisted = await readFile(projectDataPath(id), "utf8")
+    .then((value) => JSON.parse(value) as unknown)
+    .catch(() => null);
+  if (persisted) {
+    validateDataStores(persisted);
+    project.dataStores = persisted;
+  }
   return project;
+}
+
+async function saveStudioDataStores(
+  id: string,
+  dataStores: unknown,
+): Promise<void> {
+  validateProjectId(id);
+  validateDataStores(dataStores);
+  const serialized = JSON.stringify(dataStores, null, 2);
+  if (Buffer.byteLength(serialized, "utf8") > 2_000_000) {
+    throw new Error("Project data stores exceed the local size limit.");
+  }
+  await writeFile(projectDataPath(id), serialized);
 }
 
 async function loadAuth(): Promise<StoredAuth | null> {
@@ -368,6 +432,11 @@ if (!hasLock) {
     ipcMain.handle(
       "studio:project",
       (_event, input: { id: string }) => loadStudioProject(input.id),
+    );
+    ipcMain.handle(
+      "studio:save-data",
+      (_event, input: { id: string; dataStores: unknown }) =>
+        saveStudioDataStores(input.id, input.dataStores),
     );
     ipcMain.handle("game:play", async (_event, input: { gameId: string }) => {
       if (!auth) throw new Error("Sign in to play.");

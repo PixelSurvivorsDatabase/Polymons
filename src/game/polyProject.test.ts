@@ -25,6 +25,10 @@ function project(): PolyProject {
         color: "#342856",
         anchored: true,
         visible: true,
+        transparency: 0,
+        material: "plastic",
+        canCollide: true,
+        castShadow: true,
       },
     ],
     scripts: [
@@ -62,6 +66,10 @@ label.Text = "Ready"`,
         text: "",
         textColor: "#FFFFFF",
         visible: true,
+        rotation: 0,
+        textSize: 16,
+        borderRadius: 7,
+        zIndex: 1,
       },
       {
         id: "status",
@@ -75,9 +83,19 @@ label.Text = "Ready"`,
         text: "Loading",
         textColor: "#FFFFFF",
         visible: true,
+        rotation: 0,
+        textSize: 16,
+        borderRadius: 7,
+        zIndex: 1,
       },
     ],
-    playerSettings: { walkSpeed: 18, jumpPower: 10.5 },
+    playerSettings: {
+      walkSpeed: 18,
+      jumpPower: 10.5,
+      cameraFieldOfView: 55,
+      maxHealth: 100,
+    },
+    dataStores: {},
   };
 }
 
@@ -136,4 +154,80 @@ local value =`,
   assert.ok(
     diagnostics.some((diagnostic) => diagnostic.message.includes("missing 'end'")),
   );
+});
+
+test("loads ModuleScript exports into property assignments", () => {
+  const fixture = project();
+  fixture.scripts.unshift({
+    id: "module",
+    name: "CharacterConfig",
+    kind: "moduleScript",
+    parent: "ReplicatedStorage",
+    source: `return {
+    WalkSpeed = 28,
+}`,
+  });
+  fixture.scripts[2].source = `local config = require("CharacterConfig")
+local player = Players.LocalPlayer
+player.WalkSpeed = config.WalkSpeed`;
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0);
+  assert.equal(result.project.playerSettings.walkSpeed, 28);
+});
+
+test("persists server data and can read it into object properties", () => {
+  const fixture = project();
+  fixture.scripts[0].source = `local store = DataStoreService:GetDataStore("World")
+store:SetAsync("PartTransparency", 0.4)
+local saved = store.GetAsync("PartTransparency")
+local part = Workspace:FindFirstChild("Part")
+part.Transparency = saved`;
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0);
+  assert.equal(result.project.dataStores.World.PartTransparency, 0.4);
+  assert.equal(result.project.objects[0].transparency, 0.4);
+});
+
+test("supports C++ property assignments", () => {
+  const fixture = project();
+  fixture.language = "cpp";
+  fixture.scripts = [
+    {
+      id: "cpp-server",
+      name: "Main",
+      kind: "script",
+      parent: "Workspace",
+      source: `auto part = Workspace.Find("Part");
+part.Material = "metal";
+part.CanCollide = false;`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0);
+  assert.equal(result.project.objects[0].material, "metal");
+  assert.equal(result.project.objects[0].canCollide, false);
+});
+
+test("supports C# property assignments", () => {
+  const fixture = project();
+  fixture.language = "csharp";
+  fixture.scripts = [
+    {
+      id: "csharp-server",
+      name: "Main",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `var part = Workspace.Find("Part");
+part.Position = new Vector3(1, 4, 2);
+part.CastShadow = false;`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0);
+  assert.deepEqual(result.project.objects[0].position, [1, 4, 2]);
+  assert.equal(result.project.objects[0].castShadow, false);
 });

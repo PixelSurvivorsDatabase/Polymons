@@ -53,12 +53,16 @@ type SceneObject = {
   color: string;
   anchored: boolean;
   visible?: boolean;
+  transparency: number;
+  material: "plastic" | "metal" | "wood" | "neon";
+  canCollide: boolean;
+  castShadow: boolean;
 };
 
 type StudioScript = {
   id: string;
   name: string;
-  kind: "script" | "localScript";
+  kind: "script" | "localScript" | "moduleScript";
   parent: "ServerScriptService" | "StarterPlayerScripts" | string;
   source: string;
 };
@@ -75,6 +79,10 @@ type StudioGuiObject = {
   text: string;
   textColor: string;
   visible: boolean;
+  rotation: number;
+  textSize: number;
+  borderRadius: number;
+  zIndex: number;
 };
 
 type StudioProject = {
@@ -90,7 +98,10 @@ type StudioProject = {
   playerSettings: {
     walkSpeed: number;
     jumpPower: number;
+    cameraFieldOfView: number;
+    maxHealth: number;
   };
+  dataStores: Record<string, Record<string, string | number | boolean | null>>;
 };
 
 type ProjectSummary = Pick<
@@ -130,6 +141,10 @@ function projectDirectory(id: string): string {
 
 function manifestPath(id: string): string {
   return join(projectDirectory(id), "project.poly.json");
+}
+
+function dataStoresPath(id: string): string {
+  return join(projectDirectory(id), "data-stores.json");
 }
 
 async function findPlayerExecutable(): Promise<string | null> {
@@ -179,10 +194,16 @@ function scriptSourcePath(
   script: StudioScript,
 ): string {
   const folder =
-    script.parent === "ServerScriptService"
-      ? "ServerScriptService"
+    script.parent === "Workspace"
+      ? "Workspace"
+      : script.parent === "ServerScriptService"
+        ? "ServerScriptService"
       : script.parent === "StarterPlayerScripts"
         ? "StarterPlayerScripts"
+        : script.parent === "ReplicatedStorage"
+          ? "ReplicatedStorage"
+          : script.parent === "ServerStorage"
+            ? "ServerStorage"
         : "StarterGui";
   return join(
     projectDirectory(project.id),
@@ -197,6 +218,13 @@ function starterScript(
   kind: StudioScript["kind"],
 ): string {
   if (language === "cpp") {
+    if (kind === "moduleScript") {
+      return `#include <poly/module.hpp>
+
+Module::Export("WalkSpeed", 22);
+Module::Export("Accent", "#6F49BB");
+`;
+    }
     if (kind === "localScript") {
       return `#include <poly/client.hpp>
 
@@ -213,6 +241,13 @@ Console::Log("Server script started");
 `;
   }
   if (language === "csharp") {
+    if (kind === "moduleScript") {
+      return `using Poly;
+
+Module.Export("WalkSpeed", 22);
+Module.Export("Accent", "#6F49BB");
+`;
+    }
     if (kind === "localScript") {
       return `using Poly;
 
@@ -233,6 +268,13 @@ Poly.Log("Server script started");
 
 player.WalkSpeed = 18
 print("Client script started")
+`;
+  }
+  if (kind === "moduleScript") {
+    return `return {
+    WalkSpeed = 22,
+    Accent = "#6F49BB",
+}
 `;
   }
   return `local part = Workspace:FindFirstChild("Part")
@@ -274,7 +316,14 @@ function migrateLegacyProject(
     language: manifest.language,
     createdAt: manifest.createdAt,
     updatedAt: manifest.updatedAt,
-    objects: manifest.objects.map((object) => ({ ...object, visible: true })),
+    objects: manifest.objects.map((object) => ({
+      ...object,
+      visible: true,
+      transparency: 0,
+      material: "plastic",
+      canCollide: true,
+      castShadow: true,
+    })),
     scripts: [
       {
         id: randomUUID(),
@@ -285,7 +334,41 @@ function migrateLegacyProject(
       },
     ],
     gui: [],
-    playerSettings: { walkSpeed: 18, jumpPower: 10.5 },
+    playerSettings: {
+      walkSpeed: 18,
+      jumpPower: 10.5,
+      cameraFieldOfView: 52,
+      maxHealth: 100,
+    },
+    dataStores: {},
+  };
+}
+
+function normalizeProject(project: StudioProject): StudioProject {
+  return {
+    ...project,
+    objects: project.objects.map((object) => ({
+      ...object,
+      visible: object.visible ?? true,
+      transparency: object.transparency ?? 0,
+      material: object.material ?? "plastic",
+      canCollide: object.canCollide ?? true,
+      castShadow: object.castShadow ?? true,
+    })),
+    gui: project.gui.map((gui) => ({
+      ...gui,
+      rotation: gui.rotation ?? 0,
+      textSize: gui.textSize ?? 16,
+      borderRadius: gui.borderRadius ?? 7,
+      zIndex: gui.zIndex ?? 1,
+    })),
+    playerSettings: {
+      walkSpeed: project.playerSettings.walkSpeed ?? 18,
+      jumpPower: project.playerSettings.jumpPower ?? 10.5,
+      cameraFieldOfView: project.playerSettings.cameraFieldOfView ?? 52,
+      maxHealth: project.playerSettings.maxHealth ?? 100,
+    },
+    dataStores: project.dataStores ?? {},
   };
 }
 
@@ -301,6 +384,10 @@ function starterObjects(): SceneObject[] {
       color: "#405946",
       anchored: true,
       visible: true,
+      transparency: 0,
+      material: "plastic",
+      canCollide: true,
+      castShadow: true,
     },
     {
       id: randomUUID(),
@@ -312,6 +399,10 @@ function starterObjects(): SceneObject[] {
       color: "#5b3d91",
       anchored: true,
       visible: true,
+      transparency: 0,
+      material: "neon",
+      canCollide: true,
+      castShadow: true,
     },
     {
       id: randomUUID(),
@@ -323,6 +414,10 @@ function starterObjects(): SceneObject[] {
       color: "#342856",
       anchored: true,
       visible: true,
+      transparency: 0,
+      material: "plastic",
+      canCollide: true,
+      castShadow: true,
     },
   ];
 }
@@ -419,7 +514,13 @@ function validateProject(project: StudioProject): void {
       typeof object.color !== "string" ||
       !/^#[0-9a-f]{6}$/i.test(object.color) ||
       typeof object.anchored !== "boolean" ||
-      (object.visible !== undefined && typeof object.visible !== "boolean")
+      (object.visible !== undefined && typeof object.visible !== "boolean") ||
+      !Number.isFinite(object.transparency) ||
+      object.transparency < 0 ||
+      object.transparency > 1 ||
+      !["plastic", "metal", "wood", "neon"].includes(object.material) ||
+      typeof object.canCollide !== "boolean" ||
+      typeof object.castShadow !== "boolean"
     ) {
       throw new Error("Invalid project object.");
     }
@@ -433,7 +534,7 @@ function validateProject(project: StudioProject): void {
       typeof script.name !== "string" ||
       script.name.trim().length < 1 ||
       script.name.length > 100 ||
-      !["script", "localScript"].includes(script.kind) ||
+      !["script", "localScript", "moduleScript"].includes(script.kind) ||
       typeof script.parent !== "string" ||
       typeof script.source !== "string" ||
       script.source.length > 2_000_000
@@ -463,6 +564,10 @@ function validateProject(project: StudioProject): void {
       typeof gui.text !== "string" ||
       !/^#[0-9a-f]{6}$/i.test(gui.textColor) ||
       typeof gui.visible !== "boolean"
+      || !Number.isFinite(gui.rotation)
+      || !Number.isFinite(gui.textSize)
+      || !Number.isFinite(gui.borderRadius)
+      || !Number.isInteger(gui.zIndex)
     ) {
       throw new Error("Invalid GUI object.");
     }
@@ -470,9 +575,42 @@ function validateProject(project: StudioProject): void {
   if (
     !project.playerSettings ||
     !Number.isFinite(project.playerSettings.walkSpeed) ||
-    !Number.isFinite(project.playerSettings.jumpPower)
+    !Number.isFinite(project.playerSettings.jumpPower) ||
+    !Number.isFinite(project.playerSettings.cameraFieldOfView) ||
+    !Number.isFinite(project.playerSettings.maxHealth)
   ) {
     throw new Error("Invalid LocalPlayer settings.");
+  }
+  if (!project.dataStores || typeof project.dataStores !== "object") {
+    throw new Error("Invalid project data stores.");
+  }
+  const stores = Object.entries(project.dataStores);
+  if (stores.length > 100) throw new Error("Too many project data stores.");
+  for (const [storeName, store] of stores) {
+    if (
+      storeName.length < 1 ||
+      storeName.length > 64 ||
+      !store ||
+      typeof store !== "object" ||
+      Array.isArray(store) ||
+      Object.keys(store).length > 5_000
+    ) {
+      throw new Error("Invalid project data store.");
+    }
+    for (const [key, value] of Object.entries(store)) {
+      if (
+        key.length < 1 ||
+        key.length > 128 ||
+        !(
+          value === null ||
+          typeof value === "string" ||
+          typeof value === "number" ||
+          typeof value === "boolean"
+        )
+      ) {
+        throw new Error("Invalid project data entry.");
+      }
+    }
   }
 }
 
@@ -486,7 +624,7 @@ async function readProject(id: string): Promise<StudioProject> {
       > & { script?: string });
   let project: StudioProject;
   if ("version" in manifest && manifest.version === 2) {
-    project = manifest;
+    project = normalizeProject(manifest);
   } else {
     const source = await readFile(sourcePath(id, manifest.language), "utf8").catch(
       () => "",
@@ -494,6 +632,10 @@ async function readProject(id: string): Promise<StudioProject> {
     project = migrateLegacyProject(manifest, source);
     await writeProject(project);
   }
+  const persistedDataStores = await readFile(dataStoresPath(id), "utf8")
+    .then((value) => JSON.parse(value) as StudioProject["dataStores"])
+    .catch(() => null);
+  if (persistedDataStores) project.dataStores = persistedDataStores;
   validateProject(project);
   return project;
 }
@@ -646,7 +788,13 @@ void app.whenReady().then(async () => {
         objects: starterObjects(),
         scripts: starterScripts(input.language),
         gui: [],
-        playerSettings: { walkSpeed: 18, jumpPower: 10.5 },
+        playerSettings: {
+          walkSpeed: 18,
+          jumpPower: 10.5,
+          cameraFieldOfView: 52,
+          maxHealth: 100,
+        },
+        dataStores: {},
       };
       await writeProject(project);
       return project;

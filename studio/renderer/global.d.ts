@@ -28,12 +28,16 @@ type StudioObject = {
   color: string;
   anchored: boolean;
   visible?: boolean;
+  transparency: number;
+  material: "plastic" | "metal" | "wood" | "neon";
+  canCollide: boolean;
+  castShadow: boolean;
 };
 
 type StudioScript = {
   id: string;
   name: string;
-  kind: "script" | "localScript";
+  kind: "script" | "localScript" | "moduleScript";
   parent: "ServerScriptService" | "StarterPlayerScripts" | string;
   source: string;
 };
@@ -50,6 +54,10 @@ type StudioGuiObject = {
   text: string;
   textColor: string;
   visible: boolean;
+  rotation: number;
+  textSize: number;
+  borderRadius: number;
+  zIndex: number;
 };
 
 type StudioProject = {
@@ -65,7 +73,10 @@ type StudioProject = {
   playerSettings: {
     walkSpeed: number;
     jumpPower: number;
+    cameraFieldOfView: number;
+    maxHealth: number;
   };
+  dataStores: Record<string, Record<string, string | number | boolean | null>>;
 };
 
 type ProjectSummary = Pick<
