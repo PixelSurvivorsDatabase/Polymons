@@ -19,7 +19,10 @@
       "transparency": 0,
       "material": "plastic",
       "canCollide": true,
-      "castShadow": true
+      "castShadow": true,
+      "modelId": null,
+      "attributes": {},
+      "tags": []
     },
     {
       "id": "spawn",
@@ -34,7 +37,10 @@
       "transparency": 0,
       "material": "neon",
       "canCollide": true,
-      "castShadow": true
+      "castShadow": true,
+      "modelId": null,
+      "attributes": {},
+      "tags": []
     },
     {
       "id": "part",
@@ -49,9 +55,14 @@
       "transparency": 0,
       "material": "plastic",
       "canCollide": true,
-      "castShadow": true
+      "castShadow": true,
+      "modelId": null,
+      "attributes": {},
+      "tags": []
     }
   ],
+  "models": [],
+  "remotes": [],
   "scripts": [
     {
       "id": "server",

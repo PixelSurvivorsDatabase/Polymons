@@ -32,6 +32,23 @@ type StudioObject = {
   material: "plastic" | "metal" | "wood" | "neon";
   canCollide: boolean;
   castShadow: boolean;
+  modelId: string | null;
+  attributes: Record<string, string | number | boolean | null>;
+  tags: string[];
+};
+
+type StudioModel = {
+  id: string;
+  name: string;
+  primaryPartId: string | null;
+  attributes: Record<string, string | number | boolean | null>;
+  tags: string[];
+};
+
+type StudioRemote = {
+  id: string;
+  name: string;
+  kind: "remoteEvent" | "remoteFunction";
 };
 
 type StudioScript = {
@@ -68,6 +85,8 @@ type StudioProject = {
   createdAt: string;
   updatedAt: string;
   objects: StudioObject[];
+  models: StudioModel[];
+  remotes: StudioRemote[];
   scripts: StudioScript[];
   gui: StudioGuiObject[];
   playerSettings: {
@@ -99,5 +118,13 @@ interface Window {
     saveProject: (project: StudioProject) => Promise<StudioProject>;
     revealProject: (id: string) => Promise<void>;
     playProject: (id: string) => Promise<void>;
+    exportModel: (input: {
+      model: StudioModel;
+      parts: StudioObject[];
+    }) => Promise<string | null>;
+    importModel: () => Promise<{
+      model: StudioModel;
+      parts: StudioObject[];
+    } | null>;
   };
 }

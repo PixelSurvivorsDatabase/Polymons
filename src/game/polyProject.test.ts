@@ -29,8 +29,13 @@ function project(): PolyProject {
         material: "plastic",
         canCollide: true,
         castShadow: true,
+        modelId: null,
+        attributes: {},
+        tags: [],
       },
     ],
+    models: [],
+    remotes: [],
     scripts: [
       {
         id: "server",
@@ -230,4 +235,106 @@ part.CastShadow = false;`,
   assert.equal(result.diagnostics.length, 0);
   assert.deepEqual(result.project.objects[0].position, [1, 4, 2]);
   assert.equal(result.project.objects[0].castShadow, false);
+});
+
+test("runs RemoteEvents with client and server call rules", () => {
+  const fixture = project();
+  fixture.remotes = [
+    {
+      id: "damage-event",
+      name: "DamageEvent",
+      kind: "remoteEvent",
+    },
+  ];
+  fixture.scripts = [
+    {
+      id: "remote-server",
+      name: "RemoteServer",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `local event = ReplicatedStorage:FindFirstChild("DamageEvent")
+event:FireAllClients("ready")`,
+    },
+    {
+      id: "remote-client",
+      name: "RemoteClient",
+      kind: "localScript",
+      parent: "StarterPlayerScripts",
+      source: `local event = ReplicatedStorage:FindFirstChild("DamageEvent")
+event:FireServer(25)`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0);
+  assert.deepEqual(
+    result.output.map((entry) => entry.message),
+    [
+      'DamageEvent.FireAllClients("ready")',
+      "DamageEvent.FireServer(25)",
+    ],
+  );
+});
+
+test("supports Attributes and Tags as gameplay metadata", () => {
+  const fixture = project();
+  fixture.scripts = [
+    {
+      id: "metadata",
+      name: "Metadata",
+      kind: "script",
+      parent: "Workspace",
+      source: `local part = Workspace:FindFirstChild("Part")
+part:SetAttribute("Damage", 30)
+CollectionService:AddTag(part, "Hazard")
+local damage = part:GetAttribute("Damage")
+part.Transparency = damage`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.ok(
+    result.diagnostics.some((diagnostic) =>
+      diagnostic.message.includes("between 0 and 1"),
+    ),
+  );
+  fixture.scripts[0].source = `local part = Workspace:FindFirstChild("Part")
+part:SetAttribute("Transparency", 0.3)
+CollectionService:AddTag(part, "Hazard")
+local saved = part:GetAttribute("Transparency")
+part.Transparency = saved`;
+  const valid = runPolyProject(fixture);
+  assert.equal(valid.diagnostics.length, 0);
+  assert.equal(valid.project.objects[0].attributes.Transparency, 0.3);
+  assert.deepEqual(valid.project.objects[0].tags, ["Hazard"]);
+  assert.equal(valid.project.objects[0].transparency, 0.3);
+});
+
+test("supports RemoteFunctions in C# client scripts", () => {
+  const fixture = project();
+  fixture.language = "csharp";
+  fixture.remotes = [
+    {
+      id: "inventory-function",
+      name: "GetInventory",
+      kind: "remoteFunction",
+    },
+  ];
+  fixture.scripts = [
+    {
+      id: "remote-function-client",
+      name: "InventoryClient",
+      kind: "localScript",
+      parent: "StarterPlayerScripts",
+      source: `var remote = ReplicatedStorage.Find("GetInventory");
+var inventory = remote.InvokeServer("lava");`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0);
+  assert.equal(
+    result.output[0].message,
+    'GetInventory.InvokeServer("lava")',
+  );
 });

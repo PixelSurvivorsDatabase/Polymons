@@ -87,6 +87,9 @@ function createPreviewProject(
         material: "plastic",
         canCollide: true,
         castShadow: true,
+        modelId: null,
+        attributes: {},
+        tags: [],
       },
       {
         id: crypto.randomUUID(),
@@ -102,6 +105,9 @@ function createPreviewProject(
         material: "neon",
         canCollide: true,
         castShadow: true,
+        modelId: null,
+        attributes: {},
+        tags: [],
       },
       {
         id: crypto.randomUUID(),
@@ -117,8 +123,13 @@ function createPreviewProject(
         material: "plastic",
         canCollide: true,
         castShadow: true,
+        modelId: null,
+        attributes: {},
+        tags: [],
       },
     ],
+    models: [],
+    remotes: [],
     scripts: [
       {
         id: crypto.randomUUID(),
@@ -202,5 +213,7 @@ if (isPreview && !window.polyStudio) {
     },
     revealProject: async () => undefined,
     playProject: async () => undefined,
+    exportModel: async () => "preview.pmxl",
+    importModel: async () => null,
   };
 }

@@ -68,6 +68,7 @@ function configureMonaco() {
       "PlayerGui",
       "ReplicatedStorage",
       "DataStoreService",
+      "CollectionService",
       "Modules",
       "Module",
       "Vector2",
@@ -167,10 +168,13 @@ export default function CodeEditor({
   const onDiagnosticsRef = useRef(onDiagnostics);
   const projectRef = useRef(project);
   const scriptRef = useRef(script);
+  const modelRef = useRef<monaco.editor.ITextModel | null>(null);
+  const externalUpdate = useRef(false);
   const scriptId = script.id;
   onChangeRef.current = onChange;
   onDiagnosticsRef.current = onDiagnostics;
   projectRef.current = project;
+  scriptRef.current = script;
 
   useEffect(() => {
     configureMonaco();
@@ -188,6 +192,7 @@ export default function CodeEditor({
       language,
       monaco.Uri.parse(`inmemory://poly/${scriptId}.${extension}`),
     );
+    modelRef.current = model;
     const editor = monaco.editor.create(container.current, {
       model,
       theme: "poly-studio",
@@ -219,7 +224,7 @@ export default function CodeEditor({
 
     const changeSubscription = model.onDidChangeContent(() => {
       const source = model.getValue();
-      onChangeRef.current(source);
+      if (!externalUpdate.current) onChangeRef.current(source);
       updateDiagnostics(source);
     });
     const completionSubscription = monaco.languages.registerCompletionItemProvider(
@@ -238,6 +243,7 @@ export default function CodeEditor({
           const names = [
             ...projectRef.current.objects.map((object) => object.name),
             ...projectRef.current.gui.map((object) => object.name),
+            ...projectRef.current.remotes.map((remote) => remote.name),
           ];
           const properties = [
             "Position",
@@ -261,6 +267,13 @@ export default function CodeEditor({
             "JumpPower",
             "CameraFieldOfView",
             "MaxHealth",
+            "SetAttribute",
+            "GetAttribute",
+            "FireServer",
+            "FireClient",
+            "FireAllClients",
+            "InvokeServer",
+            "InvokeClient",
           ];
           const isLuau = projectRef.current.language === "luau";
           const isCpp = projectRef.current.language === "cpp";
@@ -295,6 +308,17 @@ export default function CodeEditor({
             : isCpp
               ? "Vector3(${1:0}, ${2:0}, ${3:0})"
               : "new Vector3(${1:0}, ${2:0}, ${3:0})";
+          const remoteFindText = isLuau
+            ? 'ReplicatedStorage:FindFirstChild("${1:RemoteEvent}")'
+            : 'ReplicatedStorage.Find("${1:RemoteEvent}")';
+          const attributeText = isLuau
+            ? '${1:part}:SetAttribute("${2:Health}", ${3:100})'
+            : '${1:part}.SetAttribute("${2:Health}", ${3:100})';
+          const tagText = isLuau
+            ? 'CollectionService:AddTag(${1:part}, "${2:Enemy}")'
+            : isCpp
+              ? 'CollectionService::AddTag(${1:part}, "${2:Enemy}")'
+              : 'CollectionService.AddTag(${1:part}, "${2:Enemy}")';
           return {
             suggestions: [
               ...names.map((name) => ({
@@ -353,6 +377,33 @@ export default function CodeEditor({
                 detail: "Open a persistent server data store",
                 range,
               },
+              {
+                label: "ReplicatedStorage.Find",
+                kind: monaco.languages.CompletionItemKind.Method,
+                insertText: remoteFindText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: "Find a RemoteEvent or RemoteFunction",
+                range,
+              },
+              {
+                label: "SetAttribute",
+                kind: monaco.languages.CompletionItemKind.Method,
+                insertText: attributeText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: "Set custom object data",
+                range,
+              },
+              {
+                label: "CollectionService.AddTag",
+                kind: monaco.languages.CompletionItemKind.Method,
+                insertText: tagText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: "Tag an object for gameplay systems",
+                range,
+              },
             ],
           };
         },
@@ -364,9 +415,18 @@ export default function CodeEditor({
       completionSubscription.dispose();
       monaco.editor.setModelMarkers(model, "poly-script-analysis", []);
       editor.dispose();
+      modelRef.current = null;
       model.dispose();
     };
   }, [project.language, scriptId]);
+
+  useEffect(() => {
+    const model = modelRef.current;
+    if (!model || model.getValue() === script.source) return;
+    externalUpdate.current = true;
+    model.setValue(script.source);
+    externalUpdate.current = false;
+  }, [script.source]);
 
   return <div className="monaco-host" ref={container} />;
 }

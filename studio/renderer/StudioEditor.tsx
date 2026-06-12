@@ -1,10 +1,14 @@
 import { Canvas, useThree } from "@react-three/fiber";
 import {
   Box,
+  Boxes,
+  Cable,
   ChevronDown,
   ChevronRight,
   Code2,
+  Copy,
   Database,
+  Download,
   FileCode2,
   Folder,
   FolderOpen,
@@ -25,6 +29,8 @@ import {
   Trash2,
   Type,
   Undo2,
+  Ungroup,
+  Upload,
   UserRound,
 } from "lucide-react";
 import {
@@ -32,6 +38,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { Color } from "three";
@@ -46,11 +53,15 @@ import CodeEditor from "./CodeEditor";
 
 type Selection =
   | { type: "world"; id: string }
+  | { type: "model"; id: string }
+  | { type: "remote"; id: string }
   | { type: "gui"; id: string }
   | { type: "script"; id: string }
   | { type: "player"; id: "LocalPlayer" }
   | { type: "service"; id: string }
   | null;
+
+type StudioTool = "select" | "move" | "rotate" | "scale";
 
 const languageExtension: Record<StudioLanguage, string> = {
   luau: ".luau",
@@ -216,6 +227,12 @@ export default function StudioEditor({
       ? { type: "world", id: initialProject.objects[2].id }
       : null,
   );
+  const [selectedPartIds, setSelectedPartIds] = useState<string[]>(
+    initialProject.objects[2] ? [initialProject.objects[2].id] : [],
+  );
+  const [tool, setTool] = useState<StudioTool>("select");
+  const [gridSnap, setGridSnap] = useState(1);
+  const [angleSnap, setAngleSnap] = useState(15);
   const [workspace, setWorkspace] = useState<"scene" | "script" | "ui">("scene");
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -224,6 +241,8 @@ export default function StudioEditor({
   const [diagnostics, setDiagnostics] = useState<
     Record<string, PolyDiagnostic[]>
   >({});
+  const undoStack = useRef<StudioProject[]>([]);
+  const redoStack = useRef<StudioProject[]>([]);
 
   const selectedWorld =
     selection?.type === "world"
@@ -237,6 +256,19 @@ export default function StudioEditor({
     selection?.type === "script"
       ? project.scripts.find((script) => script.id === selection.id) ?? null
       : null;
+  const selectedModel =
+    selection?.type === "model"
+      ? project.models.find((model) => model.id === selection.id) ?? null
+      : null;
+  const selectedRemote =
+    selection?.type === "remote"
+      ? project.remotes.find((remote) => remote.id === selection.id) ?? null
+      : null;
+  const activeWorldIds = selectedModel
+    ? project.objects
+        .filter((object) => object.modelId === selectedModel.id)
+        .map((object) => object.id)
+    : selectedPartIds;
 
   const save = useCallback(async (): Promise<StudioProject | null> => {
     setSaving(true);
@@ -257,19 +289,75 @@ export default function StudioEditor({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const editing =
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.tagName === "SELECT" ||
+        target?.closest(".monaco-editor");
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
         event.preventDefault();
         void save();
+      } else if (
+        !editing &&
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "z"
+      ) {
+        event.preventDefault();
+        if (event.shiftKey) redo();
+        else undo();
+      } else if (
+        !editing &&
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "y"
+      ) {
+        event.preventDefault();
+        redo();
+      } else if (
+        !editing &&
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "d"
+      ) {
+        event.preventDefault();
+        duplicateSelected();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [save]);
+  });
 
   function updateProject(updater: (current: StudioProject) => StudioProject) {
-    setProject(updater);
+    setProject((current) => {
+      const next = updater(current);
+      if (next === current) return current;
+      undoStack.current = [...undoStack.current.slice(-99), structuredClone(current)];
+      redoStack.current = [];
+      return next;
+    });
     setDirty(true);
     setMessage("Unsaved changes");
+  }
+
+  function undo() {
+    const previous = undoStack.current.pop();
+    if (!previous) return;
+    redoStack.current.push(structuredClone(project));
+    setProject(previous);
+    setSelection(null);
+    setSelectedPartIds([]);
+    setDirty(true);
+    setMessage("Undid change");
+  }
+
+  function redo() {
+    const next = redoStack.current.pop();
+    if (!next) return;
+    undoStack.current.push(structuredClone(project));
+    setProject(next);
+    setSelection(null);
+    setSelectedPartIds([]);
+    setDirty(true);
+    setMessage("Redid change");
   }
 
   function addPart() {
@@ -290,13 +378,298 @@ export default function StudioEditor({
       material: "plastic",
       canCollide: true,
       castShadow: true,
+      modelId: null,
+      attributes: {},
+      tags: [],
     };
     updateProject((current) => ({
       ...current,
       objects: [...current.objects, next],
     }));
     setSelection({ type: "world", id: next.id });
+    setSelectedPartIds([next.id]);
     setWorkspace("scene");
+  }
+
+  function addRemote(kind: StudioRemote["kind"]) {
+    const next: StudioRemote = {
+      id: crypto.randomUUID(),
+      name: nextName(
+        project.remotes.map((remote) => remote.name),
+        kind === "remoteEvent" ? "RemoteEvent" : "RemoteFunction",
+      ),
+      kind,
+    };
+    updateProject((current) => ({
+      ...current,
+      remotes: [...current.remotes, next],
+    }));
+    setSelection({ type: "remote", id: next.id });
+    setSelectedPartIds([]);
+  }
+
+  function selectWorld(id: string, additive = false) {
+    const object = project.objects.find((item) => item.id === id);
+    if (!object) return;
+    if (object.modelId) {
+      setSelection({ type: "model", id: object.modelId });
+      setSelectedPartIds(
+        project.objects
+          .filter((item) => item.modelId === object.modelId)
+          .map((item) => item.id),
+      );
+      setWorkspace("scene");
+      return;
+    }
+    const ids = additive
+      ? selectedPartIds.includes(id)
+        ? selectedPartIds.filter((item) => item !== id)
+        : [...selectedPartIds, id]
+      : [id];
+    setSelectedPartIds(ids);
+    setSelection(ids.length > 0 ? { type: "world", id: ids[ids.length - 1] } : null);
+    setWorkspace("scene");
+  }
+
+  function selectModel(id: string) {
+    setSelection({ type: "model", id });
+    setSelectedPartIds(
+      project.objects.filter((object) => object.modelId === id).map((object) => object.id),
+    );
+    setWorkspace("scene");
+  }
+
+  function createModel() {
+    const partIds = activeWorldIds.filter((id) => {
+      const object = project.objects.find((item) => item.id === id);
+      return object?.type === "part";
+    });
+    if (partIds.length < 2) {
+      setMessage("Select at least two Parts to create a Model.");
+      return;
+    }
+    const model: StudioModel = {
+      id: crypto.randomUUID(),
+      name: nextName(project.models.map((item) => item.name), "Model"),
+      primaryPartId: partIds[0],
+      attributes: {},
+      tags: [],
+    };
+    updateProject((current) => {
+      const replacedModels = new Set(
+        current.objects
+          .filter((object) => partIds.includes(object.id) && object.modelId)
+          .map((object) => object.modelId!),
+      );
+      return {
+        ...current,
+        objects: current.objects.map((object) =>
+          partIds.includes(object.id) ? { ...object, modelId: model.id } : object,
+        ),
+        models: [
+          ...current.models.filter((item) => !replacedModels.has(item.id)),
+          model,
+        ],
+      };
+    });
+    setSelection({ type: "model", id: model.id });
+    setSelectedPartIds(partIds);
+    setMessage("Model created");
+  }
+
+  function ungroupModel() {
+    if (!selectedModel) return;
+    updateProject((current) => ({
+      ...current,
+      objects: current.objects.map((object) =>
+        object.modelId === selectedModel.id ? { ...object, modelId: null } : object,
+      ),
+      models: current.models.filter((model) => model.id !== selectedModel.id),
+    }));
+    setSelection(null);
+    setSelectedPartIds([]);
+    setMessage("Model ungrouped");
+  }
+
+  function duplicateSelected() {
+    const sourceIds = activeWorldIds;
+    if (sourceIds.length === 0) return;
+    const offset = Math.max(0.1, gridSnap);
+    const sourceObjects = project.objects.filter((object) => sourceIds.includes(object.id));
+    const nextModelId = selectedModel ? crypto.randomUUID() : null;
+    const idMap = new Map<string, string>();
+    const usedNames = project.objects.map((item) => item.name);
+    const copies = sourceObjects.map((object) => {
+      const id = crypto.randomUUID();
+      idMap.set(object.id, id);
+      const name = nextName(usedNames, object.name);
+      usedNames.push(name);
+      return {
+        ...structuredClone(object),
+        id,
+        name,
+        position: [object.position[0] + offset, ...object.position.slice(1)] as [
+          number,
+          number,
+          number,
+        ],
+        modelId: nextModelId,
+      };
+    });
+    const modelCopy: StudioModel | null =
+      selectedModel && nextModelId
+        ? {
+            ...structuredClone(selectedModel),
+            id: nextModelId,
+            name: nextName(project.models.map((item) => item.name), selectedModel.name),
+            primaryPartId: selectedModel.primaryPartId
+              ? idMap.get(selectedModel.primaryPartId) ?? copies[0]?.id ?? null
+              : copies[0]?.id ?? null,
+          }
+        : null;
+    updateProject((current) => ({
+      ...current,
+      objects: [...current.objects, ...copies],
+      models: modelCopy ? [...current.models, modelCopy] : current.models,
+    }));
+    setSelectedPartIds(copies.map((copy) => copy.id));
+    setSelection(
+      modelCopy
+        ? { type: "model", id: modelCopy.id }
+        : copies[0]
+          ? { type: "world", id: copies[0].id }
+          : null,
+    );
+    setMessage("Duplicated selection");
+  }
+
+  function transformSelection(
+    axis: 0 | 1 | 2,
+    direction: 1 | -1,
+  ) {
+    if (activeWorldIds.length === 0 || tool === "select") return;
+    const ids = new Set(activeWorldIds);
+    const selected = project.objects.filter((object) => ids.has(object.id));
+    const center = selected.reduce(
+      (value, object) => [
+        value[0] + object.position[0] / selected.length,
+        value[1] + object.position[1] / selected.length,
+        value[2] + object.position[2] / selected.length,
+      ],
+      [0, 0, 0],
+    );
+    const moveStep = Math.max(0.01, gridSnap) * direction;
+    const angle = (Math.max(1, angleSnap) * Math.PI * direction) / 180;
+    const scaleFactor = direction > 0 ? 1.1 : 0.9;
+    updateProject((current) => ({
+      ...current,
+      objects: current.objects.map((object) => {
+        if (!ids.has(object.id)) return object;
+        if (tool === "move") {
+          const position = [...object.position] as [number, number, number];
+          position[axis] =
+            Math.round((position[axis] + moveStep) / Math.max(0.01, gridSnap)) *
+            Math.max(0.01, gridSnap);
+          return { ...object, position };
+        }
+        if (tool === "rotate") {
+          const rotation = [...object.rotation] as [number, number, number];
+          rotation[axis] += angle;
+          const relative = [
+            object.position[0] - center[0],
+            object.position[1] - center[1],
+            object.position[2] - center[2],
+          ];
+          const position = [...object.position] as [number, number, number];
+          const first = axis === 0 ? 1 : 0;
+          const second = axis === 2 ? 1 : 2;
+          position[first] =
+            center[first] +
+            relative[first] * Math.cos(angle) -
+            relative[second] * Math.sin(angle);
+          position[second] =
+            center[second] +
+            relative[first] * Math.sin(angle) +
+            relative[second] * Math.cos(angle);
+          return { ...object, rotation, position };
+        }
+        const scale = [...object.scale] as [number, number, number];
+        scale[axis] = Math.max(0.1, scale[axis] * scaleFactor);
+        const position = [...object.position] as [number, number, number];
+        position[axis] = center[axis] + (position[axis] - center[axis]) * scaleFactor;
+        return { ...object, scale, position };
+      }),
+    }));
+  }
+
+  function snapSelection() {
+    if (activeWorldIds.length === 0) return;
+    const ids = new Set(activeWorldIds);
+    const positionStep = Math.max(0.01, gridSnap);
+    const rotationStep = (Math.max(1, angleSnap) * Math.PI) / 180;
+    updateProject((current) => ({
+      ...current,
+      objects: current.objects.map((object) =>
+        ids.has(object.id)
+          ? {
+              ...object,
+              position: object.position.map(
+                (value) => Math.round(value / positionStep) * positionStep,
+              ) as [number, number, number],
+              rotation: object.rotation.map(
+                (value) => Math.round(value / rotationStep) * rotationStep,
+              ) as [number, number, number],
+            }
+          : object,
+      ),
+    }));
+    setMessage("Selection snapped to grid");
+  }
+
+  async function exportSelectedModel() {
+    if (!selectedModel) return;
+    const parts = project.objects.filter((object) => object.modelId === selectedModel.id);
+    try {
+      const path = await window.polyStudio.exportModel({
+        model: selectedModel,
+        parts,
+      });
+      setMessage(path ? "PMXL model exported" : "Export canceled");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not export PMXL model.");
+    }
+  }
+
+  async function importModel() {
+    try {
+      const imported = await window.polyStudio.importModel();
+      if (!imported) {
+        setMessage("Import canceled");
+        return;
+      }
+      const existingNames = project.models.map((model) => model.name);
+      const model = {
+        ...imported.model,
+        name: nextName(existingNames, imported.model.name),
+      };
+      const objectNames = project.objects.map((object) => object.name);
+      const parts = imported.parts.map((part) => {
+        const name = nextName(objectNames, part.name);
+        objectNames.push(name);
+        return { ...part, name };
+      });
+      updateProject((current) => ({
+        ...current,
+        objects: [...current.objects, ...parts],
+        models: [...current.models, model],
+      }));
+      setSelection({ type: "model", id: model.id });
+      setSelectedPartIds(parts.map((part) => part.id));
+      setWorkspace("scene");
+      setMessage("PMXL model imported");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not import PMXL model.");
+    }
   }
 
   function addScript(kind: StudioScript["kind"]) {
@@ -361,11 +734,27 @@ export default function StudioEditor({
   }
 
   function removeSelected() {
-    if (selectedWorld) {
-      if (selectedWorld.type !== "part") return;
+    if (selectedModel) {
       updateProject((current) => ({
         ...current,
-        objects: current.objects.filter((item) => item.id !== selectedWorld.id),
+        objects: current.objects.filter(
+          (object) => object.modelId !== selectedModel.id,
+        ),
+        models: current.models.filter((model) => model.id !== selectedModel.id),
+      }));
+    } else if (selectedRemote) {
+      updateProject((current) => ({
+        ...current,
+        remotes: current.remotes.filter((remote) => remote.id !== selectedRemote.id),
+      }));
+    } else if (selectedWorld) {
+      if (selectedWorld.type !== "part") return;
+      const ids = new Set(activeWorldIds);
+      updateProject((current) => ({
+        ...current,
+        objects: current.objects.filter(
+          (item) => item.type !== "part" || !ids.has(item.id),
+        ),
       }));
     } else if (selectedScript) {
       updateProject((current) => ({
@@ -391,6 +780,7 @@ export default function StudioEditor({
       }));
     }
     setSelection(null);
+    setSelectedPartIds([]);
   }
 
   async function play() {
@@ -443,26 +833,55 @@ export default function StudioEditor({
 
       <div className="editor-toolbar">
         <div className="toolbar-group">
-          <button title="Select" className="active">
+          <button title="Select" className={tool === "select" ? "active" : ""} onClick={() => setTool("select")}>
             <MousePointer2 size={17} />
           </button>
-          <button title="Move"><Move3D size={17} /></button>
-          <button title="Rotate"><RotateCw size={17} /></button>
-          <button title="Scale"><Settings2 size={17} /></button>
+          <button title="Move" className={tool === "move" ? "active" : ""} onClick={() => setTool("move")}><Move3D size={17} /></button>
+          <button title="Rotate" className={tool === "rotate" ? "active" : ""} onClick={() => setTool("rotate")}><RotateCw size={17} /></button>
+          <button title="Scale" className={tool === "scale" ? "active" : ""} onClick={() => setTool("scale")}><Settings2 size={17} /></button>
         </div>
         <div className="toolbar-group">
-          <button title="Undo" disabled><Undo2 size={17} /></button>
-          <button title="Redo" disabled><Redo2 size={17} /></button>
+          <button title="Undo" disabled={undoStack.current.length === 0} onClick={undo}><Undo2 size={17} /></button>
+          <button title="Redo" disabled={redoStack.current.length === 0} onClick={redo}><Redo2 size={17} /></button>
+          <button title="Duplicate selection" disabled={activeWorldIds.length === 0} onClick={duplicateSelected}><Copy size={16} /></button>
+          <button title="Snap selection to grid" disabled={activeWorldIds.length === 0} onClick={snapSelection}><Grid3X3 size={16} /></button>
         </div>
         <div className="insert-group">
           <button onClick={addPart}><Plus size={14} /> Part</button>
+          <button onClick={createModel} disabled={activeWorldIds.length < 2}><Boxes size={14} /> Model</button>
+          <button onClick={() => void importModel()}><Upload size={14} /> PMXL</button>
           <button onClick={() => addScript("script")}><FileCode2 size={14} /> Script</button>
           <button onClick={() => addScript("localScript")}><Code2 size={14} /> LocalScript</button>
           <button onClick={() => addScript("moduleScript")}><Package size={14} /> Module</button>
+          <button onClick={() => addRemote("remoteEvent")}><Cable size={14} /> RemoteEvent</button>
+          <button onClick={() => addRemote("remoteFunction")}><Cable size={14} /> RemoteFunction</button>
           <button onClick={() => addGui("screenGui")}><Monitor size={14} /> ScreenGui</button>
           <button onClick={() => addGui("frame")}><Square size={14} /> Frame</button>
           <button onClick={() => addGui("textLabel")}><Type size={14} /> Text</button>
           <button onClick={() => addGui("textButton")}><LayoutPanelTop size={14} /> Button</button>
+        </div>
+        <div className="snap-controls">
+          <label title="Move and duplicate snap">
+            Grid
+            <input
+              type="number"
+              min="0.01"
+              step="0.25"
+              value={gridSnap}
+              onChange={(event) => setGridSnap(Math.max(0.01, Number(event.target.value) || 1))}
+            />
+          </label>
+          <label title="Rotation snap in degrees">
+            Angle
+            <input
+              type="number"
+              min="1"
+              max="180"
+              step="1"
+              value={angleSnap}
+              onChange={(event) => setAngleSnap(Math.max(1, Number(event.target.value) || 15))}
+            />
+          </label>
         </div>
         <div className="workspace-tabs">
           <button
@@ -502,8 +921,14 @@ export default function StudioEditor({
         <Explorer
           project={project}
           selection={selection}
+          selectedPartIds={selectedPartIds}
+          onSelectWorld={selectWorld}
+          onSelectModel={selectModel}
           onSelect={(next) => {
             setSelection(next);
+            if (next.type !== "world" && next.type !== "model") {
+              setSelectedPartIds([]);
+            }
             if (next.type === "script") setWorkspace("script");
             else if (next.type === "gui") setWorkspace("ui");
             else if (next.type !== "service") setWorkspace("scene");
@@ -538,12 +963,18 @@ export default function StudioEditor({
             <SceneViewport
               objects={project.objects}
               gui={project.gui}
-              selectedWorldId={selectedWorld?.id ?? null}
+              selectedWorldIds={activeWorldIds}
               selectedGuiId={selectedGui?.id ?? null}
               showGui={workspace === "ui"}
-              onSelectWorld={(id) =>
-                setSelection(id ? { type: "world", id } : null)
-              }
+              tool={tool}
+              onTransform={transformSelection}
+              onSelectWorld={(id, additive) => {
+                if (id) selectWorld(id, additive);
+                else {
+                  setSelection(null);
+                  setSelectedPartIds([]);
+                }
+              }}
               onSelectGui={(id) =>
                 setSelection(id ? { type: "gui", id } : null)
               }
@@ -556,10 +987,29 @@ export default function StudioEditor({
           selection={selection}
           onWorldChange={(patch) => {
             if (!selectedWorld) return;
+            const ids = new Set(activeWorldIds);
             updateProject((current) => ({
               ...current,
               objects: current.objects.map((item) =>
-                item.id === selectedWorld.id ? { ...item, ...patch } : item,
+                ids.has(item.id) ? { ...item, ...patch } : item,
+              ),
+            }));
+          }}
+          onModelChange={(patch) => {
+            if (!selectedModel) return;
+            updateProject((current) => ({
+              ...current,
+              models: current.models.map((model) =>
+                model.id === selectedModel.id ? { ...model, ...patch } : model,
+              ),
+            }));
+          }}
+          onRemoteChange={(patch) => {
+            if (!selectedRemote) return;
+            updateProject((current) => ({
+              ...current,
+              remotes: current.remotes.map((remote) =>
+                remote.id === selectedRemote.id ? { ...remote, ...patch } : remote,
               ),
             }));
           }}
@@ -588,6 +1038,8 @@ export default function StudioEditor({
             }))
           }
           onDelete={removeSelected}
+          onUngroup={ungroupModel}
+          onExportModel={() => void exportSelectedModel()}
         />
       </div>
 
@@ -605,16 +1057,23 @@ export default function StudioEditor({
 function Explorer({
   project,
   selection,
+  selectedPartIds,
+  onSelectWorld,
+  onSelectModel,
   onSelect,
 }: {
   project: StudioProject;
   selection: Selection;
+  selectedPartIds: string[];
+  onSelectWorld: (id: string, additive?: boolean) => void;
+  onSelectModel: (id: string) => void;
   onSelect: (selection: Exclude<Selection, null>) => void;
 }) {
   const scriptsAt = (parent: string) =>
     project.scripts.filter((script) => script.parent === parent);
   const guiRoots = project.gui.filter((gui) => gui.parentId === null);
   const stores = Object.keys(project.dataStores).sort();
+  const looseObjects = project.objects.filter((object) => !object.modelId);
 
   return (
     <aside className="explorer-panel">
@@ -626,13 +1085,23 @@ function Explorer({
           active={selection?.type === "service" && selection.id === "Workspace"}
           onSelect={() => onSelect({ type: "service", id: "Workspace" })}
         >
-          {project.objects.map((object) => (
+          {project.models.map((model) => (
+            <ModelTree
+              key={model.id}
+              model={model}
+              project={project}
+              active={selection?.type === "model" && selection.id === model.id}
+              onSelectModel={() => onSelectModel(model.id)}
+              onSelectWorld={onSelectWorld}
+            />
+          ))}
+          {looseObjects.map((object) => (
             <TreeItem
               key={object.id}
-              active={selection?.type === "world" && selection.id === object.id}
+              active={selectedPartIds.includes(object.id)}
               icon={object.type === "part" ? <Box size={14} /> : <Grid3X3 size={14} />}
               label={object.name}
-              onClick={() => onSelect({ type: "world", id: object.id })}
+              onClick={(event) => onSelectWorld(object.id, event.ctrlKey || event.metaKey)}
             />
           ))}
           {scriptsAt("Workspace").map((script) => (
@@ -671,6 +1140,15 @@ function Explorer({
               script={script}
               active={selection?.type === "script" && selection.id === script.id}
               onClick={() => onSelect({ type: "script", id: script.id })}
+            />
+          ))}
+          {project.remotes.map((remote) => (
+            <TreeItem
+              key={remote.id}
+              active={selection?.type === "remote" && selection.id === remote.id}
+              icon={<Cable size={14} />}
+              label={remote.name}
+              onClick={() => onSelect({ type: "remote", id: remote.id })}
             />
           ))}
         </TreeRoot>
@@ -812,7 +1290,7 @@ function TreeItem({
   icon: ReactNode;
   label: string;
   nested?: boolean;
-  onClick: () => void;
+  onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
 }) {
   return (
     <button
@@ -823,6 +1301,51 @@ function TreeItem({
       {icon}
       <span>{label}</span>
     </button>
+  );
+}
+
+function ModelTree({
+  model,
+  project,
+  active,
+  onSelectModel,
+  onSelectWorld,
+}: {
+  model: StudioModel;
+  project: StudioProject;
+  active: boolean;
+  onSelectModel: () => void;
+  onSelectWorld: (id: string, additive?: boolean) => void;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const parts = project.objects.filter((object) => object.modelId === model.id);
+  return (
+    <div className="model-tree">
+      <div className={active ? "tree-root active" : "tree-root"}>
+        <button
+          className="tree-expander"
+          onClick={() => setExpanded((current) => !current)}
+          title={expanded ? "Collapse Model" : "Expand Model"}
+        >
+          {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        </button>
+        <button className="tree-root-select" onClick={onSelectModel}>
+          <Boxes size={14} />
+          <strong>{model.name}</strong>
+        </button>
+      </div>
+      {expanded &&
+        parts.map((part) => (
+          <TreeItem
+            key={part.id}
+            active={active}
+            nested
+            icon={<Box size={13} />}
+            label={part.name}
+            onClick={() => onSelectWorld(part.id)}
+          />
+        ))}
+    </div>
   );
 }
 
@@ -928,20 +1451,37 @@ function CameraControls() {
 function SceneViewport({
   objects,
   gui,
-  selectedWorldId,
+  selectedWorldIds,
   selectedGuiId,
   showGui,
+  tool,
+  onTransform,
   onSelectWorld,
   onSelectGui,
 }: {
   objects: StudioObject[];
   gui: StudioGuiObject[];
-  selectedWorldId: string | null;
+  selectedWorldIds: string[];
   selectedGuiId: string | null;
   showGui: boolean;
-  onSelectWorld: (id: string | null) => void;
+  tool: StudioTool;
+  onTransform: (axis: 0 | 1 | 2, direction: 1 | -1) => void;
+  onSelectWorld: (id: string | null, additive?: boolean) => void;
   onSelectGui: (id: string | null) => void;
 }) {
+  const selectedObjects = objects.filter((object) =>
+    selectedWorldIds.includes(object.id),
+  );
+  const center = selectedObjects.length
+    ? selectedObjects.reduce<[number, number, number]>(
+        (value, object) => [
+          value[0] + object.position[0] / selectedObjects.length,
+          value[1] + object.position[1] / selectedObjects.length,
+          value[2] + object.position[2] / selectedObjects.length,
+        ] as [number, number, number],
+        [0, 0, 0],
+      )
+    : null;
   return (
     <div className="scene-viewport">
       <Canvas
@@ -964,7 +1504,10 @@ function SceneViewport({
             receiveShadow
             onClick={(event) => {
               event.stopPropagation();
-              onSelectWorld(object.id);
+              onSelectWorld(
+                object.id,
+                event.nativeEvent.ctrlKey || event.nativeEvent.metaKey,
+              );
             }}
           >
             <boxGeometry args={[1, 1, 1]} />
@@ -982,16 +1525,16 @@ function SceneViewport({
                       : 0.7
               }
               metalness={object.material === "metal" ? 0.82 : 0}
-              emissive={selectedWorldId === object.id ? "#2B174D" : "#000000"}
+              emissive={selectedWorldIds.includes(object.id) ? "#2B174D" : "#000000"}
               emissiveIntensity={
                 object.material === "neon"
                   ? 0.9
-                  : selectedWorldId === object.id
+                  : selectedWorldIds.includes(object.id)
                     ? 0.75
                     : 0
               }
             />
-            {selectedWorldId === object.id && (
+            {selectedWorldIds.includes(object.id) && (
               <mesh scale={1.012}>
                 <boxGeometry args={[1, 1, 1]} />
                 <meshBasicMaterial color="#B78CFF" wireframe />
@@ -999,6 +1542,13 @@ function SceneViewport({
             )}
           </mesh>
         ))}
+        {center && tool !== "select" && (
+          <TransformGizmo
+            position={center}
+            tool={tool}
+            onTransform={onTransform}
+          />
+        )}
         <CameraControls />
       </Canvas>
       {showGui && (
@@ -1011,6 +1561,60 @@ function SceneViewport({
       <div className="viewport-badge">{showGui ? "UI editor" : "Perspective"}</div>
       <div className="viewport-help">Right drag to orbit | Wheel to zoom</div>
     </div>
+  );
+}
+
+function TransformGizmo({
+  position,
+  tool,
+  onTransform,
+}: {
+  position: [number, number, number];
+  tool: Exclude<StudioTool, "select">;
+  onTransform: (axis: 0 | 1 | 2, direction: 1 | -1) => void;
+}) {
+  const axes = [
+    { axis: 0 as const, color: "#ef5a67", rotation: [0, 0, -Math.PI / 2] },
+    { axis: 1 as const, color: "#62c477", rotation: [0, 0, 0] },
+    { axis: 2 as const, color: "#5d8fff", rotation: [Math.PI / 2, 0, 0] },
+  ];
+  return (
+    <group position={position}>
+      {axes.map(({ axis, color, rotation }) => {
+        const positive = [0, 0, 0] as [number, number, number];
+        const negative = [0, 0, 0] as [number, number, number];
+        positive[axis] = 2;
+        negative[axis] = -2;
+        return (
+          <group key={axis}>
+            <mesh rotation={rotation as [number, number, number]}>
+              <cylinderGeometry args={[0.035, 0.035, 4, 10]} />
+              <meshBasicMaterial color={color} depthTest={false} />
+            </mesh>
+            {([
+              [positive, 1],
+              [negative, -1],
+            ] as const).map(([handlePosition, direction]) => (
+              <mesh
+                key={direction}
+                position={handlePosition}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onTransform(axis, direction);
+                }}
+              >
+                {tool === "rotate" ? (
+                  <torusGeometry args={[0.22, 0.07, 8, 20]} />
+                ) : (
+                  <boxGeometry args={[0.28, 0.28, 0.28]} />
+                )}
+                <meshBasicMaterial color={color} depthTest={false} />
+              </mesh>
+            ))}
+          </group>
+        );
+      })}
+    </group>
   );
 }
 
@@ -1113,18 +1717,26 @@ function Properties({
   project,
   selection,
   onWorldChange,
+  onModelChange,
+  onRemoteChange,
   onGuiChange,
   onScriptChange,
   onPlayerChange,
   onDelete,
+  onUngroup,
+  onExportModel,
 }: {
   project: StudioProject;
   selection: Selection;
   onWorldChange: (patch: Partial<StudioObject>) => void;
+  onModelChange: (patch: Partial<StudioModel>) => void;
+  onRemoteChange: (patch: Partial<StudioRemote>) => void;
   onGuiChange: (patch: Partial<StudioGuiObject>) => void;
   onScriptChange: (patch: Partial<StudioScript>) => void;
   onPlayerChange: (patch: Partial<StudioProject["playerSettings"]>) => void;
   onDelete: () => void;
+  onUngroup: () => void;
+  onExportModel: () => void;
 }) {
   const world =
     selection?.type === "world"
@@ -1137,6 +1749,14 @@ function Properties({
   const script =
     selection?.type === "script"
       ? project.scripts.find((item) => item.id === selection.id)
+      : null;
+  const model =
+    selection?.type === "model"
+      ? project.models.find((item) => item.id === selection.id)
+      : null;
+  const remote =
+    selection?.type === "remote"
+      ? project.remotes.find((item) => item.id === selection.id)
       : null;
 
   return (
@@ -1174,7 +1794,58 @@ function Properties({
             <ToggleField label="CastShadow" value={world.castShadow} onChange={(castShadow) => onWorldChange({ castShadow })} />
             <ToggleField label="Visible" value={world.visible !== false} onChange={(visible) => onWorldChange({ visible })} />
           </PropertySection>
+          <PropertySection title="Gameplay data">
+            <TagsField value={world.tags} onChange={(tags) => onWorldChange({ tags })} />
+            <JsonAttributesField
+              value={world.attributes}
+              onChange={(attributes) => onWorldChange({ attributes })}
+            />
+          </PropertySection>
           {world.type === "part" && <DeleteButton onClick={onDelete} />}
+        </div>
+      ) : model ? (
+        <div className="properties-content">
+          <NameField value={model.name} onChange={(name) => onModelChange({ name })} />
+          <PropertySection title="Model">
+            <ReadOnlyField
+              label="Parts"
+              value={String(project.objects.filter((object) => object.modelId === model.id).length)}
+            />
+            <SelectField
+              label="Primary Part"
+              value={model.primaryPartId ?? ""}
+              options={project.objects
+                .filter((object) => object.modelId === model.id)
+                .map((object) => ({ value: object.id, label: object.name }))}
+              onChange={(primaryPartId) => onModelChange({ primaryPartId })}
+            />
+          </PropertySection>
+          <PropertySection title="Gameplay data">
+            <TagsField value={model.tags} onChange={(tags) => onModelChange({ tags })} />
+            <JsonAttributesField
+              value={model.attributes}
+              onChange={(attributes) => onModelChange({ attributes })}
+            />
+          </PropertySection>
+          <button className="model-action" onClick={onExportModel}>
+            <Download size={15} /> Export .pmxl
+          </button>
+          <button className="model-action" onClick={onUngroup}>
+            <Ungroup size={15} /> Ungroup model
+          </button>
+          <DeleteButton onClick={onDelete} />
+        </div>
+      ) : remote ? (
+        <div className="properties-content">
+          <NameField value={remote.name} onChange={(name) => onRemoteChange({ name })} />
+          <PropertySection title="Networking">
+            <ReadOnlyField
+              label="Type"
+              value={remote.kind === "remoteEvent" ? "RemoteEvent" : "RemoteFunction"}
+            />
+            <ReadOnlyField label="Parent" value="ReplicatedStorage" />
+          </PropertySection>
+          <DeleteButton onClick={onDelete} />
         </div>
       ) : gui ? (
         <div className="properties-content">
@@ -1315,6 +1986,71 @@ function SelectField({
           </option>
         ))}
       </select>
+    </label>
+  );
+}
+
+function TagsField({
+  value,
+  onChange,
+}: {
+  value: string[];
+  onChange: (value: string[]) => void;
+}) {
+  return (
+    <TextField
+      label="Tags (comma separated)"
+      value={value.join(", ")}
+      onChange={(raw) =>
+        onChange(
+          [...new Set(raw.split(",").map((tag) => tag.trim()).filter(Boolean))],
+        )
+      }
+    />
+  );
+}
+
+function JsonAttributesField({
+  value,
+  onChange,
+}: {
+  value: Record<string, string | number | boolean | null>;
+  onChange: (value: Record<string, string | number | boolean | null>) => void;
+}) {
+  const [draft, setDraft] = useState(JSON.stringify(value, null, 2));
+  useEffect(() => {
+    setDraft(JSON.stringify(value, null, 2));
+  }, [value]);
+  return (
+    <label className="property-name attribute-field">
+      Attributes (JSON)
+      <textarea
+        value={draft}
+        spellCheck={false}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => {
+          try {
+            const parsed = JSON.parse(draft) as Record<string, unknown>;
+            if (
+              !parsed ||
+              Array.isArray(parsed) ||
+              typeof parsed !== "object" ||
+              Object.values(parsed).some(
+                (entry) =>
+                  entry !== null &&
+                  typeof entry !== "string" &&
+                  typeof entry !== "number" &&
+                  typeof entry !== "boolean",
+              )
+            ) {
+              throw new Error();
+            }
+            onChange(parsed as Record<string, string | number | boolean | null>);
+          } catch {
+            setDraft(JSON.stringify(value, null, 2));
+          }
+        }}
+      />
     </label>
   );
 }

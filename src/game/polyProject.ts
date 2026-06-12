@@ -19,6 +19,23 @@ export type PolyWorldObject = {
   material: "plastic" | "metal" | "wood" | "neon";
   canCollide: boolean;
   castShadow: boolean;
+  modelId: string | null;
+  attributes: Record<string, PolyStoredValue>;
+  tags: string[];
+};
+
+export type PolyModel = {
+  id: string;
+  name: string;
+  primaryPartId: string | null;
+  attributes: Record<string, PolyStoredValue>;
+  tags: string[];
+};
+
+export type PolyRemote = {
+  id: string;
+  name: string;
+  kind: "remoteEvent" | "remoteFunction";
 };
 
 export type PolyGuiObject = {
@@ -64,6 +81,8 @@ export type PolyProject = {
   createdAt: string;
   updatedAt: string;
   objects: PolyWorldObject[];
+  models: PolyModel[];
+  remotes: PolyRemote[];
   scripts: PolyScript[];
   gui: PolyGuiObject[];
   playerSettings: PolyPlayerSettings;
@@ -91,7 +110,8 @@ export type PolyRuntimeResult = {
 type Reference =
   | { kind: "world"; id: string }
   | { kind: "gui"; id: string }
-  | { kind: "player"; id: "LocalPlayer" };
+  | { kind: "player"; id: "LocalPlayer" }
+  | { kind: "remote"; id: string };
 
 const WORLD_PROPERTIES = new Set([
   "Name",
@@ -150,7 +170,17 @@ export function normalizePolyProject(project: PolyProject): PolyProject {
     material: object.material ?? "plastic",
     canCollide: object.canCollide ?? true,
     castShadow: object.castShadow ?? true,
+    modelId: object.modelId ?? null,
+    attributes: object.attributes ?? {},
+    tags: object.tags ?? [],
   }));
+  normalized.models = (normalized.models ?? []).map((model) => ({
+    ...model,
+    primaryPartId: model.primaryPartId ?? null,
+    attributes: model.attributes ?? {},
+    tags: model.tags ?? [],
+  }));
+  normalized.remotes ??= [];
   normalized.gui = normalized.gui.map((gui) => ({
     ...gui,
     rotation: gui.rotation ?? 0,
@@ -187,15 +217,19 @@ function lineDiagnostic(
 
 function referenceByName(
   project: PolyProject,
-  container: "Workspace" | "PlayerGui",
+  container: "Workspace" | "PlayerGui" | "ReplicatedStorage",
   name: string,
 ): Reference | null {
   if (container === "Workspace") {
     const object = project.objects.find((item) => item.name === name);
     return object ? { kind: "world", id: object.id } : null;
   }
-  const gui = project.gui.find((item) => item.name === name);
-  return gui ? { kind: "gui", id: gui.id } : null;
+  if (container === "PlayerGui") {
+    const gui = project.gui.find((item) => item.name === name);
+    return gui ? { kind: "gui", id: gui.id } : null;
+  }
+  const remote = project.remotes.find((item) => item.name === name);
+  return remote ? { kind: "remote", id: remote.id } : null;
 }
 
 function findReferenceDeclaration(
@@ -204,14 +238,18 @@ function findReferenceDeclaration(
 ): { variable: string; reference: Reference | null; requestedName: string } | null {
   const objectMatch =
     source.match(
-      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*(Workspace|workspace|PlayerGui)(?::FindFirstChild|\.Find)\(\s*["']([^"']+)["']\s*\)\s*;?/,
+      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*(Workspace|workspace|PlayerGui|ReplicatedStorage)(?::FindFirstChild|\.Find)\(\s*["']([^"']+)["']\s*\)\s*;?/,
     ) ??
     source.match(
-      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*(Workspace|workspace|PlayerGui)\.([A-Za-z_]\w*)\s*;?/,
+      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*(Workspace|workspace|PlayerGui|ReplicatedStorage)\.([A-Za-z_]\w*)\s*;?/,
     );
   if (objectMatch) {
     const container =
-      objectMatch[2].toLowerCase() === "workspace" ? "Workspace" : "PlayerGui";
+      objectMatch[2].toLowerCase() === "workspace"
+        ? "Workspace"
+        : objectMatch[2] === "PlayerGui"
+          ? "PlayerGui"
+          : "ReplicatedStorage";
     return {
       variable: objectMatch[1],
       reference: referenceByName(project, container, objectMatch[3]),
@@ -237,12 +275,16 @@ function findDirectReference(
   project: PolyProject,
 ): Reference | null {
   const direct = expression.match(
-    /^(Workspace|workspace|PlayerGui)\.([A-Za-z_]\w*)$/,
+    /^(Workspace|workspace|PlayerGui|ReplicatedStorage)\.([A-Za-z_]\w*)$/,
   );
   if (direct) {
     return referenceByName(
       project,
-      direct[1].toLowerCase() === "workspace" ? "Workspace" : "PlayerGui",
+      direct[1].toLowerCase() === "workspace"
+        ? "Workspace"
+        : direct[1] === "PlayerGui"
+          ? "PlayerGui"
+          : "ReplicatedStorage",
       direct[2],
     );
   }
@@ -365,7 +407,43 @@ function resolveRawValue(
 function propertySetFor(reference: Reference): Set<string> {
   if (reference.kind === "world") return WORLD_PROPERTIES;
   if (reference.kind === "gui") return GUI_PROPERTIES;
+  if (reference.kind === "remote") return new Set();
   return PLAYER_PROPERTIES;
+}
+
+function remoteCallError(
+  project: PolyProject,
+  reference: Reference,
+  method: string,
+  script: PolyScript,
+): string | null {
+  if (reference.kind !== "remote") return "This value is not a remote object.";
+  const remote = project.remotes.find((item) => item.id === reference.id);
+  if (!remote) return "The referenced remote no longer exists.";
+  const eventMethods = new Set(["FireServer", "FireClient", "FireAllClients"]);
+  const functionMethods = new Set(["InvokeServer", "InvokeClient"]);
+  if (remote.kind === "remoteEvent" && !eventMethods.has(method)) {
+    return `${remote.name} is a RemoteEvent and cannot use ${method}.`;
+  }
+  if (remote.kind === "remoteFunction" && !functionMethods.has(method)) {
+    return `${remote.name} is a RemoteFunction and cannot use ${method}.`;
+  }
+  if (
+    script.kind === "localScript" &&
+    !["FireServer", "InvokeServer"].includes(method)
+  ) {
+    return `${method} can only be called by a server Script.`;
+  }
+  if (
+    script.kind === "script" &&
+    !["FireClient", "FireAllClients", "InvokeClient"].includes(method)
+  ) {
+    return `${method} can only be called by a LocalScript.`;
+  }
+  if (script.kind === "moduleScript") {
+    return "ModuleScripts cannot call remotes until required by a running script.";
+  }
+  return null;
 }
 
 function assignProperty(
@@ -374,6 +452,9 @@ function assignProperty(
   property: string,
   rawValue: string,
 ): string | null {
+  if (reference.kind === "remote") {
+    return "Remote objects do not expose editable properties.";
+  }
   if (!propertySetFor(reference).has(property)) {
     return `${property} is not a supported property for this object.`;
   }
@@ -733,6 +814,68 @@ export function analyzePolyScript(
       return;
     }
 
+    const attributeGet = source.match(
+      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)(?::|\.)(?:GetAttribute)\(\s*["']([^"']+)["']\s*\)\s*;?/,
+    );
+    if (attributeGet) {
+      const reference = variables.get(attributeGet[2]);
+      if (!reference || reference.kind !== "world") {
+        diagnostics.push(
+          lineDiagnostic(line, source, `Unknown world object variable ${attributeGet[2]}.`),
+        );
+      } else {
+        const object = validationProject.objects.find(
+          (item) => item.id === reference.id,
+        );
+        values.set(attributeGet[1], object?.attributes[attributeGet[3]] ?? null);
+      }
+      return;
+    }
+
+    const attributeSet = source.match(
+      /^\s*([A-Za-z_]\w*)(?::|\.)(?:SetAttribute)\(\s*["']([^"']+)["']\s*,\s*(.+?)\s*\)\s*;?\s*$/,
+    );
+    if (attributeSet) {
+      const reference = variables.get(attributeSet[1]);
+      const value = parseStoredValue(
+        resolveRawValue(attributeSet[3], values, modules),
+      );
+      if (!reference || reference.kind !== "world") {
+        diagnostics.push(
+          lineDiagnostic(line, source, `Unknown world object variable ${attributeSet[1]}.`),
+        );
+      } else if (value === undefined) {
+        diagnostics.push(
+          lineDiagnostic(
+            line,
+            source,
+            "Attributes must be strings, numbers, booleans, or nil.",
+          ),
+        );
+      } else {
+        const object = validationProject.objects.find(
+          (item) => item.id === reference.id,
+        );
+        if (object) object.attributes[attributeSet[2]] = value;
+      }
+      return;
+    }
+
+    const tagCall = source.match(
+      /^\s*CollectionService(?::|\.|::)(AddTag|RemoveTag)\(\s*([A-Za-z_]\w*)\s*,\s*["']([^"']+)["']\s*\)\s*;?\s*$/,
+    );
+    if (tagCall) {
+      const reference = variables.get(tagCall[2]);
+      if (!reference || reference.kind !== "world") {
+        diagnostics.push(
+          lineDiagnostic(line, source, `Unknown world object variable ${tagCall[2]}.`),
+        );
+      } else if (tagCall[3].length > 64) {
+        diagnostics.push(lineDiagnostic(line, source, "Tags cannot exceed 64 characters."));
+      }
+      return;
+    }
+
     const declaration = findReferenceDeclaration(source, project);
     if (declaration) {
       if (!declaration.reference) {
@@ -758,6 +901,38 @@ export function analyzePolyScript(
             ),
           );
         }
+      }
+      return;
+    }
+
+    const remoteCall = source.match(
+      /^\s*([A-Za-z_]\w*)(?::|\.|::)(FireServer|FireClient|FireAllClients|InvokeServer|InvokeClient)\s*\(/,
+    );
+    if (remoteCall) {
+      const reference = variables.get(remoteCall[1]);
+      if (!reference) {
+        diagnostics.push(
+          lineDiagnostic(line, source, `Unknown remote variable ${remoteCall[1]}.`),
+        );
+      } else {
+        const error = remoteCallError(project, reference, remoteCall[2], script);
+        if (error) diagnostics.push(lineDiagnostic(line, source, error));
+      }
+      return;
+    }
+    const remoteInvoke = source.match(
+      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)(?::|\.|::)(InvokeServer|InvokeClient)\s*\(/,
+    );
+    if (remoteInvoke) {
+      const reference = variables.get(remoteInvoke[2]);
+      if (!reference) {
+        diagnostics.push(
+          lineDiagnostic(line, source, `Unknown remote variable ${remoteInvoke[2]}.`),
+        );
+      } else {
+        const error = remoteCallError(project, reference, remoteInvoke[3], script);
+        if (error) diagnostics.push(lineDiagnostic(line, source, error));
+        else values.set(remoteInvoke[1], null);
       }
       return;
     }
@@ -920,9 +1095,87 @@ function executeScript(
       }
       continue;
     }
+    const attributeGet = source.match(
+      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)(?::|\.)(?:GetAttribute)\(\s*["']([^"']+)["']\s*\)\s*;?/,
+    );
+    if (attributeGet) {
+      const reference = variables.get(attributeGet[2]);
+      if (reference?.kind === "world") {
+        const object = project.objects.find((item) => item.id === reference.id);
+        values.set(attributeGet[1], object?.attributes[attributeGet[3]] ?? null);
+      }
+      continue;
+    }
+    const attributeSet = source.match(
+      /^\s*([A-Za-z_]\w*)(?::|\.)(?:SetAttribute)\(\s*["']([^"']+)["']\s*,\s*(.+?)\s*\)\s*;?\s*$/,
+    );
+    if (attributeSet) {
+      const reference = variables.get(attributeSet[1]);
+      const value = parseStoredValue(
+        resolveRawValue(attributeSet[3], values, modules),
+      );
+      if (reference?.kind === "world" && value !== undefined) {
+        const object = project.objects.find((item) => item.id === reference.id);
+        if (object) object.attributes[attributeSet[2]] = value;
+      }
+      continue;
+    }
+    const tagCall = source.match(
+      /^\s*CollectionService(?::|\.|::)(AddTag|RemoveTag)\(\s*([A-Za-z_]\w*)\s*,\s*["']([^"']+)["']\s*\)\s*;?\s*$/,
+    );
+    if (tagCall) {
+      const reference = variables.get(tagCall[2]);
+      if (reference?.kind === "world") {
+        const object = project.objects.find((item) => item.id === reference.id);
+        if (object) {
+          object.tags =
+            tagCall[1] === "AddTag"
+              ? [...new Set([...object.tags, tagCall[3]])]
+              : object.tags.filter((tag) => tag !== tagCall[3]);
+        }
+      }
+      continue;
+    }
     const declaration = findReferenceDeclaration(source, project);
     if (declaration?.reference) {
       variables.set(declaration.variable, declaration.reference);
+      continue;
+    }
+    const remoteCall = source.match(
+      /^\s*([A-Za-z_]\w*)(?::|\.|::)(FireServer|FireClient|FireAllClients|InvokeServer|InvokeClient)\s*\((.*?)\)\s*;?\s*$/,
+    );
+    if (remoteCall) {
+      const reference = variables.get(remoteCall[1]);
+      if (reference?.kind === "remote") {
+        const remote = project.remotes.find((item) => item.id === reference.id);
+        const error = remoteCallError(project, reference, remoteCall[2], script);
+        if (remote && !error) {
+          output.push({
+            level: "info",
+            message: `${remote.name}.${remoteCall[2]}(${remoteCall[3]})`,
+            scriptName: script.name,
+          });
+        }
+      }
+      continue;
+    }
+    const remoteInvoke = source.match(
+      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)(?::|\.|::)(InvokeServer|InvokeClient)\s*\((.*?)\)\s*;?\s*$/,
+    );
+    if (remoteInvoke) {
+      const reference = variables.get(remoteInvoke[2]);
+      if (reference?.kind === "remote") {
+        const remote = project.remotes.find((item) => item.id === reference.id);
+        const error = remoteCallError(project, reference, remoteInvoke[3], script);
+        if (remote && !error) {
+          values.set(remoteInvoke[1], null);
+          output.push({
+            level: "info",
+            message: `${remote.name}.${remoteInvoke[3]}(${remoteInvoke[4]})`,
+            scriptName: script.name,
+          });
+        }
+      }
       continue;
     }
     const logged = outputCall(source);

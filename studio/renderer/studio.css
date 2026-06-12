@@ -424,6 +424,9 @@ button { color: inherit; }
   border-right: 1px solid var(--studio-line);
   padding-right: 8px;
 }
+.snap-controls { display: flex; flex: 0 0 auto; gap: 5px; border-right: 1px solid var(--studio-line); padding-right: 8px; }
+.snap-controls label { display: flex; align-items: center; gap: 4px; color: #777080; font-size: 8px; font-weight: 700; }
+.snap-controls input { width: 46px; border: 1px solid var(--studio-line); border-radius: 5px; outline: 0; background: #111117; color: #d9d3df; padding: 5px; font-size: 9px; }
 .editor-toolbar button {
   display: inline-flex;
   height: 31px;
@@ -545,6 +548,7 @@ button { color: inherit; }
 .properties-content { padding: 12px; }
 .property-name { display: grid; gap: 6px; color: var(--studio-muted); font-size: 10px; font-weight: 700; }
 .property-name input, .property-name select { border: 1px solid var(--studio-line); border-radius: 6px; background: #111117; color: #d9d3df; padding: 8px 9px; font-size: 11px; }
+.property-name textarea { min-height: 90px; resize: vertical; border: 1px solid var(--studio-line); border-radius: 6px; outline: 0; background: #111117; color: #cfc8d7; padding: 8px; font: 10px/1.45 Consolas, monospace; }
 .property-name select { width: 100%; }
 .property-name + .property-name { margin-top: 12px; }
 .property-name input[readonly] { color: #8d8696; }
@@ -562,6 +566,7 @@ button { color: inherit; }
 .toggle-field { display: flex; align-items: center; justify-content: space-between; margin-top: 13px; }
 .toggle-field input { accent-color: #7044ac; }
 .delete-object { display: flex; width: 100%; align-items: center; justify-content: center; gap: 7px; margin-top: 22px; border: 1px solid rgba(197,67,94,.2); border-radius: 7px; background: rgba(197,67,94,.06); color: #d98a9a; cursor: pointer; padding: 8px; font-size: 10px; font-weight: 700; }
+.model-action { display: flex; width: 100%; align-items: center; justify-content: center; gap: 7px; margin-top: 10px; border: 1px solid var(--studio-line); border-radius: 7px; background: rgba(255,255,255,.025); color: #b9b1c2; cursor: pointer; padding: 8px; font-size: 10px; font-weight: 700; }
 
 .script-workspace { display: grid; height: 100%; grid-template-rows: 35px minmax(0, 1fr) auto 24px; background: #09090d; }
 .script-tabbar { display: flex; align-items: flex-end; border-bottom: 1px solid var(--studio-line); background: #0d0d12; }

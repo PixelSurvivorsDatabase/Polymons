@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import {
   app,
   BrowserWindow,
+  dialog,
   ipcMain,
   safeStorage,
   shell,
@@ -57,6 +58,23 @@ type SceneObject = {
   material: "plastic" | "metal" | "wood" | "neon";
   canCollide: boolean;
   castShadow: boolean;
+  modelId: string | null;
+  attributes: Record<string, string | number | boolean | null>;
+  tags: string[];
+};
+
+type StudioModel = {
+  id: string;
+  name: string;
+  primaryPartId: string | null;
+  attributes: Record<string, string | number | boolean | null>;
+  tags: string[];
+};
+
+type StudioRemote = {
+  id: string;
+  name: string;
+  kind: "remoteEvent" | "remoteFunction";
 };
 
 type StudioScript = {
@@ -93,6 +111,8 @@ type StudioProject = {
   createdAt: string;
   updatedAt: string;
   objects: SceneObject[];
+  models: StudioModel[];
+  remotes: StudioRemote[];
   scripts: StudioScript[];
   gui: StudioGuiObject[];
   playerSettings: {
@@ -102,6 +122,18 @@ type StudioProject = {
     maxHealth: number;
   };
   dataStores: Record<string, Record<string, string | number | boolean | null>>;
+};
+
+type PmxlFile = {
+  format: "pmxl";
+  version: 1;
+  model: {
+    name: string;
+    primaryPartIndex: number | null;
+    attributes: Record<string, string | number | boolean | null>;
+    tags: string[];
+    parts: Array<Omit<SceneObject, "id" | "modelId">>;
+  };
 };
 
 type ProjectSummary = Pick<
@@ -323,7 +355,12 @@ function migrateLegacyProject(
       material: "plastic",
       canCollide: true,
       castShadow: true,
+      modelId: null,
+      attributes: {},
+      tags: [],
     })),
+    models: [],
+    remotes: [],
     scripts: [
       {
         id: randomUUID(),
@@ -354,7 +391,17 @@ function normalizeProject(project: StudioProject): StudioProject {
       material: object.material ?? "plastic",
       canCollide: object.canCollide ?? true,
       castShadow: object.castShadow ?? true,
+      modelId: object.modelId ?? null,
+      attributes: object.attributes ?? {},
+      tags: object.tags ?? [],
     })),
+    models: (project.models ?? []).map((model) => ({
+      ...model,
+      primaryPartId: model.primaryPartId ?? null,
+      attributes: model.attributes ?? {},
+      tags: model.tags ?? [],
+    })),
+    remotes: project.remotes ?? [],
     gui: project.gui.map((gui) => ({
       ...gui,
       rotation: gui.rotation ?? 0,
@@ -388,6 +435,9 @@ function starterObjects(): SceneObject[] {
       material: "plastic",
       canCollide: true,
       castShadow: true,
+      modelId: null,
+      attributes: {},
+      tags: [],
     },
     {
       id: randomUUID(),
@@ -403,6 +453,9 @@ function starterObjects(): SceneObject[] {
       material: "neon",
       canCollide: true,
       castShadow: true,
+      modelId: null,
+      attributes: {},
+      tags: [],
     },
     {
       id: randomUUID(),
@@ -418,6 +471,9 @@ function starterObjects(): SceneObject[] {
       material: "plastic",
       canCollide: true,
       castShadow: true,
+      modelId: null,
+      attributes: {},
+      tags: [],
     },
   ];
 }
@@ -481,6 +537,40 @@ async function refreshAuth(): Promise<StoredAuth | null> {
   }
 }
 
+function isStoredValue(value: unknown): boolean {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    (typeof value === "number" && Number.isFinite(value)) ||
+    typeof value === "boolean"
+  );
+}
+
+function validateAttributes(
+  attributes: Record<string, string | number | boolean | null>,
+): void {
+  if (!attributes || typeof attributes !== "object" || Array.isArray(attributes)) {
+    throw new Error("Invalid attributes.");
+  }
+  const entries = Object.entries(attributes);
+  if (entries.length > 100) throw new Error("Too many attributes.");
+  for (const [key, value] of entries) {
+    if (key.length < 1 || key.length > 64 || !isStoredValue(value)) {
+      throw new Error("Invalid attribute.");
+    }
+  }
+}
+
+function validateTags(tags: string[]): void {
+  if (
+    !Array.isArray(tags) ||
+    tags.length > 50 ||
+    tags.some((tag) => typeof tag !== "string" || tag.length < 1 || tag.length > 64)
+  ) {
+    throw new Error("Invalid tags.");
+  }
+}
+
 function validateProject(project: StudioProject): void {
   validateProjectId(project.id);
   if (
@@ -520,10 +610,65 @@ function validateProject(project: StudioProject): void {
       object.transparency > 1 ||
       !["plastic", "metal", "wood", "neon"].includes(object.material) ||
       typeof object.canCollide !== "boolean" ||
-      typeof object.castShadow !== "boolean"
+      typeof object.castShadow !== "boolean" ||
+      (object.modelId !== null && typeof object.modelId !== "string")
     ) {
       throw new Error("Invalid project object.");
     }
+    validateAttributes(object.attributes);
+    validateTags(object.tags);
+  }
+  if (!Array.isArray(project.models) || project.models.length > 1_000) {
+    throw new Error("Invalid project models.");
+  }
+  for (const model of project.models) {
+    if (
+      typeof model.id !== "string" ||
+      typeof model.name !== "string" ||
+      model.name.length < 1 ||
+      model.name.length > 100 ||
+      (model.primaryPartId !== null && typeof model.primaryPartId !== "string")
+    ) {
+      throw new Error("Invalid project model.");
+    }
+    validateAttributes(model.attributes);
+    validateTags(model.tags);
+  }
+  const modelIds = new Set(project.models.map((model) => model.id));
+  if (
+    project.objects.some(
+      (object) => object.modelId !== null && !modelIds.has(object.modelId),
+    )
+  ) {
+    throw new Error("A Part references a missing Model.");
+  }
+  for (const model of project.models) {
+    if (
+      model.primaryPartId &&
+      !project.objects.some(
+        (object) =>
+          object.id === model.primaryPartId && object.modelId === model.id,
+      )
+    ) {
+      throw new Error("A Model has an invalid Primary Part.");
+    }
+  }
+  if (!Array.isArray(project.remotes) || project.remotes.length > 1_000) {
+    throw new Error("Invalid project remotes.");
+  }
+  for (const remote of project.remotes) {
+    if (
+      typeof remote.id !== "string" ||
+      typeof remote.name !== "string" ||
+      remote.name.length < 1 ||
+      remote.name.length > 100 ||
+      !["remoteEvent", "remoteFunction"].includes(remote.kind)
+    ) {
+      throw new Error("Invalid project remote.");
+    }
+  }
+  if (new Set(project.remotes.map((remote) => remote.name)).size !== project.remotes.length) {
+    throw new Error("Remote names must be unique.");
   }
   if (!Array.isArray(project.scripts) || project.scripts.length > 1_000) {
     throw new Error("Invalid project scripts.");
@@ -653,6 +798,166 @@ async function writeProject(project: StudioProject): Promise<void> {
       await writeFile(path, script.source);
     }),
   ]);
+}
+
+function pmxlProject(
+  model: StudioModel,
+  parts: SceneObject[],
+): StudioProject {
+  return {
+    version: 2,
+    id: "00000000-0000-4000-8000-000000000000",
+    name: "PMXL validation",
+    language: "luau",
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+    objects: parts,
+    models: [model],
+    remotes: [],
+    scripts: [],
+    gui: [],
+    playerSettings: {
+      walkSpeed: 18,
+      jumpPower: 10.5,
+      cameraFieldOfView: 52,
+      maxHealth: 100,
+    },
+    dataStores: {},
+  };
+}
+
+async function exportPmxl(input: {
+  model: StudioModel;
+  parts: SceneObject[];
+}): Promise<string | null> {
+  requireAuth();
+  if (
+    !input ||
+    !input.model ||
+    !Array.isArray(input.parts) ||
+    input.parts.length < 1 ||
+    input.parts.length > 1_000 ||
+    input.parts.some(
+      (part) => part.type !== "part" || part.modelId !== input.model.id,
+    )
+  ) {
+    throw new Error("Select a valid Model containing Parts.");
+  }
+  validateProject(pmxlProject(input.model, input.parts));
+  const primaryPartIndex = input.model.primaryPartId
+    ? input.parts.findIndex((part) => part.id === input.model.primaryPartId)
+    : -1;
+  const pivot =
+    input.parts[primaryPartIndex >= 0 ? primaryPartIndex : 0]?.position ??
+    ([0, 0, 0] as [number, number, number]);
+  const file: PmxlFile = {
+    format: "pmxl",
+    version: 1,
+    model: {
+      name: input.model.name,
+      primaryPartIndex: primaryPartIndex >= 0 ? primaryPartIndex : null,
+      attributes: input.model.attributes,
+      tags: input.model.tags,
+      parts: input.parts.map((part) => ({
+        name: part.name,
+        type: part.type,
+        position: [
+          part.position[0] - pivot[0],
+          part.position[1] - pivot[1],
+          part.position[2] - pivot[2],
+        ],
+        rotation: part.rotation,
+        scale: part.scale,
+        color: part.color,
+        anchored: part.anchored,
+        visible: part.visible,
+        transparency: part.transparency,
+        material: part.material,
+        canCollide: part.canCollide,
+        castShadow: part.castShadow,
+        attributes: part.attributes,
+        tags: part.tags,
+      })),
+    },
+  };
+  const result = await dialog.showSaveDialog({
+    title: "Export Poly Model",
+    defaultPath: `${safeFileName(input.model.name)}.pmxl`,
+    filters: [{ name: "Poly Model", extensions: ["pmxl"] }],
+  });
+  if (result.canceled || !result.filePath) return null;
+  const path = result.filePath.toLowerCase().endsWith(".pmxl")
+    ? result.filePath
+    : `${result.filePath}.pmxl`;
+  await writeFile(path, JSON.stringify(file, null, 2));
+  return path;
+}
+
+async function importPmxl(): Promise<{
+  model: StudioModel;
+  parts: SceneObject[];
+} | null> {
+  requireAuth();
+  const result = await dialog.showOpenDialog({
+    title: "Import Poly Model",
+    properties: ["openFile"],
+    filters: [{ name: "Poly Model", extensions: ["pmxl"] }],
+  });
+  if (result.canceled || !result.filePaths[0]) return null;
+  const raw = JSON.parse(await readFile(result.filePaths[0], "utf8")) as Partial<PmxlFile>;
+  if (
+    raw.format !== "pmxl" ||
+    raw.version !== 1 ||
+    !raw.model ||
+    typeof raw.model.name !== "string" ||
+    !Array.isArray(raw.model.parts) ||
+    raw.model.parts.length < 1 ||
+    raw.model.parts.length > 1_000 ||
+    raw.model.parts.some((part) => part.type !== "part")
+  ) {
+    throw new Error("This is not a valid PMXL model.");
+  }
+  const modelId = randomUUID();
+  const parts = raw.model.parts.map((rawPart) => {
+    const part = rawPart as SceneObject;
+    return {
+      id: randomUUID(),
+      name: part.name,
+      type: part.type,
+      position: [
+        part.position[0],
+        part.position[1] + 2,
+        part.position[2],
+      ] as [number, number, number],
+      rotation: part.rotation,
+      scale: part.scale,
+      color: part.color,
+      anchored: part.anchored,
+      visible: part.visible,
+      transparency: part.transparency,
+      material: part.material,
+      canCollide: part.canCollide,
+      castShadow: part.castShadow,
+      modelId,
+      attributes: part.attributes,
+      tags: part.tags,
+    };
+  });
+  const primaryIndex = raw.model.primaryPartIndex;
+  const model: StudioModel = {
+    id: modelId,
+    name: raw.model.name,
+    primaryPartId:
+      typeof primaryIndex === "number" &&
+      Number.isInteger(primaryIndex) &&
+      parts[primaryIndex]
+        ? parts[primaryIndex].id
+        : parts[0].id,
+    attributes: raw.model.attributes ?? {},
+    tags: raw.model.tags ?? [],
+  };
+  validateProject(pmxlProject(model, parts));
+  return { model, parts };
 }
 
 async function listProjects(): Promise<ProjectSummary[]> {
@@ -786,6 +1091,8 @@ void app.whenReady().then(async () => {
         createdAt: now,
         updatedAt: now,
         objects: starterObjects(),
+        models: [],
+        remotes: [],
         scripts: starterScripts(input.language),
         gui: [],
         playerSettings: {
@@ -837,6 +1144,12 @@ void app.whenReady().then(async () => {
     }
     await shell.openExternal(launch.toString());
   });
+  ipcMain.handle(
+    "models:export",
+    (_event, input: { model: StudioModel; parts: SceneObject[] }) =>
+      exportPmxl(input),
+  );
+  ipcMain.handle("models:import", () => importPmxl());
 
   createWindow();
 });
