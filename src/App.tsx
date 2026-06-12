@@ -597,12 +597,10 @@ function GamePage() {
       <section className="detail-columns">
         <div className="detail-panel">
           <span className="eyebrow">About</span>
-          <h2>A simple world with room to move.</h2>
+          <h2>About {game.title}</h2>
           <p>
-            The current avatar has a head, torso, two arms, and two legs. Its
-            controller uses a capsule collider, acceleration, gravity,
-            grounded jumping, camera-relative movement, and physical crates
-            that can be pushed around.
+            {game.description ||
+              `${game.title} is a game created by ${game.creator}.`}
           </p>
         </div>
         <div className="detail-panel rules-panel">
