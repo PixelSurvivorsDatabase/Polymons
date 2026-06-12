@@ -41,8 +41,9 @@ import {
   useRef,
   useState,
 } from "react";
-import { Color } from "three";
+import { Color, Euler, Object3D, Vector3 } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { TransformControls as ThreeTransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import {
   analyzePolyScript,
   type PolyDiagnostic,
@@ -62,6 +63,17 @@ type Selection =
   | null;
 
 type StudioTool = "select" | "move" | "rotate" | "scale";
+type ContextTarget = Exclude<Selection, null>;
+type ContextMenuState = {
+  x: number;
+  y: number;
+  target: ContextTarget;
+};
+type ViewportTransform = {
+  position: [number, number, number];
+  rotation: [number, number, number];
+  scale: [number, number, number];
+};
 
 const languageExtension: Record<StudioLanguage, string> = {
   luau: ".luau",
@@ -220,8 +232,26 @@ function guiDefault(
 
 function scriptParentOptions(
   kind: StudioScript["kind"],
-  gui: StudioGuiObject[],
+  project: StudioProject,
+  currentScriptId?: string,
 ): Array<{ value: string; label: string }> {
+  const invalidScriptParents = new Set<string>();
+  if (currentScriptId) {
+    invalidScriptParents.add(currentScriptId);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const script of project.scripts) {
+        if (
+          invalidScriptParents.has(script.parent) &&
+          !invalidScriptParents.has(script.id)
+        ) {
+          invalidScriptParents.add(script.id);
+          changed = true;
+        }
+      }
+    }
+  }
   const services =
     kind === "script"
       ? ["ServerScriptService", "Workspace"]
@@ -236,9 +266,55 @@ function scriptParentOptions(
           ];
   return [
     ...services.map((service) => ({ value: service, label: service })),
-    ...gui
-      .filter((item) => item.type === "screenGui" || item.type === "frame")
-      .map((item) => ({ value: item.id, label: `StarterGui / ${item.name}` })),
+    ...(kind === "script"
+      ? [
+          ...project.models.map((model) => ({
+            value: model.id,
+            label: `Workspace / ${model.name}`,
+          })),
+          ...project.objects.map((object) => ({
+            value: object.id,
+            label: `Workspace / ${object.name}`,
+          })),
+        ]
+      : []),
+    ...(kind === "localScript"
+      ? project.objects
+          .filter((object) => {
+            let current: StudioObject | undefined = object;
+            while (current) {
+              if (current.type === "tool") return true;
+              current = current.parentId
+                ? project.objects.find((item) => item.id === current!.parentId)
+                : undefined;
+            }
+            return false;
+          })
+          .map((object) => ({
+            value: object.id,
+            label: `Workspace / ${object.name}`,
+          }))
+      : []),
+    ...(kind !== "script"
+      ? project.gui.map((item) => ({
+          value: item.id,
+          label: `StarterGui / ${item.name}`,
+        }))
+      : []),
+    ...(kind === "moduleScript"
+      ? [
+          ...project.scripts
+            .filter((script) => !invalidScriptParents.has(script.id))
+            .map((script) => ({
+              value: script.id,
+              label: `${script.name} / ModuleScript`,
+            })),
+          ...project.models.map((model) => ({
+            value: model.id,
+            label: `Workspace / ${model.name}`,
+          })),
+        ]
+      : []),
   ];
 }
 
@@ -261,6 +337,7 @@ export default function StudioEditor({
     initialProject.objects[2] ? [initialProject.objects[2].id] : [],
   );
   const [tool, setTool] = useState<StudioTool>("select");
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [gridSnap, setGridSnap] = useState(1);
   const [angleSnap, setAngleSnap] = useState(15);
   const [workspace, setWorkspace] = useState<"scene" | "script" | "ui">("scene");
@@ -274,6 +351,11 @@ export default function StudioEditor({
   >({});
   const undoStack = useRef<StudioProject[]>([]);
   const redoStack = useRef<StudioProject[]>([]);
+  const viewportTransform = useRef<{
+    project: StudioProject;
+    objects: StudioObject[];
+    center: [number, number, number];
+  } | null>(null);
 
   const selectedWorld =
     selection?.type === "world"
@@ -357,6 +439,22 @@ export default function StudioEditor({
     return () => window.removeEventListener("keydown", onKeyDown);
   });
 
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("blur", close);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("blur", close);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [contextMenu]);
+
   function updateProject(updater: (current: StudioProject) => StudioProject) {
     setProject((current) => {
       const next = updater(current);
@@ -391,7 +489,19 @@ export default function StudioEditor({
     setMessage("Redid change");
   }
 
-  function addPart(type: StudioObject["type"] = "part") {
+  function addPart(
+    type: StudioObject["type"] = "part",
+    target: ContextTarget = { type: "service", id: "Workspace" },
+  ) {
+    const parentObject =
+      target.type === "world"
+        ? project.objects.find((object) => object.id === target.id) ?? null
+        : null;
+    const parentModel =
+      target.type === "model"
+        ? project.models.find((model) => model.id === target.id) ?? null
+        : null;
+    const targetModelId = parentModel?.id ?? parentObject?.modelId ?? null;
     const baseName =
       type === "humanoidRootPart"
         ? "HumanoidRootPart"
@@ -407,7 +517,13 @@ export default function StudioEditor({
         baseName,
       ),
       type,
-      position: [0, 2, 0],
+      position: parentObject
+        ? [
+            parentObject.position[0],
+            parentObject.position[1] + Math.max(1, gridSnap),
+            parentObject.position[2],
+          ]
+        : [0, 2, 0],
       rotation: [0, 0, 0],
       scale:
         type === "handle"
@@ -422,7 +538,11 @@ export default function StudioEditor({
       material: "plastic",
       canCollide: true,
       castShadow: true,
-      modelId: null,
+      friction: 0.82,
+      restitution: 0.03,
+      mass: 1,
+      parentId: parentObject?.id ?? null,
+      modelId: targetModelId,
       attributes:
         type === "humanoidRootPart"
           ? { Health: 100, MaxHealth: 100 }
@@ -432,6 +552,13 @@ export default function StudioEditor({
     updateProject((current) => ({
       ...current,
       objects: [...current.objects, next],
+      models: targetModelId
+        ? current.models.map((model) =>
+            model.id === targetModelId && !model.primaryPartId
+              ? { ...model, primaryPartId: next.id }
+              : model,
+          )
+        : current.models,
     }));
     setSelection({ type: "world", id: next.id });
     setSelectedPartIds([next.id]);
@@ -453,6 +580,23 @@ export default function StudioEditor({
     }));
     setSelection({ type: "remote", id: next.id });
     setSelectedPartIds([]);
+  }
+
+  function addEmptyModel() {
+    const model: StudioModel = {
+      id: crypto.randomUUID(),
+      name: nextName(project.models.map((item) => item.name), "Model"),
+      primaryPartId: null,
+      attributes: {},
+      tags: [],
+    };
+    updateProject((current) => ({
+      ...current,
+      models: [...current.models, model],
+    }));
+    setSelection({ type: "model", id: model.id });
+    setSelectedPartIds([]);
+    setWorkspace("scene");
   }
 
   function selectWorld(id: string, additive = false) {
@@ -562,7 +706,12 @@ export default function StudioEditor({
         ],
         modelId: nextModelId,
       };
-    });
+    }).map((object) => ({
+      ...object,
+      parentId: object.parentId
+        ? idMap.get(object.parentId) ?? null
+        : null,
+    }));
     const modelCopy: StudioModel | null =
       selectedModel && nextModelId
         ? {
@@ -590,63 +739,96 @@ export default function StudioEditor({
     setMessage("Duplicated selection");
   }
 
-  function transformSelection(
-    axis: 0 | 1 | 2,
-    direction: 1 | -1,
-  ) {
+  function beginViewportTransform(center: [number, number, number]) {
     if (activeWorldIds.length === 0 || tool === "select") return;
     const ids = new Set(activeWorldIds);
-    const selected = project.objects.filter((object) => ids.has(object.id));
-    const center = selected.reduce(
-      (value, object) => [
-        value[0] + object.position[0] / selected.length,
-        value[1] + object.position[1] / selected.length,
-        value[2] + object.position[2] / selected.length,
-      ],
-      [0, 0, 0],
+    viewportTransform.current = {
+      project: structuredClone(project),
+      objects: structuredClone(
+        project.objects.filter((object) => ids.has(object.id)),
+      ),
+      center,
+    };
+  }
+
+  function updateViewportTransform(transform: ViewportTransform) {
+    const session = viewportTransform.current;
+    if (!session || tool === "select") return;
+    const originals = new Map(
+      session.objects.map((object) => [object.id, object]),
     );
-    const moveStep = Math.max(0.01, gridSnap) * direction;
-    const angle = (Math.max(1, angleSnap) * Math.PI * direction) / 180;
-    const scaleFactor = direction > 0 ? 1.1 : 0.9;
-    updateProject((current) => ({
+    const rotationDelta = new Euler(...transform.rotation);
+    setProject((current) => ({
       ...current,
       objects: current.objects.map((object) => {
-        if (!ids.has(object.id)) return object;
+        const original = originals.get(object.id);
+        if (!original) return object;
         if (tool === "move") {
-          const position = [...object.position] as [number, number, number];
-          position[axis] =
-            Math.round((position[axis] + moveStep) / Math.max(0.01, gridSnap)) *
-            Math.max(0.01, gridSnap);
-          return { ...object, position };
+          return {
+            ...object,
+            position: [
+              original.position[0] +
+                transform.position[0] -
+                session.center[0],
+              original.position[1] +
+                transform.position[1] -
+                session.center[1],
+              original.position[2] +
+                transform.position[2] -
+                session.center[2],
+            ],
+          };
         }
+        const relative = new Vector3(
+          original.position[0] - session.center[0],
+          original.position[1] - session.center[1],
+          original.position[2] - session.center[2],
+        );
         if (tool === "rotate") {
-          const rotation = [...object.rotation] as [number, number, number];
-          rotation[axis] += angle;
-          const relative = [
-            object.position[0] - center[0],
-            object.position[1] - center[1],
-            object.position[2] - center[2],
-          ];
-          const position = [...object.position] as [number, number, number];
-          const first = axis === 0 ? 1 : 0;
-          const second = axis === 2 ? 1 : 2;
-          position[first] =
-            center[first] +
-            relative[first] * Math.cos(angle) -
-            relative[second] * Math.sin(angle);
-          position[second] =
-            center[second] +
-            relative[first] * Math.sin(angle) +
-            relative[second] * Math.cos(angle);
-          return { ...object, rotation, position };
+          relative.applyEuler(rotationDelta);
+          return {
+            ...object,
+            position: [
+              session.center[0] + relative.x,
+              session.center[1] + relative.y,
+              session.center[2] + relative.z,
+            ],
+            rotation: [
+              original.rotation[0] + transform.rotation[0],
+              original.rotation[1] + transform.rotation[1],
+              original.rotation[2] + transform.rotation[2],
+            ],
+          };
         }
-        const scale = [...object.scale] as [number, number, number];
-        scale[axis] = Math.max(0.1, scale[axis] * scaleFactor);
-        const position = [...object.position] as [number, number, number];
-        position[axis] = center[axis] + (position[axis] - center[axis]) * scaleFactor;
-        return { ...object, scale, position };
+        return {
+          ...object,
+          position: [
+            session.center[0] + relative.x * transform.scale[0],
+            session.center[1] + relative.y * transform.scale[1],
+            session.center[2] + relative.z * transform.scale[2],
+          ],
+          scale: [
+            Math.max(0.1, original.scale[0] * transform.scale[0]),
+            Math.max(0.1, original.scale[1] * transform.scale[1]),
+            Math.max(0.1, original.scale[2] * transform.scale[2]),
+          ],
+        };
       }),
     }));
+    setDirty(true);
+    setMessage(`Using ${tool} tool`);
+  }
+
+  function finishViewportTransform() {
+    const session = viewportTransform.current;
+    if (!session) return;
+    undoStack.current = [
+      ...undoStack.current.slice(-99),
+      session.project,
+    ];
+    redoStack.current = [];
+    viewportTransform.current = null;
+    setMessage(`${tool[0].toUpperCase()}${tool.slice(1)} complete`);
   }
 
   function snapSelection() {
@@ -719,18 +901,14 @@ export default function StudioEditor({
     }
   }
 
-  function addScript(kind: StudioScript["kind"]) {
-    const options = scriptParentOptions(kind, project.gui);
-    const selectedParent =
-      selection?.type === "service"
-        ? selection.id
-        : selection?.type === "gui"
-          ? selection.id
-          : null;
-    const parent =
-      options.some((option) => option.value === selectedParent)
-        ? selectedParent!
-        : options[0].value;
+  function addScript(
+    kind: StudioScript["kind"],
+    target: ContextTarget = { type: "service", id: "ServerScriptService" },
+  ) {
+    const options = scriptParentOptions(kind, project);
+    const parent = options.some((option) => option.value === target.id)
+      ? target.id
+      : options[0].value;
     const next: StudioScript = {
       id: crypto.randomUUID(),
       name: nextName(
@@ -759,41 +937,193 @@ export default function StudioEditor({
     setWorkspace("script");
   }
 
-  function addGui(type: StudioGuiObject["type"]) {
+  function addGui(
+    type: StudioGuiObject["type"],
+    target: ContextTarget = { type: "service", id: "StarterGui" },
+  ) {
     let parentId: string | null = null;
-    let extra: StudioGuiObject[] = [];
     if (type !== "screenGui") {
-      if (
-        selectedGui &&
-        (selectedGui.type === "screenGui" || selectedGui.type === "frame")
-      ) {
-        parentId = selectedGui.id;
-      } else {
-        let screen = project.gui.find((item) => item.type === "screenGui");
-        if (!screen) {
-          screen = guiDefault("screenGui", null, project.gui);
-          extra = [screen];
-        }
-        parentId = screen.id;
-      }
+      parentId = target.type === "gui" ? target.id : null;
+      if (!parentId) return;
     }
-    const next = guiDefault(type, parentId, [...project.gui, ...extra]);
+    const next = guiDefault(type, parentId, project.gui);
     updateProject((current) => ({
       ...current,
-      gui: [...current.gui, ...extra, next],
+      gui: [...current.gui, next],
     }));
     setSelection({ type: "gui", id: next.id });
     setWorkspace("ui");
   }
 
+  function openContextMenu(
+    target: ContextTarget,
+    event: React.MouseEvent<HTMLElement>,
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (
+      target.type === "world" &&
+      !selectedPartIds.includes(target.id)
+    ) {
+      selectWorld(target.id);
+    }
+    else if (target.type === "model") selectModel(target.id);
+    else {
+      setSelection(target);
+      if (target.type !== "script" && target.type !== "gui") {
+        setSelectedPartIds([]);
+      }
+    }
+    setContextMenu({
+      x: Math.min(event.clientX, window.innerWidth - 230),
+      y: Math.min(event.clientY, window.innerHeight - 330),
+      target,
+    });
+  }
+
+  function contextActions(target: ContextTarget) {
+    const actions: Array<{
+      label: string;
+      icon: ReactNode;
+      run: () => void;
+    }> = [];
+    const addWorldActions = () => {
+      actions.push(
+        { label: "Part", icon: <Box size={14} />, run: () => addPart("part", target) },
+        { label: "Tool", icon: <Package size={14} />, run: () => addPart("tool", target) },
+        { label: "Handle", icon: <Move3D size={14} />, run: () => addPart("handle", target) },
+        {
+          label: "HumanoidRootPart",
+          icon: <UserRound size={14} />,
+          run: () => addPart("humanoidRootPart", target),
+        },
+      );
+    };
+    const addGuiChildren = () => {
+      actions.push(
+        { label: "Frame", icon: <Square size={14} />, run: () => addGui("frame", target) },
+        { label: "TextLabel", icon: <Type size={14} />, run: () => addGui("textLabel", target) },
+        {
+          label: "TextButton",
+          icon: <LayoutPanelTop size={14} />,
+          run: () => addGui("textButton", target),
+        },
+      );
+    };
+
+    if (target.type === "service") {
+      if (target.id === "Workspace") {
+        addWorldActions();
+        actions.push(
+          { label: "Model", icon: <Boxes size={14} />, run: addEmptyModel },
+          { label: "Import .pmxl", icon: <Upload size={14} />, run: () => void importModel() },
+          { label: "Script", icon: <FileCode2 size={14} />, run: () => addScript("script", target) },
+        );
+      } else if (target.id === "ServerScriptService") {
+        actions.push(
+          { label: "Script", icon: <FileCode2 size={14} />, run: () => addScript("script", target) },
+          { label: "ModuleScript", icon: <Package size={14} />, run: () => addScript("moduleScript", target) },
+        );
+      } else if (target.id === "ReplicatedStorage") {
+        actions.push(
+          { label: "ModuleScript", icon: <Package size={14} />, run: () => addScript("moduleScript", target) },
+          { label: "RemoteEvent", icon: <Cable size={14} />, run: () => addRemote("remoteEvent") },
+          { label: "RemoteFunction", icon: <Cable size={14} />, run: () => addRemote("remoteFunction") },
+        );
+      } else if (target.id === "ServerStorage") {
+        actions.push({
+          label: "ModuleScript",
+          icon: <Package size={14} />,
+          run: () => addScript("moduleScript", target),
+        });
+      } else if (target.id === "StarterPlayerScripts") {
+        actions.push(
+          { label: "LocalScript", icon: <Code2 size={14} />, run: () => addScript("localScript", target) },
+          { label: "ModuleScript", icon: <Package size={14} />, run: () => addScript("moduleScript", target) },
+        );
+      } else if (target.id === "StarterGui") {
+        actions.push(
+          { label: "ScreenGui", icon: <Monitor size={14} />, run: () => addGui("screenGui", target) },
+          { label: "LocalScript", icon: <Code2 size={14} />, run: () => addScript("localScript", target) },
+          { label: "ModuleScript", icon: <Package size={14} />, run: () => addScript("moduleScript", target) },
+        );
+      }
+    } else if (target.type === "model") {
+      addWorldActions();
+      actions.push(
+        { label: "Script", icon: <FileCode2 size={14} />, run: () => addScript("script", target) },
+        { label: "ModuleScript", icon: <Package size={14} />, run: () => addScript("moduleScript", target) },
+      );
+    } else if (target.type === "world") {
+      const object = project.objects.find((item) => item.id === target.id);
+      let toolAncestor = object;
+      while (toolAncestor && toolAncestor.type !== "tool") {
+        toolAncestor = toolAncestor.parentId
+          ? project.objects.find(
+              (item) => item.id === toolAncestor!.parentId,
+            )
+          : undefined;
+      }
+      if (object?.type === "tool") {
+        actions.push(
+          { label: "Handle", icon: <Move3D size={14} />, run: () => addPart("handle", target) },
+          { label: "Script", icon: <FileCode2 size={14} />, run: () => addScript("script", target) },
+          { label: "LocalScript", icon: <Code2 size={14} />, run: () => addScript("localScript", target) },
+        );
+      } else {
+        actions.push({
+          label: "Script",
+          icon: <FileCode2 size={14} />,
+          run: () => addScript("script", target),
+        });
+        if (toolAncestor) {
+          actions.push({
+            label: "LocalScript",
+            icon: <Code2 size={14} />,
+            run: () => addScript("localScript", target),
+          });
+        }
+      }
+      if (activeWorldIds.length >= 2) {
+        actions.push({
+          label: "Group selection into Model",
+          icon: <Boxes size={14} />,
+          run: createModel,
+        });
+      }
+    } else if (target.type === "gui") {
+      addGuiChildren();
+      actions.push(
+        { label: "LocalScript", icon: <Code2 size={14} />, run: () => addScript("localScript", target) },
+        { label: "ModuleScript", icon: <Package size={14} />, run: () => addScript("moduleScript", target) },
+      );
+    } else if (target.type === "script") {
+      actions.push({
+        label: "ModuleScript",
+        icon: <Package size={14} />,
+        run: () => addScript("moduleScript", target),
+      });
+    }
+    return actions;
+  }
+
   function removeSelected() {
     if (selectedModel) {
+      const objectIds = new Set(
+        project.objects
+          .filter((object) => object.modelId === selectedModel.id)
+          .map((object) => object.id),
+      );
       updateProject((current) => ({
         ...current,
         objects: current.objects.filter(
           (object) => object.modelId !== selectedModel.id,
         ),
         models: current.models.filter((model) => model.id !== selectedModel.id),
+        scripts: current.scripts.filter(
+          (script) =>
+            script.parent !== selectedModel.id && !objectIds.has(script.parent),
+        ),
       }));
     } else if (selectedRemote) {
       updateProject((current) => ({
@@ -803,16 +1133,42 @@ export default function StudioEditor({
     } else if (selectedWorld) {
       if (["baseplate", "spawn"].includes(selectedWorld.type)) return;
       const ids = new Set(activeWorldIds);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const object of project.objects) {
+          if (
+            object.parentId &&
+            ids.has(object.parentId) &&
+            !ids.has(object.id)
+          ) {
+            ids.add(object.id);
+            changed = true;
+          }
+        }
+      }
       updateProject((current) => ({
         ...current,
         objects: current.objects.filter(
           (item) => ["baseplate", "spawn"].includes(item.type) || !ids.has(item.id),
         ),
+        scripts: current.scripts.filter((script) => !ids.has(script.parent)),
       }));
     } else if (selectedScript) {
+      const ids = new Set([selectedScript.id]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const script of project.scripts) {
+          if (ids.has(script.parent) && !ids.has(script.id)) {
+            ids.add(script.id);
+            changed = true;
+          }
+        }
+      }
       updateProject((current) => ({
         ...current,
-        scripts: current.scripts.filter((item) => item.id !== selectedScript.id),
+        scripts: current.scripts.filter((item) => !ids.has(item.id)),
       }));
     } else if (selectedGui) {
       const ids = new Set([selectedGui.id]);
@@ -932,22 +1288,9 @@ export default function StudioEditor({
           <button title="Duplicate selection" disabled={activeWorldIds.length === 0} onClick={duplicateSelected}><Copy size={16} /></button>
           <button title="Snap selection to grid" disabled={activeWorldIds.length === 0} onClick={snapSelection}><Grid3X3 size={16} /></button>
         </div>
-        <div className="insert-group">
-          <button onClick={() => addPart()}><Plus size={14} /> Part</button>
-          <button onClick={() => addPart("tool")}><Package size={14} /> Tool</button>
-          <button onClick={() => addPart("handle")}><Move3D size={14} /> Handle</button>
-          <button onClick={() => addPart("humanoidRootPart")}><UserRound size={14} /> HumanoidRoot</button>
-          <button onClick={createModel} disabled={activeWorldIds.length < 2}><Boxes size={14} /> Model</button>
-          <button onClick={() => void importModel()}><Upload size={14} /> PMXL</button>
-          <button onClick={() => addScript("script")}><FileCode2 size={14} /> Script</button>
-          <button onClick={() => addScript("localScript")}><Code2 size={14} /> LocalScript</button>
-          <button onClick={() => addScript("moduleScript")}><Package size={14} /> Module</button>
-          <button onClick={() => addRemote("remoteEvent")}><Cable size={14} /> RemoteEvent</button>
-          <button onClick={() => addRemote("remoteFunction")}><Cable size={14} /> RemoteFunction</button>
-          <button onClick={() => addGui("screenGui")}><Monitor size={14} /> ScreenGui</button>
-          <button onClick={() => addGui("frame")}><Square size={14} /> Frame</button>
-          <button onClick={() => addGui("textLabel")}><Type size={14} /> Text</button>
-          <button onClick={() => addGui("textButton")}><LayoutPanelTop size={14} /> Button</button>
+        <div className="insert-hint">
+          <Plus size={13} />
+          Right-click Explorer items to insert
         </div>
         <div className="snap-controls">
           <label title="Move and duplicate snap">
@@ -1030,6 +1373,7 @@ export default function StudioEditor({
             else if (next.type === "gui") setWorkspace("ui");
             else if (next.type !== "service") setWorkspace("scene");
           }}
+          onContextMenu={openContextMenu}
         />
 
         <section className="editor-center">
@@ -1064,7 +1408,11 @@ export default function StudioEditor({
               selectedGuiId={selectedGui?.id ?? null}
               showGui={workspace === "ui"}
               tool={tool}
-              onTransform={transformSelection}
+              gridSnap={gridSnap}
+              angleSnap={angleSnap}
+              onTransformStart={beginViewportTransform}
+              onTransformChange={updateViewportTransform}
+              onTransformEnd={finishViewportTransform}
               onSelectWorld={(id, additive) => {
                 if (id) selectWorld(id, additive);
                 else {
@@ -1140,6 +1488,56 @@ export default function StudioEditor({
         />
       </div>
 
+      {contextMenu && (
+        <div
+          className="insert-context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <header>
+            <strong>Insert object</strong>
+            <span>
+              {contextMenu.target.type === "service"
+                ? contextMenu.target.id
+                : contextMenu.target.type === "world"
+                  ? project.objects.find(
+                      (item) => item.id === contextMenu.target.id,
+                    )?.name
+                  : contextMenu.target.type === "model"
+                    ? project.models.find(
+                        (item) => item.id === contextMenu.target.id,
+                      )?.name
+                    : contextMenu.target.type === "gui"
+                      ? project.gui.find(
+                          (item) => item.id === contextMenu.target.id,
+                        )?.name
+                      : contextMenu.target.type === "script"
+                        ? project.scripts.find(
+                            (item) => item.id === contextMenu.target.id,
+                          )?.name
+                        : contextMenu.target.type}
+            </span>
+          </header>
+          {contextActions(contextMenu.target).length > 0 ? (
+            contextActions(contextMenu.target).map((action) => (
+              <button
+                key={action.label}
+                onClick={() => {
+                  action.run();
+                  setContextMenu(null);
+                }}
+              >
+                {action.icon}
+                {action.label}
+              </button>
+            ))
+          ) : (
+            <p>Nothing can be inserted here.</p>
+          )}
+        </div>
+      )}
+
       <footer className="editor-statusbar">
         <span>{message}</span>
         <span>{languageName[project.language]}</span>
@@ -1158,6 +1556,7 @@ function Explorer({
   onSelectWorld,
   onSelectModel,
   onSelect,
+  onContextMenu,
 }: {
   project: StudioProject;
   selection: Selection;
@@ -1165,12 +1564,18 @@ function Explorer({
   onSelectWorld: (id: string, additive?: boolean) => void;
   onSelectModel: (id: string) => void;
   onSelect: (selection: Exclude<Selection, null>) => void;
+  onContextMenu: (
+    target: ContextTarget,
+    event: React.MouseEvent<HTMLElement>,
+  ) => void;
 }) {
   const scriptsAt = (parent: string) =>
     project.scripts.filter((script) => script.parent === parent);
   const guiRoots = project.gui.filter((gui) => gui.parentId === null);
   const stores = Object.keys(project.dataStores).sort();
-  const looseObjects = project.objects.filter((object) => !object.modelId);
+  const looseObjects = project.objects.filter(
+    (object) => !object.modelId && !object.parentId,
+  );
 
   return (
     <aside className="explorer-panel">
@@ -1181,40 +1586,44 @@ function Explorer({
           label="Workspace"
           active={selection?.type === "service" && selection.id === "Workspace"}
           onSelect={() => onSelect({ type: "service", id: "Workspace" })}
+          onContextMenu={(event) =>
+            onContextMenu({ type: "service", id: "Workspace" }, event)
+          }
         >
           {project.models.map((model) => (
             <ModelTree
               key={model.id}
               model={model}
               project={project}
+              selection={selection}
+              selectedPartIds={selectedPartIds}
               active={selection?.type === "model" && selection.id === model.id}
               onSelectModel={() => onSelectModel(model.id)}
               onSelectWorld={onSelectWorld}
+              onSelect={onSelect}
+              onContextMenu={onContextMenu}
             />
           ))}
           {looseObjects.map((object) => (
-            <TreeItem
+            <WorldTree
               key={object.id}
-              active={selectedPartIds.includes(object.id)}
-              icon={
-                object.type === "tool"
-                  ? <Package size={14} />
-                  : object.type === "humanoidRootPart"
-                    ? <UserRound size={14} />
-                    : object.type === "part" || object.type === "handle"
-                      ? <Box size={14} />
-                      : <Grid3X3 size={14} />
-              }
-              label={object.name}
-              onClick={(event) => onSelectWorld(object.id, event.ctrlKey || event.metaKey)}
+              object={object}
+              project={project}
+              selection={selection}
+              selectedPartIds={selectedPartIds}
+              onSelectWorld={onSelectWorld}
+              onSelect={onSelect}
+              onContextMenu={onContextMenu}
             />
           ))}
           {scriptsAt("Workspace").map((script) => (
-            <ScriptTreeItem
+            <ScriptTree
               key={script.id}
               script={script}
-              active={selection?.type === "script" && selection.id === script.id}
-              onClick={() => onSelect({ type: "script", id: script.id })}
+              project={project}
+              selection={selection}
+              onSelect={onSelect}
+              onContextMenu={onContextMenu}
             />
           ))}
         </TreeRoot>
@@ -1223,13 +1632,21 @@ function Explorer({
           label="ServerScriptService"
           active={selection?.type === "service" && selection.id === "ServerScriptService"}
           onSelect={() => onSelect({ type: "service", id: "ServerScriptService" })}
+          onContextMenu={(event) =>
+            onContextMenu(
+              { type: "service", id: "ServerScriptService" },
+              event,
+            )
+          }
         >
           {scriptsAt("ServerScriptService").map((script) => (
-            <ScriptTreeItem
+            <ScriptTree
               key={script.id}
               script={script}
-              active={selection?.type === "script" && selection.id === script.id}
-              onClick={() => onSelect({ type: "script", id: script.id })}
+              project={project}
+              selection={selection}
+              onSelect={onSelect}
+              onContextMenu={onContextMenu}
             />
           ))}
         </TreeRoot>
@@ -1238,13 +1655,18 @@ function Explorer({
           label="ReplicatedStorage"
           active={selection?.type === "service" && selection.id === "ReplicatedStorage"}
           onSelect={() => onSelect({ type: "service", id: "ReplicatedStorage" })}
+          onContextMenu={(event) =>
+            onContextMenu({ type: "service", id: "ReplicatedStorage" }, event)
+          }
         >
           {scriptsAt("ReplicatedStorage").map((script) => (
-            <ScriptTreeItem
+            <ScriptTree
               key={script.id}
               script={script}
-              active={selection?.type === "script" && selection.id === script.id}
-              onClick={() => onSelect({ type: "script", id: script.id })}
+              project={project}
+              selection={selection}
+              onSelect={onSelect}
+              onContextMenu={onContextMenu}
             />
           ))}
           {project.remotes.map((remote) => (
@@ -1254,6 +1676,9 @@ function Explorer({
               icon={<Cable size={14} />}
               label={remote.name}
               onClick={() => onSelect({ type: "remote", id: remote.id })}
+              onContextMenu={(event) =>
+                onContextMenu({ type: "remote", id: remote.id }, event)
+              }
             />
           ))}
         </TreeRoot>
@@ -1262,13 +1687,18 @@ function Explorer({
           label="ServerStorage"
           active={selection?.type === "service" && selection.id === "ServerStorage"}
           onSelect={() => onSelect({ type: "service", id: "ServerStorage" })}
+          onContextMenu={(event) =>
+            onContextMenu({ type: "service", id: "ServerStorage" }, event)
+          }
         >
           {scriptsAt("ServerStorage").map((script) => (
-            <ScriptTreeItem
+            <ScriptTree
               key={script.id}
               script={script}
-              active={selection?.type === "script" && selection.id === script.id}
-              onClick={() => onSelect({ type: "script", id: script.id })}
+              project={project}
+              selection={selection}
+              onSelect={onSelect}
+              onContextMenu={onContextMenu}
             />
           ))}
         </TreeRoot>
@@ -1277,12 +1707,18 @@ function Explorer({
           label="Players"
           active={selection?.type === "service" && selection.id === "Players"}
           onSelect={() => onSelect({ type: "service", id: "Players" })}
+          onContextMenu={(event) =>
+            onContextMenu({ type: "service", id: "Players" }, event)
+          }
         >
           <TreeItem
             active={selection?.type === "player"}
             icon={<UserRound size={14} />}
             label="LocalPlayer"
             onClick={() => onSelect({ type: "player", id: "LocalPlayer" })}
+            onContextMenu={(event) =>
+              onContextMenu({ type: "player", id: "LocalPlayer" }, event)
+            }
           />
         </TreeRoot>
         <TreeRoot
@@ -1290,18 +1726,26 @@ function Explorer({
           label="StarterPlayer"
           active={selection?.type === "service" && selection.id === "StarterPlayerScripts"}
           onSelect={() => onSelect({ type: "service", id: "StarterPlayerScripts" })}
+          onContextMenu={(event) =>
+            onContextMenu(
+              { type: "service", id: "StarterPlayerScripts" },
+              event,
+            )
+          }
         >
           <div className="tree-nested-root">
             <Folder size={13} />
             <strong>StarterPlayerScripts</strong>
           </div>
           {scriptsAt("StarterPlayerScripts").map((script) => (
-            <ScriptTreeItem
+            <ScriptTree
               key={script.id}
               script={script}
+              project={project}
+              selection={selection}
+              onSelect={onSelect}
+              onContextMenu={onContextMenu}
               nested
-              active={selection?.type === "script" && selection.id === script.id}
-              onClick={() => onSelect({ type: "script", id: script.id })}
             />
           ))}
         </TreeRoot>
@@ -1310,13 +1754,18 @@ function Explorer({
           label="StarterGui"
           active={selection?.type === "service" && selection.id === "StarterGui"}
           onSelect={() => onSelect({ type: "service", id: "StarterGui" })}
+          onContextMenu={(event) =>
+            onContextMenu({ type: "service", id: "StarterGui" }, event)
+          }
         >
           {scriptsAt("StarterGui").map((script) => (
-            <ScriptTreeItem
+            <ScriptTree
               key={script.id}
               script={script}
-              active={selection?.type === "script" && selection.id === script.id}
-              onClick={() => onSelect({ type: "script", id: script.id })}
+              project={project}
+              selection={selection}
+              onSelect={onSelect}
+              onContextMenu={onContextMenu}
             />
           ))}
           {guiRoots.map((gui) => (
@@ -1326,6 +1775,7 @@ function Explorer({
               project={project}
               selection={selection}
               onSelect={onSelect}
+              onContextMenu={onContextMenu}
             />
           ))}
         </TreeRoot>
@@ -1334,6 +1784,9 @@ function Explorer({
           label="DataStoreService"
           active={selection?.type === "service" && selection.id === "DataStoreService"}
           onSelect={() => onSelect({ type: "service", id: "DataStoreService" })}
+          onContextMenu={(event) =>
+            onContextMenu({ type: "service", id: "DataStoreService" }, event)
+          }
         >
           {stores.map((store) => (
             <TreeItem
@@ -1342,6 +1795,12 @@ function Explorer({
               icon={<Database size={13} />}
               label={store}
               onClick={() => onSelect({ type: "service", id: "DataStoreService" })}
+              onContextMenu={(event) =>
+                onContextMenu(
+                  { type: "service", id: "DataStoreService" },
+                  event,
+                )
+              }
             />
           ))}
         </TreeRoot>
@@ -1355,18 +1814,23 @@ function TreeRoot({
   label,
   active,
   onSelect,
+  onContextMenu,
   children,
 }: {
   icon: ReactNode;
   label: string;
   active: boolean;
   onSelect: () => void;
+  onContextMenu?: (event: React.MouseEvent<HTMLDivElement>) => void;
   children: ReactNode;
 }) {
   const [expanded, setExpanded] = useState(true);
   return (
     <div className="tree-service">
-      <div className={active ? "tree-root active" : "tree-root"}>
+      <div
+        className={active ? "tree-root active" : "tree-root"}
+        onContextMenu={onContextMenu}
+      >
         <button
           className="tree-expander"
           title={expanded ? `Collapse ${label}` : `Expand ${label}`}
@@ -1390,17 +1854,20 @@ function TreeItem({
   label,
   nested = false,
   onClick,
+  onContextMenu,
 }: {
   active: boolean;
   icon: ReactNode;
   label: string;
   nested?: boolean;
   onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  onContextMenu?: (event: React.MouseEvent<HTMLButtonElement>) => void;
 }) {
   return (
     <button
       className={`${active ? "tree-item active" : "tree-item"}${nested ? " nested" : ""}`}
       onClick={onClick}
+      onContextMenu={onContextMenu}
     >
       <span className="tree-spacer" />
       {icon}
@@ -1412,21 +1879,45 @@ function TreeItem({
 function ModelTree({
   model,
   project,
+  selection,
+  selectedPartIds,
   active,
   onSelectModel,
   onSelectWorld,
+  onSelect,
+  onContextMenu,
 }: {
   model: StudioModel;
   project: StudioProject;
+  selection: Selection;
+  selectedPartIds: string[];
   active: boolean;
   onSelectModel: () => void;
   onSelectWorld: (id: string, additive?: boolean) => void;
+  onSelect: (selection: Exclude<Selection, null>) => void;
+  onContextMenu: (
+    target: ContextTarget,
+    event: React.MouseEvent<HTMLElement>,
+  ) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
-  const parts = project.objects.filter((object) => object.modelId === model.id);
+  const parts = project.objects.filter(
+    (object) =>
+      object.modelId === model.id &&
+      (!object.parentId ||
+        !project.objects.some(
+          (parent) =>
+            parent.id === object.parentId && parent.modelId === model.id,
+        )),
+  );
   return (
     <div className="model-tree">
-      <div className={active ? "tree-root active" : "tree-root"}>
+      <div
+        className={active ? "tree-root active" : "tree-root"}
+        onContextMenu={(event) =>
+          onContextMenu({ type: "model", id: model.id }, event)
+        }
+      >
         <button
           className="tree-expander"
           onClick={() => setExpanded((current) => !current)}
@@ -1441,15 +1932,109 @@ function ModelTree({
       </div>
       {expanded &&
         parts.map((part) => (
-          <TreeItem
+          <WorldTree
             key={part.id}
-            active={active}
+            object={part}
+            project={project}
+            selection={selection}
+            selectedPartIds={selectedPartIds}
+            onSelectWorld={onSelectWorld}
+            onSelect={onSelect}
+            onContextMenu={onContextMenu}
             nested
-            icon={<Box size={13} />}
-            label={part.name}
-            onClick={() => onSelectWorld(part.id)}
           />
         ))}
+      {project.scripts
+        .filter((script) => script.parent === model.id)
+        .map((script) => (
+          <ScriptTree
+            key={script.id}
+            script={script}
+            project={project}
+            selection={selection}
+            onSelect={onSelect}
+            onContextMenu={onContextMenu}
+            nested
+          />
+        ))}
+    </div>
+  );
+}
+
+function WorldTree({
+  object,
+  project,
+  selection,
+  selectedPartIds,
+  onSelectWorld,
+  onSelect,
+  onContextMenu,
+  nested = false,
+}: {
+  object: StudioObject;
+  project: StudioProject;
+  selection: Selection;
+  selectedPartIds: string[];
+  onSelectWorld: (id: string, additive?: boolean) => void;
+  onSelect: (selection: Exclude<Selection, null>) => void;
+  onContextMenu: (
+    target: ContextTarget,
+    event: React.MouseEvent<HTMLElement>,
+  ) => void;
+  nested?: boolean;
+}) {
+  const children = project.objects.filter(
+    (item) => item.parentId === object.id,
+  );
+  const scripts = project.scripts.filter(
+    (script) => script.parent === object.id,
+  );
+  return (
+    <div className="world-tree-node">
+      <TreeItem
+        active={selectedPartIds.includes(object.id)}
+        nested={nested}
+        icon={
+          object.type === "tool"
+            ? <Package size={14} />
+            : object.type === "humanoidRootPart"
+              ? <UserRound size={14} />
+              : object.type === "part" || object.type === "handle"
+                ? <Box size={14} />
+                : <Grid3X3 size={14} />
+        }
+        label={object.name}
+        onClick={(event) =>
+          onSelectWorld(object.id, event.ctrlKey || event.metaKey)
+        }
+        onContextMenu={(event) =>
+          onContextMenu({ type: "world", id: object.id }, event)
+        }
+      />
+      {children.map((child) => (
+        <WorldTree
+          key={child.id}
+          object={child}
+          project={project}
+          selection={selection}
+          selectedPartIds={selectedPartIds}
+          onSelectWorld={onSelectWorld}
+          onSelect={onSelect}
+          onContextMenu={onContextMenu}
+          nested
+        />
+      ))}
+      {scripts.map((script) => (
+        <ScriptTree
+          key={script.id}
+          script={script}
+          project={project}
+          selection={selection}
+          onSelect={onSelect}
+          onContextMenu={onContextMenu}
+          nested
+        />
+      ))}
     </div>
   );
 }
@@ -1459,11 +2044,13 @@ function ScriptTreeItem({
   active,
   nested = false,
   onClick,
+  onContextMenu,
 }: {
   script: StudioScript;
   active: boolean;
   nested?: boolean;
   onClick: () => void;
+  onContextMenu?: (event: React.MouseEvent<HTMLButtonElement>) => void;
 }) {
   return (
     <TreeItem
@@ -1472,7 +2059,53 @@ function ScriptTreeItem({
       icon={<FileCode2 size={14} />}
       label={script.name}
       onClick={onClick}
+      onContextMenu={onContextMenu}
     />
+  );
+}
+
+function ScriptTree({
+  script,
+  project,
+  selection,
+  onSelect,
+  onContextMenu,
+  nested = false,
+}: {
+  script: StudioScript;
+  project: StudioProject;
+  selection: Selection;
+  onSelect: (selection: Exclude<Selection, null>) => void;
+  onContextMenu: (
+    target: ContextTarget,
+    event: React.MouseEvent<HTMLElement>,
+  ) => void;
+  nested?: boolean;
+}) {
+  const children = project.scripts.filter((item) => item.parent === script.id);
+  return (
+    <div className="script-tree-node">
+      <ScriptTreeItem
+        script={script}
+        nested={nested}
+        active={selection?.type === "script" && selection.id === script.id}
+        onClick={() => onSelect({ type: "script", id: script.id })}
+        onContextMenu={(event) =>
+          onContextMenu({ type: "script", id: script.id }, event)
+        }
+      />
+      {children.map((child) => (
+        <ScriptTree
+          key={child.id}
+          script={child}
+          project={project}
+          selection={selection}
+          onSelect={onSelect}
+          onContextMenu={onContextMenu}
+          nested
+        />
+      ))}
+    </div>
   );
 }
 
@@ -1481,12 +2114,17 @@ function GuiTree({
   project,
   selection,
   onSelect,
+  onContextMenu,
   depth = 0,
 }: {
   gui: StudioGuiObject;
   project: StudioProject;
   selection: Selection;
   onSelect: (selection: Exclude<Selection, null>) => void;
+  onContextMenu: (
+    target: ContextTarget,
+    event: React.MouseEvent<HTMLElement>,
+  ) => void;
   depth?: number;
 }) {
   const children = project.gui.filter((item) => item.parentId === gui.id);
@@ -1498,6 +2136,9 @@ function GuiTree({
         icon={gui.type === "screenGui" ? <Monitor size={14} /> : <Square size={14} />}
         label={gui.name}
         onClick={() => onSelect({ type: "gui", id: gui.id })}
+        onContextMenu={(event) =>
+          onContextMenu({ type: "gui", id: gui.id }, event)
+        }
       />
       {children.map((child) => (
         <GuiTree
@@ -1506,16 +2147,19 @@ function GuiTree({
           project={project}
           selection={selection}
           onSelect={onSelect}
+          onContextMenu={onContextMenu}
           depth={depth + 1}
         />
       ))}
       {scripts.map((script) => (
-        <ScriptTreeItem
+        <ScriptTree
           key={script.id}
           script={script}
+          project={project}
+          selection={selection}
+          onSelect={onSelect}
+          onContextMenu={onContextMenu}
           nested
-          active={selection?.type === "script" && selection.id === script.id}
-          onClick={() => onSelect({ type: "script", id: script.id })}
         />
       ))}
     </div>
@@ -1531,10 +2175,11 @@ function PanelHeading({ icon, title }: { icon: ReactNode; title: string }) {
   );
 }
 
-function CameraControls() {
+function CameraControls({ enabled }: { enabled: boolean }) {
   const { camera, gl } = useThree();
   useEffect(() => {
     const controls = new OrbitControls(camera, gl.domElement);
+    controls.enabled = enabled;
     controls.target.set(0, 1, 0);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
@@ -1549,7 +2194,7 @@ function CameraControls() {
       cancelAnimationFrame(frameId);
       controls.dispose();
     };
-  }, [camera, gl]);
+  }, [camera, enabled, gl]);
   return null;
 }
 
@@ -1560,7 +2205,11 @@ function SceneViewport({
   selectedGuiId,
   showGui,
   tool,
-  onTransform,
+  gridSnap,
+  angleSnap,
+  onTransformStart,
+  onTransformChange,
+  onTransformEnd,
   onSelectWorld,
   onSelectGui,
 }: {
@@ -1570,10 +2219,15 @@ function SceneViewport({
   selectedGuiId: string | null;
   showGui: boolean;
   tool: StudioTool;
-  onTransform: (axis: 0 | 1 | 2, direction: 1 | -1) => void;
+  gridSnap: number;
+  angleSnap: number;
+  onTransformStart: (center: [number, number, number]) => void;
+  onTransformChange: (transform: ViewportTransform) => void;
+  onTransformEnd: () => void;
   onSelectWorld: (id: string | null, additive?: boolean) => void;
   onSelectGui: (id: string | null) => void;
 }) {
+  const [transforming, setTransforming] = useState(false);
   const selectedObjects = objects.filter((object) =>
     selectedWorldIds.includes(object.id),
   );
@@ -1592,7 +2246,9 @@ function SceneViewport({
       <Canvas
         shadows
         camera={{ position: [16, 13, 18], fov: 48, near: 0.1, far: 300 }}
-        onPointerMissed={() => onSelectWorld(null)}
+        onPointerMissed={() => {
+          if (tool === "select" && !transforming) onSelectWorld(null);
+        }}
       >
         <color attach="background" args={["#0B0B10"]} />
         <fog attach="fog" args={["#0B0B10", 45, 120]} />
@@ -1648,13 +2304,18 @@ function SceneViewport({
           </mesh>
         ))}
         {center && tool !== "select" && (
-          <TransformGizmo
-            position={center}
+          <ViewportTransformControls
+            center={center}
             tool={tool}
-            onTransform={onTransform}
+            gridSnap={gridSnap}
+            angleSnap={angleSnap}
+            onDraggingChange={setTransforming}
+            onTransformStart={onTransformStart}
+            onTransformChange={onTransformChange}
+            onTransformEnd={onTransformEnd}
           />
         )}
-        <CameraControls />
+        <CameraControls enabled={!transforming} />
       </Canvas>
       {showGui && (
         <GuiPreview
@@ -1664,63 +2325,117 @@ function SceneViewport({
         />
       )}
       <div className="viewport-badge">{showGui ? "UI editor" : "Perspective"}</div>
-      <div className="viewport-help">Right drag to orbit | Wheel to zoom</div>
+      <div className="viewport-help">
+        {tool === "select"
+          ? "Click parts to select"
+          : `Drag handles to ${tool}`}{" "}
+        | Right drag to orbit | Wheel to zoom
+      </div>
     </div>
   );
 }
 
-function TransformGizmo({
-  position,
+function ViewportTransformControls({
+  center,
   tool,
-  onTransform,
+  gridSnap,
+  angleSnap,
+  onDraggingChange,
+  onTransformStart,
+  onTransformChange,
+  onTransformEnd,
 }: {
-  position: [number, number, number];
+  center: [number, number, number];
   tool: Exclude<StudioTool, "select">;
-  onTransform: (axis: 0 | 1 | 2, direction: 1 | -1) => void;
+  gridSnap: number;
+  angleSnap: number;
+  onDraggingChange: (dragging: boolean) => void;
+  onTransformStart: (center: [number, number, number]) => void;
+  onTransformChange: (transform: ViewportTransform) => void;
+  onTransformEnd: () => void;
 }) {
-  const axes = [
-    { axis: 0 as const, color: "#ef5a67", rotation: [0, 0, -Math.PI / 2] },
-    { axis: 1 as const, color: "#62c477", rotation: [0, 0, 0] },
-    { axis: 2 as const, color: "#5d8fff", rotation: [Math.PI / 2, 0, 0] },
-  ];
-  return (
-    <group position={position}>
-      {axes.map(({ axis, color, rotation }) => {
-        const positive = [0, 0, 0] as [number, number, number];
-        const negative = [0, 0, 0] as [number, number, number];
-        positive[axis] = 2;
-        negative[axis] = -2;
-        return (
-          <group key={axis}>
-            <mesh rotation={rotation as [number, number, number]}>
-              <cylinderGeometry args={[0.035, 0.035, 4, 10]} />
-              <meshBasicMaterial color={color} depthTest={false} />
-            </mesh>
-            {([
-              [positive, 1],
-              [negative, -1],
-            ] as const).map(([handlePosition, direction]) => (
-              <mesh
-                key={direction}
-                position={handlePosition}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onTransform(axis, direction);
-                }}
-              >
-                {tool === "rotate" ? (
-                  <torusGeometry args={[0.22, 0.07, 8, 20]} />
-                ) : (
-                  <boxGeometry args={[0.28, 0.28, 0.28]} />
-                )}
-                <meshBasicMaterial color={color} depthTest={false} />
-              </mesh>
-            ))}
-          </group>
-        );
-      })}
-    </group>
-  );
+  const { camera, gl, scene } = useThree();
+  const pivot = useMemo(() => new Object3D(), []);
+  const controlsRef = useRef<ThreeTransformControls | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const values = useRef({
+    center,
+    onDraggingChange,
+    onTransformStart,
+    onTransformChange,
+    onTransformEnd,
+  });
+  values.current = {
+    center,
+    onDraggingChange,
+    onTransformStart,
+    onTransformChange,
+    onTransformEnd,
+  };
+
+  useEffect(() => {
+    if (dragging) return;
+    pivot.position.set(...center);
+    pivot.rotation.set(0, 0, 0);
+    pivot.scale.set(1, 1, 1);
+  }, [center, dragging, pivot, tool]);
+
+  useEffect(() => {
+    const controls = new ThreeTransformControls(camera, gl.domElement);
+    controlsRef.current = controls;
+    const helper = controls.getHelper();
+    controls.attach(pivot);
+    scene.add(pivot);
+    scene.add(helper);
+
+    const onMouseDown = () => {
+      const current = values.current;
+      pivot.position.set(...current.center);
+      pivot.rotation.set(0, 0, 0);
+      pivot.scale.set(1, 1, 1);
+      setDragging(true);
+      current.onDraggingChange(true);
+      current.onTransformStart(current.center);
+    };
+    const onObjectChange = () => {
+      values.current.onTransformChange({
+        position: [pivot.position.x, pivot.position.y, pivot.position.z],
+        rotation: [pivot.rotation.x, pivot.rotation.y, pivot.rotation.z],
+        scale: [pivot.scale.x, pivot.scale.y, pivot.scale.z],
+      });
+    };
+    const onMouseUp = () => {
+      setDragging(false);
+      values.current.onDraggingChange(false);
+      values.current.onTransformEnd();
+    };
+    controls.addEventListener("mouseDown", onMouseDown);
+    controls.addEventListener("objectChange", onObjectChange);
+    controls.addEventListener("mouseUp", onMouseUp);
+    return () => {
+      controls.removeEventListener("mouseDown", onMouseDown);
+      controls.removeEventListener("objectChange", onObjectChange);
+      controls.removeEventListener("mouseUp", onMouseUp);
+      controls.detach();
+      controls.dispose();
+      controlsRef.current = null;
+      scene.remove(helper);
+      scene.remove(pivot);
+    };
+  }, [camera, gl, pivot, scene]);
+
+  useEffect(() => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+    controls.setMode(
+      tool === "move" ? "translate" : tool === "rotate" ? "rotate" : "scale",
+    );
+    controls.setTranslationSnap(Math.max(0.01, gridSnap));
+    controls.setRotationSnap((Math.max(1, angleSnap) * Math.PI) / 180);
+    controls.setScaleSnap(0.1);
+  }, [angleSnap, gridSnap, tool]);
+
+  return null;
 }
 
 function GuiPreview({
@@ -1877,7 +2592,20 @@ function Properties({
           <NameField value={world.name} onChange={(name) => onWorldChange({ name })} />
           <PropertySection title="Transform">
             <VectorField label="Position" value={world.position} onChange={(position) => onWorldChange({ position })} />
-            <VectorField label="Rotation" value={world.rotation} onChange={(rotation) => onWorldChange({ rotation })} />
+            <VectorField
+              label="Rotation (degrees)"
+              step={1}
+              value={world.rotation.map(
+                (value) => (value * 180) / Math.PI,
+              ) as [number, number, number]}
+              onChange={(rotation) =>
+                onWorldChange({
+                  rotation: rotation.map(
+                    (value) => (value * Math.PI) / 180,
+                  ) as [number, number, number],
+                })
+              }
+            />
             <VectorField label="Size" value={world.scale} minimum={0.1} onChange={(scale) => onWorldChange({ scale })} />
           </PropertySection>
           <PropertySection title="Appearance">
@@ -1894,10 +2622,15 @@ function Properties({
               onChange={(material) => onWorldChange({ material: material as StudioObject["material"] })}
             />
             <NumberField label="Transparency" value={world.transparency} minimum={0} maximum={1} step={0.05} onChange={(transparency) => onWorldChange({ transparency })} />
-            <ToggleField label="Anchored" value={world.anchored} onChange={(anchored) => onWorldChange({ anchored })} />
-            <ToggleField label="CanCollide" value={world.canCollide} onChange={(canCollide) => onWorldChange({ canCollide })} />
             <ToggleField label="CastShadow" value={world.castShadow} onChange={(castShadow) => onWorldChange({ castShadow })} />
             <ToggleField label="Visible" value={world.visible !== false} onChange={(visible) => onWorldChange({ visible })} />
+          </PropertySection>
+          <PropertySection title="Physics">
+            <ToggleField label="Anchored" value={world.anchored} onChange={(anchored) => onWorldChange({ anchored })} />
+            <ToggleField label="CanCollide" value={world.canCollide} onChange={(canCollide) => onWorldChange({ canCollide })} />
+            <NumberField label="Friction" value={world.friction ?? 0.82} minimum={0} maximum={2} step={0.05} onChange={(friction) => onWorldChange({ friction })} />
+            <NumberField label="Bounciness" value={world.restitution ?? 0.03} minimum={0} maximum={1} step={0.05} onChange={(restitution) => onWorldChange({ restitution })} />
+            <NumberField label="Mass" value={world.mass ?? 1} minimum={0.01} maximum={10000} step={0.25} onChange={(mass) => onWorldChange({ mass })} />
           </PropertySection>
           <PropertySection title="Gameplay data">
             {world.type === "humanoidRootPart" && (
@@ -2025,7 +2758,7 @@ function Properties({
             <SelectField
               label="Parent"
               value={script.parent}
-              options={scriptParentOptions(script.kind, project.gui)}
+              options={scriptParentOptions(script.kind, project, script.id)}
               onChange={(parent) => onScriptChange({ parent })}
             />
             <ReadOnlyField label="Language" value={languageName[project.language]} />
@@ -2252,11 +2985,13 @@ function VectorField({
   label,
   value,
   minimum,
+  step = 0.1,
   onChange,
 }: {
   label: string;
   value: [number, number, number];
   minimum?: number;
+  step?: number;
   onChange: (value: [number, number, number]) => void;
 }) {
   return (
@@ -2268,7 +3003,7 @@ function VectorField({
             {axis}
             <input
               type="number"
-              step="0.1"
+              step={step}
               min={minimum}
               value={Number(value[index].toFixed(2))}
               onChange={(event) => {

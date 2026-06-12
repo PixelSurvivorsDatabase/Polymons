@@ -58,6 +58,10 @@ type SceneObject = {
   material: "plastic" | "metal" | "wood" | "neon";
   canCollide: boolean;
   castShadow: boolean;
+  friction?: number;
+  restitution?: number;
+  mass?: number;
+  parentId?: string | null;
   modelId: string | null;
   attributes: Record<string, string | number | boolean | null>;
   tags: string[];
@@ -133,7 +137,11 @@ type PmxlFile = {
     primaryPartIndex: number | null;
     attributes: Record<string, string | number | boolean | null>;
     tags: string[];
-    parts: Array<Omit<SceneObject, "id" | "modelId">>;
+    parts: Array<
+      Omit<SceneObject, "id" | "modelId" | "parentId"> & {
+        parentIndex?: number | null;
+      }
+    >;
   };
 };
 
@@ -226,17 +234,30 @@ function scriptSourcePath(
   project: StudioProject,
   script: StudioScript,
 ): string {
-  const folder =
-    script.parent === "Workspace"
-      ? "Workspace"
-      : script.parent === "ServerScriptService"
-        ? "ServerScriptService"
-      : script.parent === "StarterPlayerScripts"
-        ? "StarterPlayerScripts"
-        : script.parent === "ReplicatedStorage"
-          ? "ReplicatedStorage"
-          : script.parent === "ServerStorage"
-            ? "ServerStorage"
+  let parent = script.parent;
+  const visited = new Set<string>();
+  while (!visited.has(parent)) {
+    visited.add(parent);
+    const parentScript = project.scripts.find(
+      (candidate) => candidate.id === parent,
+    );
+    if (!parentScript) break;
+    parent = parentScript.parent;
+  }
+  const folder = project.objects.some((object) => object.id === parent) ||
+    project.models.some((model) => model.id === parent)
+    ? "Workspace"
+    : project.gui.some((gui) => gui.id === parent)
+      ? "StarterGui"
+      : [
+            "Workspace",
+            "ServerScriptService",
+            "StarterPlayerScripts",
+            "ReplicatedStorage",
+            "ServerStorage",
+            "StarterGui",
+          ].includes(parent)
+        ? parent
         : "StarterGui";
   return join(
     projectDirectory(project.id),
@@ -356,6 +377,10 @@ function migrateLegacyProject(
       material: "plastic",
       canCollide: true,
       castShadow: true,
+      friction: 0.82,
+      restitution: 0.03,
+      mass: 1,
+      parentId: null,
       modelId: null,
       attributes: {},
       tags: [],
@@ -393,6 +418,10 @@ function normalizeProject(project: StudioProject): StudioProject {
       material: object.material ?? "plastic",
       canCollide: object.canCollide ?? true,
       castShadow: object.castShadow ?? true,
+      friction: object.friction ?? 0.82,
+      restitution: object.restitution ?? 0.03,
+      mass: object.mass ?? 1,
+      parentId: object.parentId ?? null,
       modelId: object.modelId ?? null,
       attributes: object.attributes ?? {},
       tags: object.tags ?? [],
@@ -438,6 +467,10 @@ function starterObjects(): SceneObject[] {
       material: "plastic",
       canCollide: true,
       castShadow: true,
+      friction: 0.82,
+      restitution: 0.03,
+      mass: 1,
+      parentId: null,
       modelId: null,
       attributes: {},
       tags: [],
@@ -456,6 +489,10 @@ function starterObjects(): SceneObject[] {
       material: "neon",
       canCollide: true,
       castShadow: true,
+      friction: 0.82,
+      restitution: 0.03,
+      mass: 1,
+      parentId: null,
       modelId: null,
       attributes: {},
       tags: [],
@@ -474,6 +511,10 @@ function starterObjects(): SceneObject[] {
       material: "plastic",
       canCollide: true,
       castShadow: true,
+      friction: 0.82,
+      restitution: 0.03,
+      mass: 1,
+      parentId: null,
       modelId: null,
       attributes: {},
       tags: [],
@@ -653,12 +694,54 @@ function validateProject(project: StudioProject): void {
       !["plastic", "metal", "wood", "neon"].includes(object.material) ||
       typeof object.canCollide !== "boolean" ||
       typeof object.castShadow !== "boolean" ||
+      (object.friction !== undefined &&
+        (!Number.isFinite(object.friction) ||
+          object.friction < 0 ||
+          object.friction > 2)) ||
+      (object.restitution !== undefined &&
+        (!Number.isFinite(object.restitution) ||
+          object.restitution < 0 ||
+          object.restitution > 1)) ||
+      (object.mass !== undefined &&
+        (!Number.isFinite(object.mass) ||
+          object.mass <= 0 ||
+          object.mass > 10_000)) ||
+      (object.parentId !== undefined &&
+        object.parentId !== null &&
+        typeof object.parentId !== "string") ||
       (object.modelId !== null && typeof object.modelId !== "string")
     ) {
       throw new Error("Invalid project object.");
     }
     validateAttributes(object.attributes);
     validateTags(object.tags);
+  }
+  const objectIds = new Set(project.objects.map((object) => object.id));
+  for (const object of project.objects) {
+    if (
+      object.parentId &&
+      (object.parentId === object.id || !objectIds.has(object.parentId))
+    ) {
+      throw new Error("Invalid project object parent.");
+    }
+    if (
+      object.parentId &&
+      project.objects.find((candidate) => candidate.id === object.parentId)
+        ?.modelId !== object.modelId
+    ) {
+      throw new Error("Nested Parts must belong to the same Model.");
+    }
+    const visited = new Set([object.id]);
+    let parentId = object.parentId;
+    while (parentId) {
+      if (visited.has(parentId)) {
+        throw new Error("Project object hierarchy contains a cycle.");
+      }
+      visited.add(parentId);
+      parentId =
+        project.objects.find((candidate) => candidate.id === parentId)
+          ?.parentId ?? null;
+    }
   }
   if (!Array.isArray(project.models) || project.models.length > 1_000) {
     throw new Error("Invalid project models.");
@@ -757,6 +840,54 @@ function validateProject(project: StudioProject): void {
       || !Number.isInteger(gui.zIndex)
     ) {
       throw new Error("Invalid GUI object.");
+    }
+  }
+  const guiIds = new Set(project.gui.map((gui) => gui.id));
+  for (const gui of project.gui) {
+    if (gui.parentId && !guiIds.has(gui.parentId)) {
+      throw new Error("A GUI object references a missing parent.");
+    }
+    const visited = new Set([gui.id]);
+    let parentId = gui.parentId;
+    while (parentId) {
+      if (visited.has(parentId)) {
+        throw new Error("GUI hierarchy contains a cycle.");
+      }
+      visited.add(parentId);
+      parentId =
+        project.gui.find((candidate) => candidate.id === parentId)?.parentId ??
+        null;
+    }
+  }
+  const scriptIds = new Set(project.scripts.map((script) => script.id));
+  const serviceParents = new Set([
+    "Workspace",
+    "ServerScriptService",
+    "ReplicatedStorage",
+    "ServerStorage",
+    "StarterPlayerScripts",
+    "StarterGui",
+  ]);
+  for (const script of project.scripts) {
+    if (
+      !serviceParents.has(script.parent) &&
+      !scriptIds.has(script.parent) &&
+      !guiIds.has(script.parent) &&
+      !objectIds.has(script.parent) &&
+      !modelIds.has(script.parent)
+    ) {
+      throw new Error("A Script references a missing parent.");
+    }
+    const visited = new Set([script.id]);
+    let parentId = script.parent;
+    while (scriptIds.has(parentId)) {
+      if (visited.has(parentId)) {
+        throw new Error("Script hierarchy contains a cycle.");
+      }
+      visited.add(parentId);
+      parentId =
+        project.scripts.find((candidate) => candidate.id === parentId)
+          ?.parent ?? "";
     }
   }
   if (
@@ -893,6 +1024,9 @@ async function exportPmxl(input: {
   const primaryPartIndex = input.model.primaryPartId
     ? input.parts.findIndex((part) => part.id === input.model.primaryPartId)
     : -1;
+  const partIndexes = new Map(
+    input.parts.map((part, index) => [part.id, index]),
+  );
   const pivot =
     input.parts[primaryPartIndex >= 0 ? primaryPartIndex : 0]?.position ??
     ([0, 0, 0] as [number, number, number]);
@@ -921,6 +1055,13 @@ async function exportPmxl(input: {
         material: part.material,
         canCollide: part.canCollide,
         castShadow: part.castShadow,
+        friction: part.friction,
+        restitution: part.restitution,
+        mass: part.mass,
+        parentIndex:
+          part.parentId && partIndexes.has(part.parentId)
+            ? partIndexes.get(part.parentId)!
+            : null,
         attributes: part.attributes,
         tags: part.tags,
       })),
@@ -966,10 +1107,12 @@ async function importPmxl(): Promise<{
     throw new Error("This is not a valid PMXL model.");
   }
   const modelId = randomUUID();
-  const parts = raw.model.parts.map((rawPart) => {
+  const partIds = raw.model.parts.map(() => randomUUID());
+  const parts = raw.model.parts.map((rawPart, index) => {
     const part = rawPart as SceneObject;
+    const parentIndex = rawPart.parentIndex;
     return {
-      id: randomUUID(),
+      id: partIds[index],
       name: part.name,
       type: part.type,
       position: [
@@ -986,6 +1129,13 @@ async function importPmxl(): Promise<{
       material: part.material,
       canCollide: part.canCollide,
       castShadow: part.castShadow,
+      friction: part.friction ?? 0.82,
+      restitution: part.restitution ?? 0.03,
+      mass: part.mass ?? 1,
+      parentId:
+        typeof parentIndex === "number" && partIds[parentIndex]
+          ? partIds[parentIndex]
+          : null,
       modelId,
       attributes: part.attributes,
       tags: part.tags,
@@ -1066,11 +1216,19 @@ function createWindow(): void {
         await new Promise((resolve) => setTimeout(resolve, 900));
         if (captureUi) {
           await window.webContents.executeJavaScript(
-            `Array.from(document.querySelectorAll(".insert-group button")).find((button) => button.textContent?.includes("ScreenGui"))?.click()`,
+            `Array.from(document.querySelectorAll(".tree-root-select")).find((button) => button.textContent?.includes("StarterGui"))?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 240, clientY: 320 }))`,
           );
           await new Promise((resolve) => setTimeout(resolve, 250));
           await window.webContents.executeJavaScript(
-            `Array.from(document.querySelectorAll(".insert-group button")).find((button) => button.textContent?.includes("Button"))?.click()`,
+            `Array.from(document.querySelectorAll(".insert-context-menu button")).find((button) => button.textContent?.includes("ScreenGui"))?.click()`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          await window.webContents.executeJavaScript(
+            `Array.from(document.querySelectorAll(".tree-item")).find((button) => button.textContent?.includes("ScreenGui"))?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 240, clientY: 350 }))`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          await window.webContents.executeJavaScript(
+            `Array.from(document.querySelectorAll(".insert-context-menu button")).find((button) => button.textContent?.includes("TextButton"))?.click()`,
           );
         } else {
           await window.webContents.executeJavaScript(

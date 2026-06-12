@@ -655,8 +655,9 @@ function ProjectBlock({ object }: { object: PolyWorldObject }) {
       colliders={object.canCollide ? "cuboid" : false}
       position={object.position}
       rotation={object.rotation}
-      restitution={0.03}
-      friction={0.82}
+      restitution={object.restitution ?? 0.03}
+      friction={object.friction ?? 0.82}
+      mass={object.mass ?? 1}
       ccd={!object.anchored}
     >
       {content}

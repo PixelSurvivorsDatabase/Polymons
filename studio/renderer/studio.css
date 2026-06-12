@@ -417,12 +417,16 @@ button { color: inherit; }
   overflow-y: hidden;
 }
 .toolbar-group { display: flex; border-right: 1px solid var(--studio-line); padding-right: 8px; }
-.insert-group {
+.insert-hint {
   display: flex;
   flex: 0 0 auto;
-  gap: 2px;
+  align-items: center;
+  gap: 6px;
   border-right: 1px solid var(--studio-line);
-  padding-right: 8px;
+  color: #777080;
+  padding: 0 10px 0 2px;
+  font-size: 9px;
+  font-weight: 700;
 }
 .snap-controls { display: flex; flex: 0 0 auto; gap: 5px; border-right: 1px solid var(--studio-line); padding-right: 8px; }
 .snap-controls label { display: flex; align-items: center; gap: 4px; color: #777080; font-size: 8px; font-weight: 700; }
@@ -450,6 +454,59 @@ button { color: inherit; }
 .save-button { border-color: var(--studio-line) !important; }
 .publish-button { background: rgba(112,75,176,.18) !important; color: #c7a7f1 !important; }
 .play-button { background: rgba(70,120,84,.16) !important; color: #8fc99d !important; }
+
+.insert-context-menu {
+  position: fixed;
+  z-index: 100;
+  display: grid;
+  width: 220px;
+  max-height: min(420px, calc(100vh - 24px));
+  overflow-y: auto;
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 10px;
+  background: #15141b;
+  padding: 6px;
+  box-shadow: 0 18px 55px rgba(0,0,0,.5);
+}
+.insert-context-menu header {
+  display: grid;
+  gap: 2px;
+  border-bottom: 1px solid var(--studio-line);
+  margin-bottom: 5px;
+  padding: 7px 8px 9px;
+}
+.insert-context-menu header strong { color: #ece7f2; font-size: 11px; }
+.insert-context-menu header span {
+  overflow: hidden;
+  color: #817a89;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.insert-context-menu button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #c7c1cd;
+  cursor: pointer;
+  padding: 8px;
+  font-size: 10px;
+  text-align: left;
+}
+.insert-context-menu button:hover {
+  background: rgba(125,81,190,.18);
+  color: #fff;
+}
+.insert-context-menu p {
+  margin: 0;
+  color: #777080;
+  padding: 10px;
+  font-size: 10px;
+}
 
 .editor-workspace {
   display: grid;

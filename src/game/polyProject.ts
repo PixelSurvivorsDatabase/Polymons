@@ -19,6 +19,10 @@ export type PolyWorldObject = {
   material: "plastic" | "metal" | "wood" | "neon";
   canCollide: boolean;
   castShadow: boolean;
+  friction?: number;
+  restitution?: number;
+  mass?: number;
+  parentId?: string | null;
   modelId: string | null;
   attributes: Record<string, PolyStoredValue>;
   tags: string[];
@@ -126,6 +130,9 @@ const WORLD_PROPERTIES = new Set([
   "Material",
   "CanCollide",
   "CastShadow",
+  "Friction",
+  "Restitution",
+  "Mass",
 ]);
 const GUI_PROPERTIES = new Set([
   "Name",
@@ -172,6 +179,10 @@ export function normalizePolyProject(project: PolyProject): PolyProject {
     material: object.material ?? "plastic",
     canCollide: object.canCollide ?? true,
     castShadow: object.castShadow ?? true,
+    friction: object.friction ?? 0.82,
+    restitution: object.restitution ?? 0.03,
+    mass: object.mass ?? 1,
+    parentId: object.parentId ?? null,
     modelId: object.modelId ?? null,
     attributes: object.attributes ?? {},
     tags: object.tags ?? [],
@@ -247,11 +258,16 @@ function findReferenceDeclaration(
     /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*(?:script|Script)\.Parent\s*;?/,
   );
   if (scriptParentMatch && script) {
+    const worldParent = project.objects.find(
+      (item) => item.id === script.parent,
+    );
     return {
       variable: scriptParentMatch[1],
-      reference: project.gui.some((item) => item.id === script.parent)
-        ? { kind: "gui", id: script.parent }
-        : null,
+      reference: worldParent
+        ? { kind: "world", id: worldParent.id }
+        : project.gui.some((item) => item.id === script.parent)
+          ? { kind: "gui", id: script.parent }
+          : null,
       requestedName: "script.Parent",
     };
   }
@@ -297,10 +313,14 @@ function findDirectReference(
 ): Reference | null {
   if (
     /^(?:script|Script)\.Parent$/.test(expression) &&
-    script &&
-    project.gui.some((item) => item.id === script.parent)
+    script
   ) {
-    return { kind: "gui", id: script.parent };
+    if (project.objects.some((item) => item.id === script.parent)) {
+      return { kind: "world", id: script.parent };
+    }
+    if (project.gui.some((item) => item.id === script.parent)) {
+      return { kind: "gui", id: script.parent };
+    }
   }
   const direct = expression.match(
     /^(Workspace|workspace|PlayerGui|ReplicatedStorage)\.([A-Za-z_]\w*)$/,
@@ -602,6 +622,24 @@ function assignProperty(
       const value = parseBoolean(rawValue);
       if (value === null) return "CastShadow must be true or false.";
       object.castShadow = value;
+    } else if (property === "Friction") {
+      const value = parseNumber(rawValue);
+      if (value === null || value < 0 || value > 2) {
+        return "Friction must be between 0 and 2.";
+      }
+      object.friction = value;
+    } else if (property === "Restitution") {
+      const value = parseNumber(rawValue);
+      if (value === null || value < 0 || value > 1) {
+        return "Restitution must be between 0 and 1.";
+      }
+      object.restitution = value;
+    } else if (property === "Mass") {
+      const value = parseNumber(rawValue);
+      if (value === null || value <= 0 || value > 10_000) {
+        return "Mass must be greater than 0 and no greater than 10000.";
+      }
+      object.mass = value;
     } else {
       const value = parseNumbers(rawValue, 3);
       if (!value) return `${property} must be Vector3.new(x, y, z).`;
@@ -839,7 +877,9 @@ export function analyzePolyScript(
     ...syntaxDiagnostics(script, project.language),
   ];
   const buttonHandlers = guiEventHandlers(script);
-  const scriptParent = project.gui.find((item) => item.id === script.parent);
+  const guiScriptParent = project.gui.find(
+    (item) => item.id === script.parent,
+  );
   if (buttonHandlers.length > 0 && script.kind !== "localScript") {
     diagnostics.push({
       line: buttonHandlers[0].line,
@@ -849,7 +889,7 @@ export function analyzePolyScript(
       message: "Button activation events can only run in a LocalScript.",
     });
   }
-  if (buttonHandlers.length > 0 && scriptParent?.type !== "textButton") {
+  if (buttonHandlers.length > 0 && guiScriptParent?.type !== "textButton") {
     diagnostics.push({
       line: buttonHandlers[0].line,
       column: 1,
@@ -1142,42 +1182,59 @@ export function analyzePolyScript(
   });
 
   const guiParent = project.gui.some((item) => item.id === script.parent);
+  const worldParent = project.objects.find((item) => item.id === script.parent);
+  const modelParent = project.models.some((item) => item.id === script.parent);
+  const scriptParent = project.scripts.some((item) => item.id === script.parent);
+  let toolParent = worldParent;
+  while (toolParent && toolParent.type !== "tool") {
+    toolParent = toolParent.parentId
+      ? project.objects.find((item) => item.id === toolParent!.parentId)
+      : undefined;
+  }
   if (
     script.kind === "script" &&
-    !SERVER_SCRIPT_PARENTS.has(script.parent)
+    !SERVER_SCRIPT_PARENTS.has(script.parent) &&
+    !worldParent &&
+    !modelParent
   ) {
     diagnostics.push({
       line: 1,
       column: 1,
       endColumn: 2,
       severity: "error",
-      message: "Server Scripts must be in Workspace or ServerScriptService.",
+      message:
+        "Server Scripts must be in Workspace, ServerScriptService, or a Workspace object or Model.",
     });
   }
   if (
     script.kind === "localScript" &&
     !LOCAL_SCRIPT_PARENTS.has(script.parent) &&
-    !guiParent
+    !guiParent &&
+    !toolParent
   ) {
     diagnostics.push({
       line: 1,
       column: 1,
       endColumn: 2,
       severity: "error",
-      message: "LocalScripts must be in StarterPlayerScripts or StarterGui.",
+      message:
+        "LocalScripts must be in StarterPlayerScripts, StarterGui, a GUI object, or a Tool.",
     });
   }
   if (
     script.kind === "moduleScript" &&
     !MODULE_SCRIPT_PARENTS.has(script.parent) &&
-    !guiParent
+    !guiParent &&
+    !scriptParent &&
+    !modelParent
   ) {
     diagnostics.push({
       line: 1,
       column: 1,
       endColumn: 2,
       severity: "error",
-      message: "ModuleScripts must be in a script or shared storage container.",
+      message:
+        "ModuleScripts must be in another script, a Model, GUI, or shared storage container.",
     });
   }
   return diagnostics;

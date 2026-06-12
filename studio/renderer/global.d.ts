@@ -32,6 +32,10 @@ type StudioObject = {
   material: "plastic" | "metal" | "wood" | "neon";
   canCollide: boolean;
   castShadow: boolean;
+  friction?: number;
+  restitution?: number;
+  mass?: number;
+  parentId?: string | null;
   modelId: string | null;
   attributes: Record<string, string | number | boolean | null>;
   tags: string[];

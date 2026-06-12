@@ -447,3 +447,68 @@ button.Activated += () => {
     );
   }
 });
+
+test("supports scripts inside Workspace objects and enforces Tool module rules", () => {
+  const fixture = project();
+  fixture.objects.push(
+    {
+      ...structuredClone(fixture.objects[0]),
+      id: "sword",
+      name: "Sword",
+      type: "tool",
+      parentId: null,
+    },
+    {
+      ...structuredClone(fixture.objects[0]),
+      id: "sword-handle",
+      name: "Handle",
+      type: "handle",
+      parentId: "sword",
+    },
+  );
+  fixture.scripts = [
+    {
+      id: "tool-server",
+      name: "ToolServer",
+      kind: "script",
+      parent: "sword",
+      source: `local tool = script.Parent
+tool.Friction = 0.4
+tool.Restitution = 0.2
+tool.Mass = 2`,
+    },
+    {
+      id: "tool-client",
+      name: "ToolClient",
+      kind: "localScript",
+      parent: "sword-handle",
+      source: `local player = Players.LocalPlayer
+player.WalkSpeed = 20`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0);
+  assert.equal(result.project.objects[1].friction, 0.4);
+  assert.equal(result.project.objects[1].restitution, 0.2);
+  assert.equal(result.project.objects[1].mass, 2);
+  assert.equal(result.project.playerSettings.walkSpeed, 20);
+
+  const invalidModule = {
+    id: "tool-module",
+    name: "ToolModule",
+    kind: "moduleScript" as const,
+    parent: "sword",
+    source: "return {}",
+  };
+  assert.ok(
+    analyzePolyScript(invalidModule, fixture).some((diagnostic) =>
+      diagnostic.message.includes("ModuleScripts must"),
+    ),
+  );
+  const nestedModule = {
+    ...invalidModule,
+    parent: "tool-server",
+  };
+  assert.equal(analyzePolyScript(nestedModule, fixture).length, 0);
+});
