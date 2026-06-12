@@ -256,7 +256,8 @@ export default function PlayerApp() {
                   <h2>{game.title}</h2>
                   <p>{game.description || `Created by ${game.creator}.`}</p>
                   <div className="player-game-meta">
-                    {game.activePlayers} playing
+                    <span>{game.activePlayers.toLocaleString()} playing now</span>
+                    <span>{(game.visits ?? 0).toLocaleString()} visits</span>
                   </div>
                   <button
                     className="player-play"

@@ -2,7 +2,9 @@ export type Game = {
   id: string;
   title: string;
   creator: string;
+  creatorUsername: string;
   players: string;
+  visits: number;
   rating: number;
   genre: string;
   description: string;
@@ -15,7 +17,9 @@ export const games: Game[] = [
     id: "baseplate",
     title: "Baseplate",
     creator: "Polymons",
+    creatorUsername: "polymons",
     players: "0",
+    visits: 0,
     rating: 0,
     genre: "Sandbox",
     description:

@@ -3,6 +3,7 @@ import {
   ChevronLeft,
   Compass,
   Download,
+  Eye,
   Gamepad2,
   Home,
   Menu,
@@ -59,7 +60,9 @@ function displayGame(game: PlatformGame): Game {
     id: game.slug,
     title: game.title,
     creator: game.creator,
+    creatorUsername: game.creatorUsername,
     players: String(game.activePlayers),
+    visits: game.visits ?? 0,
     rating: 0,
     genre: game.genre,
     description: game.description,
@@ -592,8 +595,23 @@ function GamePage() {
           <span className="eyebrow">{game.genre}</span>
           <h1>{game.title}</h1>
           <p className="creator-line">
-            by <strong>{game.creator}</strong>
+            by{" "}
+            <Link to={`/players/${game.creatorUsername}`}>
+              <strong>{game.creator}</strong>
+            </Link>
           </p>
+          <div className="game-public-stats">
+            <span>
+              <Users size={16} />
+              <strong>{Number(game.players).toLocaleString()}</strong>
+              playing now
+            </span>
+            <span>
+              <Eye size={16} />
+              <strong>{(game.visits ?? 0).toLocaleString()}</strong>
+              game visits
+            </span>
+          </div>
         </div>
         <div className="game-launch-actions">
           <button

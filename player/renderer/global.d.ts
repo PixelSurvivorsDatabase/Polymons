@@ -37,6 +37,7 @@ type PlayerGameSummary = {
   creator: string;
   creatorUsername: string;
   activePlayers: number;
+  visits: number;
   updatedAt: string;
 };
 
