@@ -23,7 +23,12 @@ import {
   Vector2,
   Vector3,
 } from "three";
-import type { PlayerTransform, RemotePlayer } from "./multiplayer";
+import { chatUsernameColor } from "./chat";
+import type {
+  ChatMessage,
+  PlayerTransform,
+  RemotePlayer,
+} from "./multiplayer";
 import type {
   PolyGuiObject,
   PolyPlayerSettings,
@@ -73,7 +78,6 @@ const HEAD_PROFILE = [
   new Vector2(0.64, 0.72),
   new Vector2(0, 0.72),
 ];
-
 function createInputState(): InputState {
   return {
     forward: false,
@@ -795,12 +799,114 @@ function TouchButton({
   );
 }
 
+function ChatPanel({
+  messages,
+  error,
+  onSend,
+}: {
+  messages: ChatMessage[];
+  error?: string;
+  onSend: (text: string) => boolean;
+}) {
+  const [open, setOpen] = useState(true);
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const logRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (
+        event.key !== "/" ||
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      ) {
+        return;
+      }
+      event.preventDefault();
+      if (document.pointerLockElement) void document.exitPointerLock();
+      setOpen(true);
+      window.setTimeout(() => inputRef.current?.focus(), 0);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    const log = logRef.current;
+    if (log) log.scrollTop = log.scrollHeight;
+  }, [messages, open]);
+
+  return (
+    <aside className={`game-chat${open ? " game-chat-open" : ""}`}>
+      <button
+        className="game-chat-toggle"
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+      >
+        <strong>Chat</strong>
+        <span>{open ? "Hide" : "Open"}</span>
+      </button>
+      {open && (
+        <>
+          <div className="game-chat-log" ref={logRef} aria-live="polite">
+            {messages.length === 0 ? (
+              <p className="game-chat-empty">Press / or click below to chat.</p>
+            ) : (
+              messages.map((message) => (
+                <p key={message.id}>
+                  <strong style={{ color: chatUsernameColor(message.userId) }}>
+                    {message.displayName}
+                  </strong>
+                  <span>: {message.text}</span>
+                </p>
+              ))
+            )}
+          </div>
+          <form
+            className="game-chat-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (onSend(draft)) setDraft("");
+            }}
+          >
+            <input
+              ref={inputRef}
+              value={draft}
+              maxLength={160}
+              aria-label="Chat message"
+              placeholder="To chat click here or press /"
+              onFocus={() => {
+                if (document.pointerLockElement) void document.exitPointerLock();
+              }}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  inputRef.current?.blur();
+                }
+              }}
+            />
+            <button type="submit" disabled={!draft.trim()}>
+              Send
+            </button>
+          </form>
+          {error && <small className="game-chat-error">{error}</small>}
+        </>
+      )}
+    </aside>
+  );
+}
+
 function GuiNode({
   object,
   objects,
+  onActivate,
 }: {
   object: PolyGuiObject;
   objects: PolyGuiObject[];
+  onActivate?: (guiObjectId: string) => void;
 }) {
   if (!object.visible) return null;
   const children = objects.filter((item) => item.parentId === object.id);
@@ -808,7 +914,12 @@ function GuiNode({
     return (
       <>
         {children.map((child) => (
-          <GuiNode key={child.id} object={child} objects={objects} />
+          <GuiNode
+            key={child.id}
+            object={child}
+            objects={objects}
+            onActivate={onActivate}
+          />
         ))}
       </>
     );
@@ -829,10 +940,22 @@ function GuiNode({
   const className = `poly-gui-object poly-gui-${object.type}`;
   if (object.type === "textButton") {
     return (
-      <button className={className} style={style}>
+      <button
+        className={className}
+        style={style}
+        onClick={(event) => {
+          event.stopPropagation();
+          onActivate?.(object.id);
+        }}
+      >
         {object.text}
         {children.map((child) => (
-          <GuiNode key={child.id} object={child} objects={objects} />
+          <GuiNode
+            key={child.id}
+            object={child}
+            objects={objects}
+            onActivate={onActivate}
+          />
         ))}
       </button>
     );
@@ -841,20 +964,36 @@ function GuiNode({
     <div className={className} style={style}>
       {object.type === "textLabel" ? object.text : null}
       {children.map((child) => (
-        <GuiNode key={child.id} object={child} objects={objects} />
+        <GuiNode
+          key={child.id}
+          object={child}
+          objects={objects}
+          onActivate={onActivate}
+        />
       ))}
     </div>
   );
 }
 
-function ProjectGui({ objects }: { objects: PolyGuiObject[] }) {
+function ProjectGui({
+  objects,
+  onActivate,
+}: {
+  objects: PolyGuiObject[];
+  onActivate?: (guiObjectId: string) => void;
+}) {
   const roots = objects.filter(
     (object) => object.type === "screenGui" && object.parentId === null,
   );
   return (
     <div className="poly-player-gui">
       {roots.map((root) => (
-        <GuiNode key={root.id} object={root} objects={objects} />
+        <GuiNode
+          key={root.id}
+          object={root}
+          objects={objects}
+          onActivate={onActivate}
+        />
       ))}
     </div>
   );
@@ -875,6 +1014,10 @@ export default function BaseplateGame({
   projectName = "Baseplate",
   localPlayer,
   onFriendRequest,
+  chatMessages = [],
+  chatError,
+  onSendChat,
+  onGuiActivated,
 }: {
   remotePlayers?: RemotePlayer[];
   onPlayerState?: (state: Omit<PlayerTransform, "sequence">) => void;
@@ -887,6 +1030,10 @@ export default function BaseplateGame({
     displayName: string;
   };
   onFriendRequest?: (username: string) => Promise<void>;
+  chatMessages?: ChatMessage[];
+  chatError?: string;
+  onSendChat?: (text: string) => boolean;
+  onGuiActivated?: (guiObjectId: string) => void;
 }) {
   const spawnObject = worldObjects?.find((object) => object.type === "spawn");
   const spawn = spawnObject
@@ -954,6 +1101,7 @@ export default function BaseplateGame({
       data-speed={telemetry.speed.toFixed(2)}
       data-position={`${telemetry.x.toFixed(2)},${telemetry.y.toFixed(2)},${telemetry.z.toFixed(2)}`}
       data-remote-players={remotePlayers.length}
+      data-chat-enabled={onSendChat ? "true" : undefined}
     >
       <Canvas
         shadows="basic"
@@ -994,7 +1142,15 @@ export default function BaseplateGame({
         <span>{playerSettings.health}/{playerSettings.maxHealth} health</span>
       </div>
 
-      <ProjectGui objects={guiObjects} />
+      <ProjectGui objects={guiObjects} onActivate={onGuiActivated} />
+
+      {onSendChat && (
+        <ChatPanel
+          messages={chatMessages}
+          error={chatError}
+          onSend={onSendChat}
+        />
+      )}
 
       {playerListOpen && (
         <aside className="player-list-menu">

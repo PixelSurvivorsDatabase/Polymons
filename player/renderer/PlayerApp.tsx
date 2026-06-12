@@ -3,7 +3,9 @@ import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import logo from "../../assets/polymons-logo.png";
 import { useMultiplayer } from "../../src/game/multiplayer";
 import {
+  activatePolyGui,
   type PolyProject,
+  type PolyRuntimeResult,
   runPolyProject,
 } from "../../src/game/polyProject";
 
@@ -151,15 +153,24 @@ function OnlinePlayerGame({
   auth: PlayerAuth | null;
   onLeave: () => void;
 }) {
-  const { connection, remotePlayers, sendState } = useMultiplayer(
-    launch.websocketUrl,
-  );
-  const [project, setProject] = useState<PolyProject | null>(null);
+  const {
+    connection,
+    remotePlayers,
+    chatMessages,
+    chatError,
+    sendState,
+    sendChat,
+  } = useMultiplayer(launch.websocketUrl);
+  const [runtime, setRuntime] = useState<PolyRuntimeResult | null>(null);
   useEffect(() => {
     void window.polymons
       .getGame(launch.game)
-      .then((result) => setProject(result.game.manifest))
-      .catch(() => setProject(null));
+      .then((result) =>
+        setRuntime(
+          result.game.manifest ? runPolyProject(result.game.manifest) : null,
+        ),
+      )
+      .catch(() => setRuntime(null));
   }, [launch.game]);
 
   return (
@@ -179,11 +190,28 @@ function OnlinePlayerGame({
           <BaseplateGame
             remotePlayers={remotePlayers}
             onPlayerState={sendState}
-            worldObjects={project?.objects}
-            guiObjects={project?.gui}
-            playerSettings={project?.playerSettings}
-            projectName={project?.name}
+            worldObjects={runtime?.project.objects}
+            guiObjects={runtime?.project.gui}
+            playerSettings={runtime?.project.playerSettings}
+            projectName={runtime?.project.name}
             localPlayer={auth?.user}
+            chatMessages={chatMessages}
+            chatError={chatError}
+            onSendChat={sendChat}
+            onGuiActivated={(guiObjectId) => {
+              setRuntime((current) => {
+                if (!current) return current;
+                const activated = activatePolyGui(current.project, guiObjectId);
+                return {
+                  ...activated,
+                  diagnostics: [
+                    ...current.diagnostics,
+                    ...activated.diagnostics,
+                  ],
+                  output: [...current.output, ...activated.output],
+                };
+              });
+            }}
             onFriendRequest={(username) =>
               window.polymons.sendFriendRequest(username)
             }
@@ -219,10 +247,15 @@ function StudioPlayerGame({
       });
   }, [launch.projectId]);
 
-  const runtime = useMemo(
+  const initialRuntime = useMemo(
     () => (project ? runPolyProject(project) : null),
     [project],
   );
+  const [runtime, setRuntime] = useState<PolyRuntimeResult | null>(null);
+
+  useEffect(() => {
+    setRuntime(initialRuntime);
+  }, [initialRuntime]);
 
   useEffect(() => {
     if (!runtime) return;
@@ -256,6 +289,23 @@ function StudioPlayerGame({
               playerSettings={runtime.project.playerSettings}
               projectName={runtime.project.name}
               localPlayer={auth?.user}
+              onGuiActivated={(guiObjectId) => {
+                setRuntime((current) => {
+                  if (!current) return current;
+                  const activated = activatePolyGui(
+                    current.project,
+                    guiObjectId,
+                  );
+                  return {
+                    ...activated,
+                    diagnostics: [
+                      ...current.diagnostics,
+                      ...activated.diagnostics,
+                    ],
+                    output: [...current.output, ...activated.output],
+                  };
+                });
+              }}
             />
             {(runtime.output.length > 0 || runtime.diagnostics.length > 0) && (
               <aside className="player-output">

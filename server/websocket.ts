@@ -15,6 +15,7 @@ type Connection = {
   state: PlayerState;
   messageCount: number;
   messageWindowStartedAt: number;
+  chatMessageTimes: number[];
 };
 
 type PlayerState = {
@@ -25,9 +26,19 @@ type PlayerState = {
 
 type RoomPlayer = {
   id: string;
+  userId: string;
   username: string;
   displayName: string;
   state: PlayerState;
+};
+
+type RoomChatMessage = {
+  id: string;
+  userId: string;
+  username: string;
+  displayName: string;
+  text: string;
+  sentAt: string;
 };
 
 export type PresenceSnapshot = {
@@ -57,6 +68,16 @@ function send(socket: WebSocket, message: object): void {
   }
 }
 
+function sanitizeChatText(text: string): string {
+  return [...text]
+    .map((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127 ? " " : character;
+    })
+    .join("")
+    .trim();
+}
+
 function rejectUpgrade(socket: Duplex, status: number): void {
   socket.write(
     `HTTP/1.1 ${status} ${status === 401 ? "Unauthorized" : "Not Found"}\r\nConnection: close\r\n\r\n`,
@@ -75,6 +96,7 @@ export function attachWebSocketServer(
   });
   const connections = new Map<WebSocket, Connection>();
   const rooms = new Map<string, Set<WebSocket>>();
+  const roomChatHistory = new Map<string, RoomChatMessage[]>();
   const alive = new WeakMap<WebSocket, boolean>();
 
   const broadcast = (
@@ -134,6 +156,7 @@ export function attachWebSocketServer(
           state: { ...SPAWN_STATE },
           messageCount: 0,
           messageWindowStartedAt: Date.now(),
+          chatMessageTimes: [],
         });
         webSocketServer.emit("connection", webSocket, request);
       });
@@ -169,6 +192,7 @@ export function attachWebSocketServer(
         if (peerConnection) {
           existingPlayers.push({
             id: peerConnection.id,
+            userId: peerConnection.profile.id,
             username: peerConnection.profile.username,
             displayName: peerConnection.profile.displayName,
             state: peerConnection.state,
@@ -180,6 +204,7 @@ export function attachWebSocketServer(
 
       const player = {
         id: connection.id,
+        userId: connection.profile.id,
         username: connection.profile.username,
         displayName: connection.profile.displayName,
         state: connection.state,
@@ -191,6 +216,7 @@ export function attachWebSocketServer(
         gameId: connection.gameId,
         player,
         players: existingPlayers,
+        chatMessages: roomChatHistory.get(connection.gameId) ?? [],
       });
       broadcast(
         connection.gameId,
@@ -233,6 +259,39 @@ export function attachWebSocketServer(
           return;
         }
 
+        if (parsed.data.type === "chat") {
+          connection.chatMessageTimes = connection.chatMessageTimes.filter(
+            (sentAt) => currentTime - sentAt < 10_000,
+          );
+          if (connection.chatMessageTimes.length >= 8) {
+            send(socket, {
+              type: "chat_error",
+              message: "You are sending messages too quickly.",
+            });
+            return;
+          }
+          connection.chatMessageTimes.push(currentTime);
+          const chatMessage: RoomChatMessage = {
+            id: randomUUID(),
+            userId: connection.profile.id,
+            username: connection.profile.username,
+            displayName: connection.profile.displayName,
+            text: sanitizeChatText(parsed.data.text),
+            sentAt: new Date(currentTime).toISOString(),
+          };
+          if (!chatMessage.text) return;
+          const history = [
+            ...(roomChatHistory.get(connection.gameId) ?? []),
+            chatMessage,
+          ].slice(-50);
+          roomChatHistory.set(connection.gameId, history);
+          broadcast(connection.gameId, {
+            type: "chat_message",
+            message: chatMessage,
+          });
+          return;
+        }
+
         connection.state = {
           sequence: parsed.data.sequence,
           position: parsed.data.position,
@@ -254,6 +313,7 @@ export function attachWebSocketServer(
         room.delete(socket);
         if (room.size === 0) {
           rooms.delete(connection.gameId);
+          roomChatHistory.delete(connection.gameId);
         }
         broadcast(connection.gameId, {
           type: "player_left",

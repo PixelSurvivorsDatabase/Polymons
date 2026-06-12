@@ -100,6 +100,20 @@ test("accepts only bounded gameplay messages", () => {
     }).success,
     false,
   );
+  assert.equal(
+    clientMessageSchema.safeParse({
+      type: "chat",
+      text: "hello everyone",
+    }).success,
+    true,
+  );
+  assert.equal(
+    clientMessageSchema.safeParse({
+      type: "chat",
+      text: "x".repeat(161),
+    }).success,
+    false,
+  );
 });
 
 test("validates Studio publishes and friend requests", () => {

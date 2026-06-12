@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  activatePolyGui,
   analyzePolyScript,
   type PolyProject,
   runPolyProject,
@@ -338,4 +339,111 @@ var inventory = remote.InvokeServer("lava");`,
     result.output[0].message,
     'GetInventory.InvokeServer("lava")',
   );
+});
+
+test("runs TextButton LocalScripts only when the button is activated", () => {
+  const fixture = project();
+  fixture.gui.push({
+    id: "play-button",
+    name: "PlayButton",
+    type: "textButton",
+    parentId: "screen",
+    position: [0.4, 0.4],
+    size: [0.2, 0.1],
+    backgroundColor: "#6F49BB",
+    backgroundTransparency: 0,
+    text: "Play",
+    textColor: "#FFFFFF",
+    visible: true,
+    rotation: 0,
+    textSize: 16,
+    borderRadius: 7,
+    zIndex: 2,
+  });
+  fixture.scripts = [
+    {
+      id: "button-script",
+      name: "ButtonClient",
+      kind: "localScript",
+      parent: "play-button",
+      source: `local button = script.Parent
+button.Activated:Connect(function()
+    button.Text = "Clicked"
+    print("activated")
+end)`,
+    },
+  ];
+
+  const started = runPolyProject(fixture);
+  assert.equal(started.diagnostics.length, 0);
+  assert.equal(started.project.gui[2].text, "Play");
+  assert.equal(started.output.length, 0);
+
+  const activated = activatePolyGui(started.project, "play-button");
+  assert.equal(activated.diagnostics.length, 0);
+  assert.equal(activated.project.gui[2].text, "Clicked");
+  assert.deepEqual(activated.output, [
+    { level: "info", message: "activated", scriptName: "ButtonClient" },
+  ]);
+
+  activated.project.scripts[0].source = activated.project.scripts[0].source.replace(
+    "Activated",
+    "MouseButton1Click",
+  );
+  activated.project.gui[2].text = "Play";
+  const clicked = activatePolyGui(activated.project, "play-button");
+  assert.equal(clicked.diagnostics.length, 0);
+  assert.equal(clicked.project.gui[2].text, "Clicked");
+});
+
+test("supports TextButton activation callbacks in C++ and C#", () => {
+  for (const language of ["cpp", "csharp"] as const) {
+    const fixture = project();
+    fixture.language = language;
+    fixture.gui.push({
+      id: "language-button",
+      name: "LanguageButton",
+      type: "textButton",
+      parentId: "screen",
+      position: [0.4, 0.4],
+      size: [0.2, 0.1],
+      backgroundColor: "#6F49BB",
+      backgroundTransparency: 0,
+      text: "Run",
+      textColor: "#FFFFFF",
+      visible: true,
+      rotation: 0,
+      textSize: 16,
+      borderRadius: 7,
+      zIndex: 2,
+    });
+    fixture.scripts = [
+      {
+        id: `${language}-button-script`,
+        name: "ButtonClient",
+        kind: "localScript",
+        parent: "language-button",
+        source:
+          language === "cpp"
+            ? `auto button = Script.Parent;
+button.Activated.Connect([&]() {
+    button.Text = "C++ clicked";
+});`
+            : `var button = Script.Parent;
+button.Activated += () => {
+    button.Text = "C# clicked";
+};`,
+      },
+    ];
+
+    const started = runPolyProject(fixture);
+    assert.equal(started.diagnostics.length, 0);
+    assert.equal(started.project.gui[2].text, "Run");
+    const activated = activatePolyGui(started.project, "language-button");
+    assert.equal(activated.diagnostics.length, 0);
+    assert.equal(
+      activated.project.gui[2].text,
+      language === "cpp" ? "C++ clicked" : "C# clicked",
+    );
+  }
 });

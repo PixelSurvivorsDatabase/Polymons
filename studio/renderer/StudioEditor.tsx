@@ -143,6 +143,36 @@ print("Client script started")
 `;
 }
 
+function buttonLocalScriptSource(language: StudioLanguage): string {
+  if (language === "cpp") {
+    return `#include <poly/client.hpp>
+
+auto button = Script.Parent;
+button.Activated.Connect([&]() {
+    button.Text = "Clicked";
+    Console::Log("Button activated");
+});
+`;
+  }
+  if (language === "csharp") {
+    return `using Poly;
+
+var button = Script.Parent;
+button.Activated += () => {
+    button.Text = "Clicked";
+    Poly.Log("Button activated");
+};
+`;
+  }
+  return `local button = script.Parent
+
+button.Activated:Connect(function()
+    button.Text = "Clicked"
+    print("Button activated")
+end)
+`;
+}
+
 function nextName(existing: string[], base: string): string {
   if (!existing.includes(base)) return base;
   let number = 2;
@@ -713,7 +743,13 @@ export default function StudioEditor({
       ),
       kind,
       parent,
-      source: starterSource(project.language, kind),
+      source:
+        kind === "localScript" &&
+        project.gui.some(
+          (gui) => gui.id === parent && gui.type === "textButton",
+        )
+          ? buttonLocalScriptSource(project.language)
+          : starterSource(project.language, kind),
     };
     updateProject((current) => ({
       ...current,

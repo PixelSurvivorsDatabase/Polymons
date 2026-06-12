@@ -41,6 +41,11 @@ import {
 import { useAuth } from "./auth";
 import { games as fallbackGames, type Game } from "./data";
 import { useMultiplayer } from "./game/multiplayer";
+import {
+  activatePolyGui,
+  runPolyProject,
+  type PolyRuntimeResult,
+} from "./game/polyProject";
 
 const BaseplateGame = lazy(() => import("./game/BaseplateGame"));
 
@@ -594,15 +599,24 @@ function GamePage() {
 
 function BrowserGame({ playSession }: { playSession: PlaySession }) {
   const { user, session, refresh } = useAuth();
-  const [project, setProject] = useState<import("./game/polyProject").PolyProject | null>(null);
+  const [runtime, setRuntime] = useState<PolyRuntimeResult | null>(null);
   useEffect(() => {
     void getGame(playSession.game.id)
-      .then((result) => setProject(result.game.manifest ?? null))
-      .catch(() => setProject(null));
+      .then((result) =>
+        setRuntime(
+          result.game.manifest ? runPolyProject(result.game.manifest) : null,
+        ),
+      )
+      .catch(() => setRuntime(null));
   }, [playSession.game.id]);
-  const { connection, remotePlayers, sendState } = useMultiplayer(
-    playSession.websocketUrl,
-  );
+  const {
+    connection,
+    remotePlayers,
+    chatMessages,
+    chatError,
+    sendState,
+    sendChat,
+  } = useMultiplayer(playSession.websocketUrl);
 
   return (
     <div className="browser-game-wrap">
@@ -617,11 +631,25 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
         <BaseplateGame
           remotePlayers={remotePlayers}
           onPlayerState={sendState}
-          worldObjects={project?.objects}
-          guiObjects={project?.gui}
-          playerSettings={project?.playerSettings}
-          projectName={project?.name}
+          worldObjects={runtime?.project.objects}
+          guiObjects={runtime?.project.gui}
+          playerSettings={runtime?.project.playerSettings}
+          projectName={runtime?.project.name}
           localPlayer={user ?? undefined}
+          chatMessages={chatMessages}
+          chatError={chatError}
+          onSendChat={sendChat}
+          onGuiActivated={(guiObjectId) => {
+            setRuntime((current) => {
+              if (!current) return current;
+              const activated = activatePolyGui(current.project, guiObjectId);
+              return {
+                ...activated,
+                diagnostics: [...current.diagnostics, ...activated.diagnostics],
+                output: [...current.output, ...activated.output],
+              };
+            });
+          }}
           onFriendRequest={
             session
               ? async (username) => {

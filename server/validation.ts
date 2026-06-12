@@ -65,4 +65,8 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
     ]),
     rotationY: z.number().finite().min(-Math.PI * 4).max(Math.PI * 4),
   }),
+  z.object({
+    type: z.literal("chat"),
+    text: z.string().trim().min(1).max(160),
+  }),
 ]);

@@ -353,6 +353,20 @@ export default function CodeEditor({
                 range,
               },
               {
+                label: "Activated",
+                kind: monaco.languages.CompletionItemKind.Event,
+                insertText: "Activated",
+                detail: "TextButton activation event",
+                range,
+              },
+              {
+                label: "MouseButton1Click",
+                kind: monaco.languages.CompletionItemKind.Event,
+                insertText: "MouseButton1Click",
+                detail: "TextButton primary click event",
+                range,
+              },
+              {
                 label: "Vector3.new",
                 kind: monaco.languages.CompletionItemKind.Constructor,
                 insertText: vectorText,

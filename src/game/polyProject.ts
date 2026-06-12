@@ -241,7 +241,21 @@ function referenceByName(
 function findReferenceDeclaration(
   source: string,
   project: PolyProject,
+  script?: PolyScript,
 ): { variable: string; reference: Reference | null; requestedName: string } | null {
+  const scriptParentMatch = source.match(
+    /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*(?:script|Script)\.Parent\s*;?/,
+  );
+  if (scriptParentMatch && script) {
+    return {
+      variable: scriptParentMatch[1],
+      reference: project.gui.some((item) => item.id === script.parent)
+        ? { kind: "gui", id: script.parent }
+        : null,
+      requestedName: "script.Parent",
+    };
+  }
+
   const objectMatch =
     source.match(
       /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*(Workspace|workspace|PlayerGui|ReplicatedStorage)(?::FindFirstChild|\.Find)\(\s*["']([^"']+)["']\s*\)\s*;?/,
@@ -279,7 +293,15 @@ function findReferenceDeclaration(
 function findDirectReference(
   expression: string,
   project: PolyProject,
+  script?: PolyScript,
 ): Reference | null {
+  if (
+    /^(?:script|Script)\.Parent$/.test(expression) &&
+    script &&
+    project.gui.some((item) => item.id === script.parent)
+  ) {
+    return { kind: "gui", id: script.parent };
+  }
   const direct = expression.match(
     /^(Workspace|workspace|PlayerGui|ReplicatedStorage)\.([A-Za-z_]\w*)$/,
   );
@@ -298,6 +320,80 @@ function findDirectReference(
     return { kind: "player", id: "LocalPlayer" };
   }
   return null;
+}
+
+type GuiEventHandler = {
+  event: "MouseButton1Click" | "Activated";
+  prelude: string;
+  body: string;
+  line: number;
+  closed: boolean;
+  startIndex: number;
+  endIndex: number;
+};
+
+function guiEventHandlers(script: PolyScript): GuiEventHandler[] {
+  const lines = script.source.split("\n");
+  const handlers: GuiEventHandler[] = [];
+  const startPatterns = [
+    /^\s*(?:script\.Parent|[A-Za-z_]\w*)\.(MouseButton1Click|Activated)\s*:\s*Connect\s*\(\s*function\s*\([^)]*\)\s*$/,
+    /^\s*(?:Script\.Parent|[A-Za-z_]\w*)\.(MouseButton1Click|Activated)\s*\+=\s*\([^)]*\)\s*=>\s*\{\s*$/,
+    /^\s*(?:Script\.Parent|[A-Za-z_]\w*)\.(MouseButton1Click|Activated)\.Connect\s*\(.*\{\s*$/,
+  ];
+  const endPatterns = [
+    /^\s*end\s*\)\s*;?\s*$/,
+    /^\s*}\s*;?\s*$/,
+    /^\s*}\s*\)\s*;?\s*$/,
+  ];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    let startMatch: RegExpMatchArray | null = null;
+    let syntaxIndex = -1;
+    for (let candidate = 0; candidate < startPatterns.length; candidate += 1) {
+      startMatch = lines[index].match(startPatterns[candidate]);
+      if (startMatch) {
+        syntaxIndex = candidate;
+        break;
+      }
+    }
+    if (!startMatch) continue;
+
+    let endIndex = lines.length - 1;
+    let closed = false;
+    for (let candidate = index + 1; candidate < lines.length; candidate += 1) {
+      if (endPatterns[syntaxIndex].test(lines[candidate])) {
+        endIndex = candidate;
+        closed = true;
+        break;
+      }
+    }
+    handlers.push({
+      event: startMatch[1] as GuiEventHandler["event"],
+      prelude: lines.slice(0, index).join("\n"),
+      body: lines.slice(index + 1, closed ? endIndex : lines.length).join("\n"),
+      line: index + 1,
+      closed,
+      startIndex: index,
+      endIndex,
+    });
+    index = endIndex;
+  }
+  return handlers;
+}
+
+function withoutGuiEventHandlers(script: PolyScript): string {
+  const lines = script.source.split("\n");
+  const ignored = new Set<number>();
+  for (const handler of guiEventHandlers(script)) {
+    for (
+      let index = handler.startIndex;
+      index <= handler.endIndex;
+      index += 1
+    ) {
+      ignored.add(index);
+    }
+  }
+  return lines.filter((_, index) => !ignored.has(index)).join("\n");
 }
 
 function parseNumbers(value: string, count: number): number[] | null {
@@ -699,7 +795,14 @@ function syntaxDiagnostics(
       return;
     }
     let kind: string | null = null;
-    if (/^(?:local\s+)?function\b/.test(code)) kind = "function";
+    if (
+      /^(?:local\s+)?function\b/.test(code) ||
+      /\.(?:MouseButton1Click|Activated)\s*:\s*Connect\s*\(\s*function\b/.test(
+        code,
+      )
+    ) {
+      kind = "function";
+    }
     else if (/^if\b.*\bthen\s*$/.test(code)) kind = "if";
     else if (/^(?:for|while)\b.*\bdo\s*$/.test(code)) kind = "loop";
     else if (/^repeat\b/.test(code)) kind = "repeat";
@@ -735,6 +838,35 @@ export function analyzePolyScript(
     ...delimiterDiagnostics(script.source),
     ...syntaxDiagnostics(script, project.language),
   ];
+  const buttonHandlers = guiEventHandlers(script);
+  const scriptParent = project.gui.find((item) => item.id === script.parent);
+  if (buttonHandlers.length > 0 && script.kind !== "localScript") {
+    diagnostics.push({
+      line: buttonHandlers[0].line,
+      column: 1,
+      endColumn: 2,
+      severity: "error",
+      message: "Button activation events can only run in a LocalScript.",
+    });
+  }
+  if (buttonHandlers.length > 0 && scriptParent?.type !== "textButton") {
+    diagnostics.push({
+      line: buttonHandlers[0].line,
+      column: 1,
+      endColumn: 2,
+      severity: "error",
+      message: "MouseButton1Click and Activated require a TextButton parent.",
+    });
+  }
+  for (const handler of buttonHandlers.filter((item) => !item.closed)) {
+    diagnostics.push({
+      line: handler.line,
+      column: 1,
+      endColumn: 2,
+      severity: "error",
+      message: `${handler.event} is missing its closing callback delimiter.`,
+    });
+  }
   const validationProject = cloneProject(project);
   const variables = new Map<string, Reference>();
   const modules = new Map<string, Record<string, PolyStoredValue>>();
@@ -894,7 +1026,7 @@ export function analyzePolyScript(
       return;
     }
 
-    const declaration = findReferenceDeclaration(source, project);
+    const declaration = findReferenceDeclaration(source, project, script);
     if (declaration) {
       if (!declaration.reference) {
         diagnostics.push(
@@ -961,7 +1093,7 @@ export function analyzePolyScript(
     if (assignment) {
       const reference =
         variables.get(assignment[1]) ??
-        findDirectReference(assignment[1], project);
+        findDirectReference(assignment[1], project, script);
       if (!reference) {
         if (
           assignment[1].startsWith("Workspace.") ||
@@ -1066,12 +1198,14 @@ function executeScript(
   script: PolyScript,
   project: PolyProject,
   output: PolyRuntimeResult["output"],
+  sourceOverride?: string,
 ): void {
   const variables = new Map<string, Reference>();
   const modules = new Map<string, Record<string, PolyStoredValue>>();
   const stores = new Map<string, string>();
   const values = new Map<string, PolyStoredValue>();
-  for (const source of script.source.split("\n")) {
+  const sourceText = sourceOverride ?? withoutGuiEventHandlers(script);
+  for (const source of sourceText.split("\n")) {
     const moduleDeclaration = findModuleDeclaration(source, project);
     if (moduleDeclaration?.module) {
       modules.set(
@@ -1154,7 +1288,7 @@ function executeScript(
       }
       continue;
     }
-    const declaration = findReferenceDeclaration(source, project);
+    const declaration = findReferenceDeclaration(source, project, script);
     if (declaration?.reference) {
       variables.set(declaration.variable, declaration.reference);
       continue;
@@ -1211,7 +1345,7 @@ function executeScript(
     if (!assignment) continue;
     const reference =
       variables.get(assignment[1]) ??
-      findDirectReference(assignment[1], project);
+      findDirectReference(assignment[1], project, script);
     if (!reference) continue;
     const error = assignProperty(
       project,
@@ -1223,6 +1357,50 @@ function executeScript(
       output.push({ level: "error", message: error, scriptName: script.name });
     }
   }
+}
+
+export function activatePolyGui(
+  input: PolyProject,
+  guiObjectId: string,
+): PolyRuntimeResult {
+  const project = normalizePolyProject(input);
+  const scripts = project.scripts.filter(
+    (script) =>
+      script.kind === "localScript" &&
+      script.parent === guiObjectId &&
+      project.gui.some(
+        (gui) => gui.id === guiObjectId && gui.type === "textButton",
+      ),
+  );
+  const diagnostics = scripts.flatMap((script) =>
+    analyzePolyScript(script, project).map((diagnostic) => ({
+      ...diagnostic,
+      scriptId: script.id,
+      scriptName: script.name,
+    })),
+  );
+  const output: PolyRuntimeResult["output"] = [];
+
+  for (const script of scripts) {
+    if (
+      diagnostics.some(
+        (diagnostic) =>
+          diagnostic.scriptId === script.id && diagnostic.severity === "error",
+      )
+    ) {
+      continue;
+    }
+    for (const handler of guiEventHandlers(script)) {
+      executeScript(
+        script,
+        project,
+        output,
+        `${handler.prelude}\n${handler.body}`,
+      );
+    }
+  }
+
+  return { project, diagnostics, output };
 }
 
 export function runPolyProject(input: PolyProject): PolyRuntimeResult {

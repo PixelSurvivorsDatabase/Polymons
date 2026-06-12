@@ -8,9 +8,19 @@ export type PlayerTransform = {
 
 export type RemotePlayer = {
   id: string;
+  userId: string;
   username: string;
   displayName: string;
   state: PlayerTransform;
+};
+
+export type ChatMessage = {
+  id: string;
+  userId: string;
+  username: string;
+  displayName: string;
+  text: string;
+  sentAt: string;
 };
 
 type ServerPlayer = Omit<RemotePlayer, "state"> & {
@@ -22,10 +32,13 @@ type ServerMessage =
       type: "welcome";
       player: ServerPlayer;
       players: ServerPlayer[];
+      chatMessages: ChatMessage[];
     }
   | { type: "player_joined"; player: ServerPlayer }
   | ({ type: "player_state"; playerId: string } & PlayerTransform)
   | { type: "player_left"; playerId: string }
+  | { type: "chat_message"; message: ChatMessage }
+  | { type: "chat_error"; message: string }
   | { type: "pong" };
 
 const SPAWN_STATE: PlayerTransform = {
@@ -52,9 +65,25 @@ function isPlayer(value: unknown): value is ServerPlayer {
   const player = value as Partial<ServerPlayer>;
   return (
     typeof player.id === "string" &&
+    typeof player.userId === "string" &&
     typeof player.username === "string" &&
     typeof player.displayName === "string" &&
     (player.state === undefined || isTransform(player.state))
+  );
+}
+
+function isChatMessage(value: unknown): value is ChatMessage {
+  if (!value || typeof value !== "object") return false;
+  const message = value as Partial<ChatMessage>;
+  return (
+    typeof message.id === "string" &&
+    typeof message.userId === "string" &&
+    typeof message.username === "string" &&
+    typeof message.displayName === "string" &&
+    typeof message.text === "string" &&
+    message.text.length > 0 &&
+    message.text.length <= 160 &&
+    typeof message.sentAt === "string"
   );
 }
 
@@ -72,7 +101,13 @@ export function parseServerMessage(value: string): ServerMessage | null {
     if (!isPlayer(candidate.player) || !Array.isArray(candidate.players)) {
       return null;
     }
-    if (!candidate.players.every(isPlayer)) return null;
+    if (
+      !candidate.players.every(isPlayer) ||
+      !Array.isArray(candidate.chatMessages) ||
+      !candidate.chatMessages.every(isChatMessage)
+    ) {
+      return null;
+    }
     return candidate as ServerMessage;
   }
   if (candidate.type === "player_joined" && isPlayer(candidate.player)) {
@@ -82,6 +117,18 @@ export function parseServerMessage(value: string): ServerMessage | null {
     candidate.type === "player_state" &&
     typeof candidate.playerId === "string" &&
     isTransform(candidate)
+  ) {
+    return candidate as ServerMessage;
+  }
+  if (
+    candidate.type === "chat_message" &&
+    isChatMessage(candidate.message)
+  ) {
+    return candidate as ServerMessage;
+  }
+  if (
+    candidate.type === "chat_error" &&
+    typeof candidate.message === "string"
   ) {
     return candidate as ServerMessage;
   }
@@ -107,6 +154,8 @@ export function useMultiplayer(websocketUrl: string) {
   const sequence = useRef(0);
   const [connection, setConnection] = useState("Connecting");
   const [remotePlayers, setRemotePlayers] = useState<RemotePlayer[]>([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatError, setChatError] = useState("");
 
   useEffect(() => {
     const nextSocket = new WebSocket(websocketUrl);
@@ -114,6 +163,8 @@ export function useMultiplayer(websocketUrl: string) {
     sequence.current = 0;
     setConnection("Connecting");
     setRemotePlayers([]);
+    setChatMessages([]);
+    setChatError("");
 
     nextSocket.addEventListener("open", () => {
       setConnection("Connected");
@@ -126,6 +177,7 @@ export function useMultiplayer(websocketUrl: string) {
 
       if (message.type === "welcome") {
         setRemotePlayers(message.players.map(withState));
+        setChatMessages(message.chatMessages);
         return;
       }
       if (message.type === "player_joined") {
@@ -157,6 +209,15 @@ export function useMultiplayer(websocketUrl: string) {
         setRemotePlayers((players) =>
           players.filter((player) => player.id !== message.playerId),
         );
+        return;
+      }
+      if (message.type === "chat_message") {
+        setChatMessages((messages) => [...messages, message.message].slice(-50));
+        setChatError("");
+        return;
+      }
+      if (message.type === "chat_error") {
+        setChatError(message.message);
       }
     });
     nextSocket.addEventListener("close", () => {
@@ -192,5 +253,25 @@ export function useMultiplayer(websocketUrl: string) {
     [],
   );
 
-  return { connection, remotePlayers, sendState };
+  const sendChat = useCallback((text: string) => {
+    const normalized = text.trim();
+    if (
+      !normalized ||
+      normalized.length > 160 ||
+      socket.current?.readyState !== WebSocket.OPEN
+    ) {
+      return false;
+    }
+    socket.current.send(JSON.stringify({ type: "chat", text: normalized }));
+    return true;
+  }, []);
+
+  return {
+    connection,
+    remotePlayers,
+    chatMessages,
+    chatError,
+    sendState,
+    sendChat,
+  };
 }
