@@ -1,0 +1,23 @@
+{
+  "appId": "com.polymons.admin",
+  "productName": "Poly Admin",
+  "asar": true,
+  "extraMetadata": {
+    "main": "admin-dist/main/main.js",
+    "productName": "Poly Admin"
+  },
+  "directories": {
+    "output": "admin-release"
+  },
+  "files": [
+    "admin-dist/**/*",
+    "package.json"
+  ],
+  "win": {
+    "target": [
+      "portable"
+    ],
+    "icon": "assets/polymons-logo.png",
+    "artifactName": "PolyAdmin.exe"
+  }
+}

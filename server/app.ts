@@ -17,6 +17,7 @@ import {
   hashPlayerAccountTicket,
   hashPlayTicket,
   internalEmailForUsername,
+  isOwnerAccount,
   isReservedUsername,
 } from "./security.js";
 import {
@@ -72,6 +73,27 @@ async function authenticatedUser(
   }
 
   return data.user;
+}
+
+async function ownerUser(
+  request: Request,
+  admin: SupabaseClient,
+) {
+  const user = await authenticatedUser(request, admin);
+  if (!isOwnerAccount(user)) {
+    throw new HttpError(403, "Owner access required.");
+  }
+  return user;
+}
+
+function integerQuery(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return fallback;
+  return Math.min(maximum, Math.max(minimum, Number(value)));
 }
 
 export function createApp(
@@ -220,6 +242,109 @@ export function createApp(
   app.get("/v1/me", async (request, response) => {
     const user = await authenticatedUser(request, admin);
     response.json({ user: await loadProfile(admin, user.id) });
+  });
+
+  app.get("/v1/admin/accounts", async (request, response) => {
+    await ownerUser(request, admin);
+    const page = integerQuery(request.query.page, 1, 1, 10_000);
+    const perPage = integerQuery(request.query.perPage, 100, 10, 200);
+    const { data: authData, error: authError } =
+      await admin.auth.admin.listUsers({ page, perPage });
+    if (authError) throw authError;
+
+    const userIds = authData.users.map((user) => user.id);
+    const [profilesResult, gamesResult, friendshipsResult] = await Promise.all([
+      userIds.length
+        ? admin
+            .from("profiles")
+            .select("id, username, display_name, avatar_url, created_at")
+            .in("id", userIds)
+        : Promise.resolve({ data: [], error: null }),
+      admin.from("games").select("id, owner_id, visit_count"),
+      admin
+        .from("friendships")
+        .select("requester_id, addressee_id")
+        .eq("status", "accepted"),
+    ]);
+    if (profilesResult.error) throw profilesResult.error;
+    if (gamesResult.error) throw gamesResult.error;
+    if (friendshipsResult.error) throw friendshipsResult.error;
+
+    const profileById = new Map(
+      (profilesResult.data ?? []).map((profile) => [profile.id, profile]),
+    );
+    const accountStats = new Map<
+      string,
+      { friends: number; games: number; gameVisits: number }
+    >();
+    const statsFor = (userId: string) => {
+      const current = accountStats.get(userId);
+      if (current) return current;
+      const created = { friends: 0, games: 0, gameVisits: 0 };
+      accountStats.set(userId, created);
+      return created;
+    };
+
+    for (const game of gamesResult.data ?? []) {
+      if (!game.owner_id) continue;
+      const stats = statsFor(game.owner_id);
+      stats.games += 1;
+      stats.gameVisits += Number(game.visit_count ?? 0);
+    }
+    for (const friendship of friendshipsResult.data ?? []) {
+      statsFor(friendship.requester_id).friends += 1;
+      statsFor(friendship.addressee_id).friends += 1;
+    }
+
+    const livePlayers = presence().players;
+    const liveByUserId = new Map(
+      livePlayers.map((player) => [
+        player.userId,
+        { gameId: player.gameId, connected: true },
+      ]),
+    );
+    const totalVisits = (gamesResult.data ?? []).reduce(
+      (total, game) => total + Number(game.visit_count ?? 0),
+      0,
+    );
+
+    response.set("Cache-Control", "private, no-store");
+    response.json({
+      accounts: authData.users.map((authUser) => {
+        const profile = profileById.get(authUser.id);
+        const stats = statsFor(authUser.id);
+        return {
+          id: authUser.id,
+          username: profile?.username ?? "unknown",
+          displayName: profile?.display_name ?? "Unknown player",
+          avatarUrl: profile?.avatar_url ?? null,
+          joinedAt: profile?.created_at ?? authUser.created_at,
+          lastSignInAt: authUser.last_sign_in_at ?? null,
+          role: isOwnerAccount(authUser) ? "owner" : "player",
+          loginDisabled: authUser.app_metadata?.login_disabled === true,
+          passwordStatus: "protected-hash-only",
+          online: liveByUserId.get(authUser.id) ?? {
+            gameId: null,
+            connected: false,
+          },
+          stats,
+        };
+      }),
+      pagination: {
+        page,
+        perPage,
+        total: authData.total ?? authData.users.length,
+        lastPage:
+          authData.lastPage ??
+          Math.max(1, Math.ceil((authData.total ?? authData.users.length) / perPage)),
+      },
+      summary: {
+        accounts: authData.total ?? authData.users.length,
+        games: (gamesResult.data ?? []).length,
+        gameVisits: totalVisits,
+        onlinePlayers: new Set(livePlayers.map((player) => player.userId)).size,
+      },
+    });
   });
 
   app.post("/v1/player-account-links", async (request, response) => {

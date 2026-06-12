@@ -26,6 +26,10 @@
     "studio:renderer": "tsc -p tsconfig.studio-renderer.json && vite build --config vite.studio.config.ts",
     "studio:build": "npm run studio:main && npm run studio:renderer",
     "studio:package": "npm run studio:build && electron-builder --config electron-builder.studio.json --win portable",
+    "admin:main": "tsc -p tsconfig.admin.json && node scripts/copy-admin-assets.mjs",
+    "admin:renderer": "tsc -p tsconfig.admin-renderer.json && vite build --config vite.admin.config.ts",
+    "admin:build": "npm run admin:main && npm run admin:renderer",
+    "admin:package": "npm run admin:build && electron-builder --config electron-builder.admin.json --win portable",
     "supabase:push": "supabase db push --linked",
     "supabase:lint": "supabase db lint --linked --schema public,private --level warning --fail-on error",
     "supabase:advisors": "supabase db advisors --linked --type security --level warn --fail-on error"

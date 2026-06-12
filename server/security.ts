@@ -20,6 +20,12 @@ export function isReservedUsername(username: string): boolean {
   return RESERVED_USERNAMES.has(normalizeUsername(username));
 }
 
+export function isOwnerAccount(user: {
+  app_metadata?: Record<string, unknown>;
+}): boolean {
+  return user.app_metadata?.owner === true;
+}
+
 export function internalEmailForUsername(username: string): string {
   return `${normalizeUsername(username)}@accounts.polymons.invalid`;
 }

@@ -8,6 +8,7 @@ import {
   hashPlayerAccountTicket,
   hashPlayTicket,
   internalEmailForUsername,
+  isOwnerAccount,
   isReservedUsername,
   normalizeUsername,
 } from "./security.js";
@@ -40,6 +41,19 @@ test("keeps the official account reserved and login-disabled", () => {
       app_metadata: { login_disabled: true },
     } as unknown as Parameters<typeof isLoginDisabled>[0]),
     true,
+  );
+});
+
+test("accepts owner authorization only from protected app metadata", () => {
+  assert.equal(isOwnerAccount({ app_metadata: { owner: true } }), true);
+  assert.equal(isOwnerAccount({ app_metadata: { owner: false } }), false);
+  assert.equal(isOwnerAccount({ app_metadata: {} }), false);
+  assert.equal(
+    isOwnerAccount({
+      app_metadata: {},
+      user_metadata: { owner: true },
+    } as Parameters<typeof isOwnerAccount>[0]),
+    false,
   );
 });
 
