@@ -69,6 +69,7 @@ function createPreviewProject(
     version: 2,
     id: crypto.randomUUID(),
     name,
+    description: "",
     language,
     createdAt: now,
     updatedAt: now,
@@ -85,6 +86,7 @@ function createPreviewProject(
         visible: true,
         transparency: 0,
         material: "plastic",
+        surfaceTexture: "grass",
         canCollide: true,
         castShadow: true,
         modelId: null,
@@ -103,6 +105,7 @@ function createPreviewProject(
         visible: true,
         transparency: 0,
         material: "neon",
+        surfaceTexture: "none",
         canCollide: true,
         castShadow: true,
         modelId: null,
@@ -121,6 +124,7 @@ function createPreviewProject(
         visible: true,
         transparency: 0,
         material: "plastic",
+        surfaceTexture: "brick",
         canCollide: true,
         castShadow: true,
         modelId: null,
@@ -154,6 +158,15 @@ function createPreviewProject(
       cameraFieldOfView: 52,
       maxHealth: 100,
     },
+    leaderstats: [
+      {
+        id: crypto.randomUUID(),
+        name: "Coins",
+        type: "number",
+        defaultValue: 0,
+      },
+    ],
+    publication: null,
     dataStores: {},
   };
 }
@@ -212,14 +225,31 @@ if (isPreview && !window.polyStudio) {
       projects.set(next.id, next);
       return next;
     },
-    publishProject: async (project) => ({
-      game: {
+    publishProject: async (project, metadata) => {
+      const next = {
+        ...project,
+        name: metadata.title,
+        description: metadata.description,
+        publication: {
+          gameId: project.id,
+          slug: metadata.title.toLowerCase().replace(/\s+/g, "-"),
+          version: (project.publication?.version ?? 0) + 1,
+          publishedAt: new Date().toISOString(),
+        },
+      };
+      projects.set(next.id, next);
+      return {
+        game: {
         id: project.id,
-        slug: project.name.toLowerCase().replace(/\s+/g, "-"),
-        title: project.name,
-        version: 1,
-      },
-    }),
+          slug: next.publication.slug,
+          title: next.name,
+          version: next.publication.version,
+        },
+        project: next,
+      };
+    },
+    exportProject: async () => "preview.poly",
+    importProject: async () => null,
     revealProject: async () => undefined,
     playProject: async () => undefined,
     exportModel: async () => "preview.pmxl",

@@ -30,6 +30,14 @@ type StudioObject = {
   visible?: boolean;
   transparency: number;
   material: "plastic" | "metal" | "wood" | "neon";
+  surfaceTexture:
+    | "none"
+    | "brick"
+    | "wood"
+    | "concrete"
+    | "grass"
+    | "fabric"
+    | "marble";
   canCollide: boolean;
   castShadow: boolean;
   friction?: number;
@@ -85,6 +93,7 @@ type StudioProject = {
   version: 2;
   id: string;
   name: string;
+  description: string;
   language: StudioLanguage;
   createdAt: string;
   updatedAt: string;
@@ -100,6 +109,18 @@ type StudioProject = {
     cameraFieldOfView: number;
     maxHealth: number;
   };
+  leaderstats: Array<{
+    id: string;
+    name: string;
+    type: "number" | "string";
+    defaultValue: number | string;
+  }>;
+  publication: {
+    gameId: string;
+    slug: string;
+    version: number;
+    publishedAt: string;
+  } | null;
   dataStores: Record<string, Record<string, string | number | boolean | null>>;
 };
 
@@ -118,12 +139,19 @@ interface Window {
     createProject: (input: {
       name: string;
       language: StudioLanguage;
+      template?: "baseplate" | "tutorial";
     }) => Promise<StudioProject>;
     loadProject: (id: string) => Promise<StudioProject>;
     saveProject: (project: StudioProject) => Promise<StudioProject>;
-    publishProject: (project: StudioProject) => Promise<{
+    publishProject: (
+      project: StudioProject,
+      metadata: { title: string; description: string },
+    ) => Promise<{
       game: { id: string; slug: string; title: string; version: number };
+      project: StudioProject;
     }>;
+    exportProject: (project: StudioProject) => Promise<string | null>;
+    importProject: () => Promise<StudioProject | null>;
     revealProject: (id: string) => Promise<void>;
     playProject: (id: string) => Promise<void>;
     exportModel: (input: {

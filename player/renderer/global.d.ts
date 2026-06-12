@@ -40,6 +40,14 @@ type PlayerGameSummary = {
   updatedAt: string;
 };
 
+type PlayerFriendship = {
+  id: string;
+  status: "pending" | "accepted" | "blocked";
+  incoming: boolean;
+  user: PlayerUser | null;
+  gameId: string | null;
+};
+
 interface Window {
   polymons: {
     getAuth: () => Promise<PlayerAuth | null>;
@@ -51,6 +59,7 @@ interface Window {
     ) => Promise<PlayerAuth>;
     logout: () => Promise<void>;
     listGames: () => Promise<{ games: PlayerGameSummary[] }>;
+    listFriends: () => Promise<{ friendships: PlayerFriendship[] }>;
     play: (
       gameId: string,
     ) => Promise<{

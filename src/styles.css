@@ -1108,9 +1108,12 @@ h3,
   backdrop-filter: blur(16px);
 }
 .player-list-menu header { display: flex; justify-content: space-between; padding: 9px 10px 12px; color: #dcd5e6; }
-.player-list-menu > button { display: flex; width: 100%; align-items: center; gap: 10px; border: 0; border-radius: 9px; background: transparent; color: #eee9f4; cursor: pointer; padding: 9px; text-align: left; }
+.player-list-columns { display: grid; gap: 10px; border-bottom: 1px solid rgba(255,255,255,.08); color: #827b8c; padding: 5px 9px 8px; font-size: 9px; font-weight: 800; text-transform: uppercase; }
+.player-list-columns span:not(:first-child) { text-align: right; }
+.player-list-menu > button { display: grid; width: 100%; align-items: center; gap: 10px; border: 0; border-radius: 9px; background: transparent; color: #eee9f4; cursor: pointer; padding: 9px; text-align: left; }
 .player-list-menu > button:hover { background: rgba(255,255,255,.07); }
 .player-list-menu > button > span, .player-profile-popover > span { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 8px; background: #704bb0; font-weight: 900; }
+.player-list-menu > button > b { color: #c8c0d1; font-size: 11px; text-align: right; }
 .player-list-menu button div { min-width: 0; }
 .player-list-menu button strong, .player-list-menu button small { display: block; }
 .player-list-menu button small { margin-top: 2px; color: #938b9e; }

@@ -56,6 +56,14 @@ type SceneObject = {
   visible?: boolean;
   transparency: number;
   material: "plastic" | "metal" | "wood" | "neon";
+  surfaceTexture:
+    | "none"
+    | "brick"
+    | "wood"
+    | "concrete"
+    | "grass"
+    | "fabric"
+    | "marble";
   canCollide: boolean;
   castShadow: boolean;
   friction?: number;
@@ -111,6 +119,7 @@ type StudioProject = {
   version: 2;
   id: string;
   name: string;
+  description: string;
   language: StudioLanguage;
   createdAt: string;
   updatedAt: string;
@@ -126,7 +135,25 @@ type StudioProject = {
     cameraFieldOfView: number;
     maxHealth: number;
   };
+  leaderstats: Array<{
+    id: string;
+    name: string;
+    type: "number" | "string";
+    defaultValue: number | string;
+  }>;
+  publication: {
+    gameId: string;
+    slug: string;
+    version: number;
+    publishedAt: string;
+  } | null;
   dataStores: Record<string, Record<string, string | number | boolean | null>>;
+};
+
+type PolyGameFile = {
+  format: "polymons-game";
+  version: 1;
+  project: StudioProject;
 };
 
 type PmxlFile = {
@@ -367,6 +394,7 @@ function migrateLegacyProject(
     version: 2,
     id: manifest.id,
     name: manifest.name,
+    description: "",
     language: manifest.language,
     createdAt: manifest.createdAt,
     updatedAt: manifest.updatedAt,
@@ -375,6 +403,7 @@ function migrateLegacyProject(
       visible: true,
       transparency: 0,
       material: "plastic",
+      surfaceTexture: "none",
       canCollide: true,
       castShadow: true,
       friction: 0.82,
@@ -404,6 +433,8 @@ function migrateLegacyProject(
       cameraFieldOfView: 52,
       maxHealth: 100,
     },
+    leaderstats: [],
+    publication: null,
     dataStores: {},
   };
 }
@@ -416,6 +447,7 @@ function normalizeProject(project: StudioProject): StudioProject {
       visible: object.visible ?? true,
       transparency: object.transparency ?? 0,
       material: object.material ?? "plastic",
+      surfaceTexture: object.surfaceTexture ?? "none",
       canCollide: object.canCollide ?? true,
       castShadow: object.castShadow ?? true,
       friction: object.friction ?? 0.82,
@@ -447,6 +479,18 @@ function normalizeProject(project: StudioProject): StudioProject {
       cameraFieldOfView: project.playerSettings.cameraFieldOfView ?? 52,
       maxHealth: project.playerSettings.maxHealth ?? 100,
     },
+    description: project.description ?? "",
+    leaderstats: (project.leaderstats ?? []).map((stat) => ({
+      ...stat,
+      type: stat.type === "string" ? "string" : "number",
+      defaultValue:
+        stat.type === "string"
+          ? String(stat.defaultValue ?? "")
+          : Number.isFinite(Number(stat.defaultValue))
+            ? Number(stat.defaultValue)
+            : 0,
+    })),
+    publication: project.publication ?? null,
     dataStores: project.dataStores ?? {},
   };
 }
@@ -465,6 +509,7 @@ function starterObjects(): SceneObject[] {
       visible: true,
       transparency: 0,
       material: "plastic",
+      surfaceTexture: "grass",
       canCollide: true,
       castShadow: true,
       friction: 0.82,
@@ -487,6 +532,7 @@ function starterObjects(): SceneObject[] {
       visible: true,
       transparency: 0,
       material: "neon",
+      surfaceTexture: "none",
       canCollide: true,
       castShadow: true,
       friction: 0.82,
@@ -509,6 +555,7 @@ function starterObjects(): SceneObject[] {
       visible: true,
       transparency: 0,
       material: "plastic",
+      surfaceTexture: "brick",
       canCollide: true,
       castShadow: true,
       friction: 0.82,
@@ -518,6 +565,122 @@ function starterObjects(): SceneObject[] {
       modelId: null,
       attributes: {},
       tags: [],
+    },
+  ];
+}
+
+function tutorialObjects(): SceneObject[] {
+  const objects = starterObjects();
+  const lessons: Array<{
+    name: string;
+    position: [number, number, number];
+    color: string;
+    texture: SceneObject["surfaceTexture"];
+  }> = [
+    {
+      name: "Step1_SelectAndMove",
+      position: [-8, 1, -2],
+      color: "#6F49BB",
+      texture: "brick",
+    },
+    {
+      name: "Step2_EditProperties",
+      position: [0, 1, -8],
+      color: "#3D8D73",
+      texture: "wood",
+    },
+    {
+      name: "Step3_OpenMainScript",
+      position: [8, 1, -2],
+      color: "#A65B6A",
+      texture: "marble",
+    },
+  ];
+  return [
+    ...objects,
+    ...lessons.map((lesson) => ({
+      id: randomUUID(),
+      name: lesson.name,
+      type: "part" as const,
+      position: lesson.position,
+      rotation: [0, 0, 0] as [number, number, number],
+      scale: [5, 2, 5] as [number, number, number],
+      color: lesson.color,
+      anchored: true,
+      visible: true,
+      transparency: 0,
+      material: "plastic" as const,
+      surfaceTexture: lesson.texture,
+      canCollide: true,
+      castShadow: true,
+      friction: 0.82,
+      restitution: 0.03,
+      mass: 1,
+      parentId: null,
+      modelId: null,
+      attributes: {
+        Tutorial:
+          lesson.name === "Step1_SelectAndMove"
+            ? "Select this Part and use Move."
+            : lesson.name === "Step2_EditProperties"
+              ? "Change Color and Texture in Properties."
+              : "Open Main in ServerScriptService and edit the code.",
+      },
+      tags: ["Tutorial"],
+    })),
+  ];
+}
+
+function tutorialScripts(language: StudioLanguage): StudioScript[] {
+  const scripts = starterScripts(language);
+  return scripts.map((script) =>
+    script.name === "Main"
+      ? {
+          ...script,
+          source: `${script.source}
+${language === "luau" ? '-- Tutorial: change the Part color, then press Play.' : "// Tutorial: change the Part color, then press Play."}
+`,
+        }
+      : script,
+  );
+}
+
+function tutorialGui(): StudioGuiObject[] {
+  const screenId = randomUUID();
+  return [
+    {
+      id: screenId,
+      name: "TutorialGui",
+      type: "screenGui",
+      parentId: null,
+      position: [0, 0],
+      size: [1, 1],
+      backgroundColor: "#000000",
+      backgroundTransparency: 1,
+      text: "",
+      textColor: "#FFFFFF",
+      visible: true,
+      rotation: 0,
+      textSize: 16,
+      borderRadius: 0,
+      zIndex: 1,
+    },
+    {
+      id: randomUUID(),
+      name: "Welcome",
+      type: "textLabel",
+      parentId: screenId,
+      position: [0.03, 0.04],
+      size: [0.38, 0.1],
+      backgroundColor: "#17131F",
+      backgroundTransparency: 0.08,
+      text: "Welcome to Poly Studio. Follow the three named Parts.",
+      textColor: "#FFFFFF",
+      visible: true,
+      rotation: 0,
+      textSize: 18,
+      borderRadius: 10,
+      zIndex: 2,
     },
   ];
 }
@@ -575,10 +738,21 @@ async function apiRequest<T>(
   return result as T;
 }
 
-async function publishProject(project: StudioProject): Promise<{
+async function publishProject(
+  project: StudioProject,
+  metadata: { title: string; description: string },
+): Promise<{
   game: { id: string; slug: string; title: string; version: number };
 }> {
   validateProject(project);
+  const title = metadata.title.trim();
+  const description = metadata.description.trim();
+  if (title.length < 1 || title.length > 64) {
+    throw new Error("Game names must be 1-64 characters.");
+  }
+  if (description.length > 2_000) {
+    throw new Error("Descriptions must be 2,000 characters or fewer.");
+  }
   let current = requireAuth();
   const request = (accessToken: string) =>
     apiRequest<{
@@ -588,10 +762,14 @@ async function publishProject(project: StudioProject): Promise<{
       accessToken,
       body: {
         projectId: project.id,
-        title: project.name,
-        description: `Created in Poly Studio by ${current.user.displayName}.`,
+        title,
+        description,
         genre: "All",
-        manifest: project,
+        manifest: {
+          ...project,
+          name: title,
+          description,
+        },
       },
     });
   if (
@@ -602,7 +780,22 @@ async function publishProject(project: StudioProject): Promise<{
     if (!renewed) throw new Error("Sign in again to publish.");
     current = renewed;
   }
-  return request(current.session.accessToken);
+  const result = await request(current.session.accessToken);
+  const verified = await apiRequest<{
+    game: {
+      id: string;
+      version: number | null;
+      manifest: { id?: string } | null;
+    };
+  }>(`/v1/games/${encodeURIComponent(result.game.id)}`);
+  if (
+    verified.game.id !== result.game.id ||
+    verified.game.version !== result.game.version ||
+    verified.game.manifest?.id !== project.id
+  ) {
+    throw new Error("Polymons could not verify the published game.");
+  }
+  return result;
 }
 
 async function refreshAuth(): Promise<StoredAuth | null> {
@@ -663,6 +856,12 @@ function validateProject(project: StudioProject): void {
   ) {
     throw new Error("Invalid project name.");
   }
+  if (
+    typeof project.description !== "string" ||
+    project.description.length > 2_000
+  ) {
+    throw new Error("Invalid project description.");
+  }
   if (!["luau", "cpp", "csharp"].includes(project.language)) {
     throw new Error("Invalid project language.");
   }
@@ -692,6 +891,15 @@ function validateProject(project: StudioProject): void {
       object.transparency < 0 ||
       object.transparency > 1 ||
       !["plastic", "metal", "wood", "neon"].includes(object.material) ||
+      ![
+        "none",
+        "brick",
+        "wood",
+        "concrete",
+        "grass",
+        "fabric",
+        "marble",
+      ].includes(object.surfaceTexture) ||
       typeof object.canCollide !== "boolean" ||
       typeof object.castShadow !== "boolean" ||
       (object.friction !== undefined &&
@@ -900,6 +1108,33 @@ function validateProject(project: StudioProject): void {
   ) {
     throw new Error("Invalid LocalPlayer settings.");
   }
+  if (
+    !Array.isArray(project.leaderstats) ||
+    project.leaderstats.length > 12 ||
+    project.leaderstats.some(
+      (stat) =>
+        typeof stat.id !== "string" ||
+        typeof stat.name !== "string" ||
+        stat.name.trim().length < 1 ||
+        stat.name.length > 24 ||
+        !["number", "string"].includes(stat.type) ||
+        (stat.type === "number"
+          ? !Number.isFinite(Number(stat.defaultValue))
+          : typeof stat.defaultValue !== "string" ||
+            stat.defaultValue.length > 64),
+    )
+  ) {
+    throw new Error("Invalid leaderstats.");
+  }
+  if (
+    project.publication &&
+    (typeof project.publication.gameId !== "string" ||
+      typeof project.publication.slug !== "string" ||
+      !Number.isInteger(project.publication.version) ||
+      typeof project.publication.publishedAt !== "string")
+  ) {
+    throw new Error("Invalid publication details.");
+  }
   if (!project.dataStores || typeof project.dataStores !== "object") {
     throw new Error("Invalid project data stores.");
   }
@@ -982,6 +1217,7 @@ function pmxlProject(
     version: 2,
     id: "00000000-0000-4000-8000-000000000000",
     name: "PMXL validation",
+    description: "",
     language: "luau",
     createdAt: new Date(0).toISOString(),
     updatedAt: new Date(0).toISOString(),
@@ -997,6 +1233,8 @@ function pmxlProject(
       cameraFieldOfView: 52,
       maxHealth: 100,
     },
+    leaderstats: [],
+    publication: null,
     dataStores: {},
   };
 }
@@ -1053,6 +1291,7 @@ async function exportPmxl(input: {
         visible: part.visible,
         transparency: part.transparency,
         material: part.material,
+        surfaceTexture: part.surfaceTexture,
         canCollide: part.canCollide,
         castShadow: part.castShadow,
         friction: part.friction,
@@ -1127,6 +1366,7 @@ async function importPmxl(): Promise<{
       visible: part.visible,
       transparency: part.transparency,
       material: part.material,
+      surfaceTexture: part.surfaceTexture ?? "none",
       canCollide: part.canCollide,
       castShadow: part.castShadow,
       friction: part.friction ?? 0.82,
@@ -1156,6 +1396,60 @@ async function importPmxl(): Promise<{
   };
   validateProject(pmxlProject(model, parts));
   return { model, parts };
+}
+
+async function exportProject(project: StudioProject): Promise<string | null> {
+  requireAuth();
+  const normalized = normalizeProject(project);
+  validateProject(normalized);
+  const result = await dialog.showSaveDialog({
+    title: "Export Polymons Game",
+    defaultPath: `${safeFileName(normalized.name)}.poly`,
+    filters: [{ name: "Polymons Game", extensions: ["poly"] }],
+  });
+  if (result.canceled || !result.filePath) return null;
+  const path = result.filePath.toLowerCase().endsWith(".poly")
+    ? result.filePath
+    : `${result.filePath}.poly`;
+  const file: PolyGameFile = {
+    format: "polymons-game",
+    version: 1,
+    project: normalized,
+  };
+  await writeFile(path, JSON.stringify(file, null, 2));
+  return path;
+}
+
+async function importProject(): Promise<StudioProject | null> {
+  requireAuth();
+  const result = await dialog.showOpenDialog({
+    title: "Import Polymons Game",
+    properties: ["openFile"],
+    filters: [{ name: "Polymons Game", extensions: ["poly"] }],
+  });
+  if (result.canceled || !result.filePaths[0]) return null;
+  const file = JSON.parse(
+    await readFile(result.filePaths[0], "utf8"),
+  ) as Partial<PolyGameFile>;
+  if (
+    file.format !== "polymons-game" ||
+    file.version !== 1 ||
+    !file.project
+  ) {
+    throw new Error("This is not a valid Polymons game file.");
+  }
+  const now = new Date().toISOString();
+  const project = normalizeProject({
+    ...file.project,
+    id: randomUUID(),
+    name: `${file.project.name} (Imported)`.slice(0, 64),
+    createdAt: now,
+    updatedAt: now,
+    publication: null,
+  });
+  validateProject(project);
+  await writeProject(project);
+  return project;
 }
 
 async function listProjects(): Promise<ProjectSummary[]> {
@@ -1278,7 +1572,11 @@ void app.whenReady().then(async () => {
     "projects:create",
     async (
       _event,
-      input: { name: string; language: StudioLanguage },
+      input: {
+        name: string;
+        language: StudioLanguage;
+        template?: "baseplate" | "tutorial";
+      },
     ) => {
       requireAuth();
       const name = input.name.trim();
@@ -1293,14 +1591,24 @@ void app.whenReady().then(async () => {
         version: 2,
         id: randomUUID(),
         name,
+        description: "",
         language: input.language,
         createdAt: now,
         updatedAt: now,
-        objects: starterObjects(),
+        objects:
+          input.template === "tutorial"
+            ? tutorialObjects()
+            : starterObjects(),
         models: [],
         remotes: [],
-        scripts: starterScripts(input.language),
-        gui: [],
+        scripts:
+          input.template === "tutorial"
+            ? tutorialScripts(input.language)
+            : starterScripts(input.language),
+        gui:
+          input.template === "tutorial"
+            ? tutorialGui()
+            : [],
         playerSettings: {
           health: 100,
           walkSpeed: 18,
@@ -1308,6 +1616,15 @@ void app.whenReady().then(async () => {
           cameraFieldOfView: 52,
           maxHealth: 100,
         },
+        leaderstats: [
+          {
+            id: randomUUID(),
+            name: "Coins",
+            type: "number",
+            defaultValue: 0,
+          },
+        ],
+        publication: null,
         dataStores: {},
       };
       await writeProject(project);
@@ -1324,12 +1641,41 @@ void app.whenReady().then(async () => {
     await writeProject(next);
     return next;
   });
-  ipcMain.handle("projects:publish", async (_event, project: StudioProject) => {
+  ipcMain.handle(
+    "projects:publish",
+    async (
+      _event,
+      input: {
+        project: StudioProject;
+        metadata: { title: string; description: string };
+      },
+    ) => {
     requireAuth();
-    const next = { ...project, updatedAt: new Date().toISOString() };
-    await writeProject(next);
-    return publishProject(next);
-  });
+      const draft = normalizeProject({
+        ...input.project,
+        name: input.metadata.title.trim(),
+        description: input.metadata.description.trim(),
+        updatedAt: new Date().toISOString(),
+      });
+      await writeProject(draft);
+      const result = await publishProject(draft, input.metadata);
+      const next: StudioProject = {
+        ...draft,
+        publication: {
+          gameId: result.game.id,
+          slug: result.game.slug,
+          version: result.game.version,
+          publishedAt: new Date().toISOString(),
+        },
+      };
+      await writeProject(next);
+      return { ...result, project: next };
+    },
+  );
+  ipcMain.handle("projects:export", (_event, project: StudioProject) =>
+    exportProject(project),
+  );
+  ipcMain.handle("projects:import", () => importProject());
   ipcMain.handle("projects:reveal", (_event, input: { id: string }) => {
     requireAuth();
     validateProjectId(input.id);
@@ -1343,7 +1689,7 @@ void app.whenReady().then(async () => {
     const player = await findPlayerExecutable();
     if (player) {
       await new Promise<void>((resolve, reject) => {
-        const child = spawn(player, [launch.toString()], {
+        const child = spawn(player, [`--studio-project=${input.id}`], {
           detached: true,
           stdio: "ignore",
         });

@@ -49,6 +49,7 @@ import {
   type PolyDiagnostic,
   type PolyProject,
 } from "../../src/game/polyProject";
+import { createSurfaceTexture } from "../../src/game/surfaceTextures";
 import logo from "../../assets/studio/poly-studio-logo-dark.png";
 import CodeEditor from "./CodeEditor";
 
@@ -345,6 +346,8 @@ export default function StudioEditor({
   const [saving, setSaving] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  const [publishDialog, setPublishDialog] = useState(false);
+  const [openMenu, setOpenMenu] = useState<"file" | "project" | null>(null);
   const [message, setMessage] = useState("Ready");
   const [diagnostics, setDiagnostics] = useState<
     Record<string, PolyDiagnostic[]>
@@ -455,6 +458,13 @@ export default function StudioEditor({
     };
   }, [contextMenu]);
 
+  useEffect(() => {
+    if (!openMenu) return;
+    const close = () => setOpenMenu(null);
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
+  }, [openMenu]);
+
   function updateProject(updater: (current: StudioProject) => StudioProject) {
     setProject((current) => {
       const next = updater(current);
@@ -536,6 +546,7 @@ export default function StudioEditor({
       visible: true,
       transparency: 0,
       material: "plastic",
+      surfaceTexture: "none",
       canCollide: true,
       castShadow: true,
       friction: 0.82,
@@ -901,6 +912,43 @@ export default function StudioEditor({
     }
   }
 
+  async function exportGame() {
+    try {
+      const path = await window.polyStudio.exportProject(project);
+      setMessage(path ? "Polymons game exported" : "Export canceled");
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : "Could not export game.",
+      );
+    }
+  }
+
+  async function importGame() {
+    try {
+      const imported = await window.polyStudio.importProject();
+      if (!imported) {
+        setMessage("Import canceled");
+        return;
+      }
+      setProject(imported);
+      setSelection(
+        imported.objects[2]
+          ? { type: "world", id: imported.objects[2].id }
+          : null,
+      );
+      setSelectedPartIds(imported.objects[2] ? [imported.objects[2].id] : []);
+      undoStack.current = [];
+      redoStack.current = [];
+      setDirty(false);
+      setWorkspace("scene");
+      setMessage("Imported game opened");
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : "Could not import game.",
+      );
+    }
+  }
+
   function addScript(
     kind: StudioScript["kind"],
     target: ContextTarget = { type: "service", id: "ServerScriptService" },
@@ -1223,7 +1271,7 @@ export default function StudioEditor({
     setPlaying(false);
   }
 
-  async function publish() {
+  function openPublishDialog() {
     const allDiagnostics = project.scripts.flatMap((script) =>
       analyzePolyScript(script, project as PolyProject),
     );
@@ -1231,13 +1279,19 @@ export default function StudioEditor({
       setMessage("Fix script errors before publishing.");
       return;
     }
+    setPublishDialog(true);
+  }
+
+  async function publish(metadata: { title: string; description: string }) {
     setPublishing(true);
-    setMessage("Publishing...");
+    setMessage(project.publication ? "Updating..." : "Publishing...");
     try {
-      const result = await window.polyStudio.publishProject(project);
+      const result = await window.polyStudio.publishProject(project, metadata);
+      setProject(result.project);
       setDirty(false);
+      setPublishDialog(false);
       setMessage(
-        `Published ${result.game.title} version ${result.game.version}`,
+        `Verified ${result.game.title} version ${result.game.version}`,
       );
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Publish failed.");
@@ -1274,6 +1328,59 @@ export default function StudioEditor({
       </header>
 
       <div className="editor-toolbar">
+        <div
+          className="studio-menu"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            onClick={() =>
+              setOpenMenu((current) => (current === "file" ? null : "file"))
+            }
+          >
+            File
+          </button>
+          <button
+            onClick={() =>
+              setOpenMenu((current) =>
+                current === "project" ? null : "project",
+              )
+            }
+          >
+            Project
+          </button>
+          {openMenu === "file" && (
+            <div className="studio-menu-popover">
+              <button onClick={() => void save()}>
+                <Save size={14} /> Save game
+              </button>
+              <button onClick={() => void importGame()}>
+                <Upload size={14} /> Import game
+              </button>
+              <button onClick={() => void exportGame()}>
+                <Download size={14} /> Export game
+              </button>
+              <button
+                onClick={() =>
+                  void window.polyStudio.revealProject(project.id)
+                }
+              >
+                <FolderOpen size={14} /> Open folder
+              </button>
+              <button onClick={() => void onExit()}>Back to projects</button>
+            </div>
+          )}
+          {openMenu === "project" && (
+            <div className="studio-menu-popover studio-menu-project">
+              <button onClick={() => void play()}>
+                <Play size={14} /> Playtest
+              </button>
+              <button onClick={openPublishDialog}>
+                <Upload size={14} />
+                {project.publication ? "Update game" : "Publish game"}
+              </button>
+            </div>
+          )}
+        </div>
         <div className="toolbar-group">
           <button title="Select" className={tool === "select" ? "active" : ""} onClick={() => setTool("select")}>
             <MousePointer2 size={17} />
@@ -1345,11 +1452,17 @@ export default function StudioEditor({
         </button>
         <button
           className="publish-button"
-          onClick={() => void publish()}
+          onClick={openPublishDialog}
           disabled={publishing || project.name.trim().length === 0}
         >
           <Upload size={16} />
-          {publishing ? "Publishing" : "Publish"}
+          {publishing
+            ? project.publication
+              ? "Updating"
+              : "Publishing"
+            : project.publication
+              ? "Update"
+              : "Publish"}
         </button>
         <button className="play-button" onClick={() => void play()} disabled={playing}>
           <Play size={16} fill="currentColor" />
@@ -1482,6 +1595,9 @@ export default function StudioEditor({
               playerSettings: { ...current.playerSettings, ...patch },
             }))
           }
+          onLeaderstatsChange={(leaderstats) =>
+            updateProject((current) => ({ ...current, leaderstats }))
+          }
           onDelete={removeSelected}
           onUngroup={ungroupModel}
           onExportModel={() => void exportSelectedModel()}
@@ -1538,6 +1654,15 @@ export default function StudioEditor({
         </div>
       )}
 
+      {publishDialog && (
+        <PublishDialog
+          project={project}
+          publishing={publishing}
+          onClose={() => setPublishDialog(false)}
+          onPublish={(metadata) => void publish(metadata)}
+        />
+      )}
+
       <footer className="editor-statusbar">
         <span>{message}</span>
         <span>{languageName[project.language]}</span>
@@ -1546,6 +1671,85 @@ export default function StudioEditor({
         </button>
       </footer>
     </main>
+  );
+}
+
+function PublishDialog({
+  project,
+  publishing,
+  onClose,
+  onPublish,
+}: {
+  project: StudioProject;
+  publishing: boolean;
+  onClose: () => void;
+  onPublish: (metadata: { title: string; description: string }) => void;
+}) {
+  const [title, setTitle] = useState(project.name);
+  const [description, setDescription] = useState(project.description);
+  return (
+    <div className="studio-modal-layer">
+      <button className="studio-modal-backdrop" onClick={onClose} />
+      <form
+        className="publish-game-dialog"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onPublish({ title, description });
+        }}
+      >
+        <button type="button" className="dialog-close" onClick={onClose}>
+          Close
+        </button>
+        <span className="studio-eyebrow">
+          {project.publication ? "Update game" : "Publish game"}
+        </span>
+        <h2>{project.publication ? "Update on Polymons" : "Save to Polymons"}</h2>
+        <p>
+          The project is checked for script errors, saved locally, uploaded, and
+          verified before this window closes.
+        </p>
+        <label className="project-name-field">
+          Game name
+          <input
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            minLength={1}
+            maxLength={64}
+            autoFocus
+            required
+          />
+        </label>
+        <label className="project-name-field publish-description">
+          Description
+          <textarea
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            maxLength={2_000}
+            placeholder="Tell players what this game is about."
+          />
+          <small>{description.length}/2000</small>
+        </label>
+        {project.publication && (
+          <div className="publication-summary">
+            Current version {project.publication.version}
+          </div>
+        )}
+        <div className="dialog-actions">
+          <button type="button" className="studio-secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="studio-primary" disabled={publishing}>
+            {publishing
+              ? project.publication
+                ? "Saving and updating..."
+                : "Saving and publishing..."
+              : project.publication
+                ? "Save to Polymons and Update"
+                : "Save to Polymons and Publish"}
+          </button>
+        </div>
+      </form>
+    </div>
   );
 }
 
@@ -2272,28 +2476,9 @@ function SceneViewport({
             }}
           >
             <boxGeometry args={[1, 1, 1]} />
-            <meshStandardMaterial
-              color={object.color}
-              transparent={object.transparency > 0}
-              opacity={1 - object.transparency}
-              roughness={
-                object.material === "metal"
-                  ? 0.24
-                  : object.material === "neon"
-                    ? 0.35
-                    : object.material === "wood"
-                      ? 0.9
-                      : 0.7
-              }
-              metalness={object.material === "metal" ? 0.82 : 0}
-              emissive={selectedWorldIds.includes(object.id) ? "#2B174D" : "#000000"}
-              emissiveIntensity={
-                object.material === "neon"
-                  ? 0.9
-                  : selectedWorldIds.includes(object.id)
-                    ? 0.75
-                    : 0
-              }
+            <StudioSurfaceMaterial
+              object={object}
+              selected={selectedWorldIds.includes(object.id)}
             />
             {selectedWorldIds.includes(object.id) && (
               <mesh scale={1.012}>
@@ -2332,6 +2517,42 @@ function SceneViewport({
         | Right drag to orbit | Wheel to zoom
       </div>
     </div>
+  );
+}
+
+function StudioSurfaceMaterial({
+  object,
+  selected,
+}: {
+  object: StudioObject;
+  selected: boolean;
+}) {
+  const surfaceTexture = useMemo(
+    () => createSurfaceTexture(object.surfaceTexture),
+    [object.surfaceTexture],
+  );
+  useEffect(() => () => surfaceTexture?.dispose(), [surfaceTexture]);
+  return (
+    <meshStandardMaterial
+      color={object.color}
+      map={surfaceTexture}
+      transparent={object.transparency > 0}
+      opacity={1 - object.transparency}
+      roughness={
+        object.material === "metal"
+          ? 0.24
+          : object.material === "neon"
+            ? 0.35
+            : object.material === "wood"
+              ? 0.9
+              : 0.7
+      }
+      metalness={object.material === "metal" ? 0.82 : 0}
+      emissive={selected ? "#2B174D" : "#000000"}
+      emissiveIntensity={
+        object.material === "neon" ? 0.9 : selected ? 0.75 : 0
+      }
+    />
   );
 }
 
@@ -2542,6 +2763,7 @@ function Properties({
   onGuiChange,
   onScriptChange,
   onPlayerChange,
+  onLeaderstatsChange,
   onDelete,
   onUngroup,
   onExportModel,
@@ -2554,6 +2776,7 @@ function Properties({
   onGuiChange: (patch: Partial<StudioGuiObject>) => void;
   onScriptChange: (patch: Partial<StudioScript>) => void;
   onPlayerChange: (patch: Partial<StudioProject["playerSettings"]>) => void;
+  onLeaderstatsChange: (leaderstats: StudioProject["leaderstats"]) => void;
   onDelete: () => void;
   onUngroup: () => void;
   onExportModel: () => void;
@@ -2620,6 +2843,25 @@ function Properties({
                 { value: "neon", label: "Neon" },
               ]}
               onChange={(material) => onWorldChange({ material: material as StudioObject["material"] })}
+            />
+            <SelectField
+              label="Surface texture"
+              value={world.surfaceTexture}
+              options={[
+                { value: "none", label: "None" },
+                { value: "brick", label: "Brick" },
+                { value: "wood", label: "Wood grain" },
+                { value: "concrete", label: "Concrete" },
+                { value: "grass", label: "Grass" },
+                { value: "fabric", label: "Fabric" },
+                { value: "marble", label: "Marble" },
+              ]}
+              onChange={(surfaceTexture) =>
+                onWorldChange({
+                  surfaceTexture:
+                    surfaceTexture as StudioObject["surfaceTexture"],
+                })
+              }
             />
             <NumberField label="Transparency" value={world.transparency} minimum={0} maximum={1} step={0.05} onChange={(transparency) => onWorldChange({ transparency })} />
             <ToggleField label="CastShadow" value={world.castShadow} onChange={(castShadow) => onWorldChange({ castShadow })} />
@@ -2777,6 +3019,12 @@ function Properties({
           <PropertySection title="Camera">
             <NumberField label="Field of view" value={project.playerSettings.cameraFieldOfView} minimum={20} maximum={120} step={1} onChange={(cameraFieldOfView) => onPlayerChange({ cameraFieldOfView })} />
           </PropertySection>
+          <PropertySection title="Leaderstats">
+            <LeaderstatsField
+              value={project.leaderstats}
+              onChange={onLeaderstatsChange}
+            />
+          </PropertySection>
         </div>
       ) : selection.type === "service" ? (
         <div className="properties-content">
@@ -2919,6 +3167,112 @@ function JsonAttributesField({
         }}
       />
     </label>
+  );
+}
+
+function LeaderstatsField({
+  value,
+  onChange,
+}: {
+  value: StudioProject["leaderstats"];
+  onChange: (value: StudioProject["leaderstats"]) => void;
+}) {
+  return (
+    <div className="leaderstats-editor">
+      {value.map((stat) => (
+        <div className="leaderstat-row" key={stat.id}>
+          <input
+            aria-label="Leaderstat name"
+            maxLength={24}
+            value={stat.name}
+            onChange={(event) =>
+              onChange(
+                value.map((item) =>
+                  item.id === stat.id
+                    ? { ...item, name: event.target.value }
+                    : item,
+                ),
+              )
+            }
+          />
+          <select
+            aria-label="Leaderstat type"
+            value={stat.type}
+            onChange={(event) => {
+              const type = event.target.value as "number" | "string";
+              onChange(
+                value.map((item) =>
+                  item.id === stat.id
+                    ? {
+                        ...item,
+                        type,
+                        defaultValue:
+                          type === "number"
+                            ? Number(item.defaultValue) || 0
+                            : String(item.defaultValue),
+                      }
+                    : item,
+                ),
+              );
+            }}
+          >
+            <option value="number">Number</option>
+            <option value="string">Text</option>
+          </select>
+          <input
+            aria-label="Leaderstat default value"
+            type={stat.type === "number" ? "number" : "text"}
+            maxLength={64}
+            value={stat.defaultValue}
+            onChange={(event) =>
+              onChange(
+                value.map((item) =>
+                  item.id === stat.id
+                    ? {
+                        ...item,
+                        defaultValue:
+                          stat.type === "number"
+                            ? Number(event.target.value)
+                            : event.target.value,
+                      }
+                    : item,
+                ),
+              )
+            }
+          />
+          <button
+            type="button"
+            title={`Delete ${stat.name}`}
+            onClick={() =>
+              onChange(value.filter((item) => item.id !== stat.id))
+            }
+          >
+            <Trash2 size={13} />
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        className="leaderstat-add"
+        disabled={value.length >= 12}
+        onClick={() =>
+          onChange([
+            ...value,
+            {
+              id: crypto.randomUUID(),
+              name: nextName(
+                value.map((item) => item.name),
+                "Coins",
+              ),
+              type: "number",
+              defaultValue: 0,
+            },
+          ])
+        }
+      >
+        <Plus size={13} /> Add leaderstat
+      </button>
+    </div>
   );
 }
 

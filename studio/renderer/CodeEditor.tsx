@@ -207,8 +207,16 @@ export default function CodeEditor({
       renderWhitespace: "selection",
       bracketPairColorization: { enabled: true },
       guides: { bracketPairs: true, indentation: true },
-      suggest: { showWords: false },
+      suggest: {
+        showWords: false,
+        snippetsPreventQuickSuggestions: false,
+        localityBonus: true,
+      },
       quickSuggestions: { other: true, comments: false, strings: false },
+      suggestOnTriggerCharacters: true,
+      tabCompletion: "on",
+      snippetSuggestions: "top",
+      wordBasedSuggestions: "off",
     });
 
     const updateDiagnostics = (source: string) => {
@@ -253,6 +261,7 @@ export default function CodeEditor({
             "Anchored",
             "Transparency",
             "Material",
+            "Texture",
             "CanCollide",
             "CastShadow",
             "Friction",
@@ -278,6 +287,7 @@ export default function CodeEditor({
             "FireAllClients",
             "InvokeServer",
             "InvokeClient",
+            ...projectRef.current.leaderstats.map((stat) => stat.name),
           ];
           const isLuau = projectRef.current.language === "luau";
           const isCpp = projectRef.current.language === "cpp";
@@ -323,6 +333,17 @@ export default function CodeEditor({
             : isCpp
               ? 'CollectionService::AddTag(${1:part}, "${2:Enemy}")'
               : 'CollectionService.AddTag(${1:part}, "${2:Enemy}")';
+          const localPlayerText = isCpp
+            ? "Players::LocalPlayer"
+            : "Players.LocalPlayer";
+          const ifText = isLuau
+            ? "if ${1:condition} then\n\t${2:-- code}\nend"
+            : "if (${1:condition}) {\n\t${2:// code}\n}";
+          const functionText = isLuau
+            ? "local function ${1:name}(${2})\n\t${3:-- code}\nend"
+            : isCpp
+              ? "void ${1:name}(${2}) {\n\t${3:// code}\n}"
+              : "void ${1:Name}(${2})\n{\n\t${3:// code}\n}";
           return {
             suggestions: [
               ...names.map((name) => ({
@@ -349,10 +370,28 @@ export default function CodeEditor({
                 range,
               },
               {
-                label: "Players.LocalPlayer",
+                label: localPlayerText,
                 kind: monaco.languages.CompletionItemKind.Property,
-                insertText: "Players.LocalPlayer",
+                insertText: localPlayerText,
                 detail: "Current player (LocalScript only)",
+                range,
+              },
+              {
+                label: "if block",
+                kind: monaco.languages.CompletionItemKind.Snippet,
+                insertText: ifText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: `${projectRef.current.language.toUpperCase()} conditional`,
+                range,
+              },
+              {
+                label: "function",
+                kind: monaco.languages.CompletionItemKind.Snippet,
+                insertText: functionText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: "Function declaration",
                 range,
               },
               {

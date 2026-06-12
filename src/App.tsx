@@ -680,6 +680,7 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
           worldObjects={runtime?.project.objects}
           guiObjects={runtime?.project.gui}
           playerSettings={runtime?.project.playerSettings}
+          leaderstats={runtime?.project.leaderstats}
           projectName={runtime?.project.name}
           localPlayer={user ?? undefined}
           chatMessages={chatMessages}

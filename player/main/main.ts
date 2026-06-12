@@ -251,6 +251,15 @@ function parseProtocolRequest(value: string): ProtocolRequest | null {
 
 function findProtocolRequest(args: string[]): ProtocolRequest | null {
   for (const arg of args) {
+    if (arg.startsWith("--studio-project=")) {
+      const projectId = arg.slice("--studio-project=".length);
+      if (/^[a-f0-9-]{36}$/i.test(projectId)) {
+        return {
+          accountTicket: null,
+          launch: { mode: "studio", projectId },
+        };
+      }
+    }
     if (arg.startsWith("polymons://")) {
       const request = parseProtocolRequest(arg);
       if (request) return request;
@@ -429,6 +438,18 @@ if (!hasLock) {
       await saveAuth(null);
     });
     ipcMain.handle("games:list", () => apiRequest("/v1/games"));
+    ipcMain.handle("friends:list", async () => {
+      if (!auth) throw new Error("Sign in to view friends.");
+      const request = (accessToken: string) =>
+        apiRequest("/v1/friends", { accessToken });
+      try {
+        return await request(auth.session.accessToken);
+      } catch {
+        const renewed = await refreshAuth();
+        if (!renewed) throw new Error("Sign in again to view friends.");
+        return request(renewed.session.accessToken);
+      }
+    });
     ipcMain.handle("launch:get", () => pendingLaunch);
     ipcMain.handle(
       "studio:project",

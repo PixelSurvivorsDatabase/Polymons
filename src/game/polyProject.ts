@@ -17,6 +17,14 @@ export type PolyWorldObject = {
   visible?: boolean;
   transparency: number;
   material: "plastic" | "metal" | "wood" | "neon";
+  surfaceTexture:
+    | "none"
+    | "brick"
+    | "wood"
+    | "concrete"
+    | "grass"
+    | "fabric"
+    | "marble";
   canCollide: boolean;
   castShadow: boolean;
   friction?: number;
@@ -76,12 +84,20 @@ export type PolyPlayerSettings = {
   maxHealth: number;
 };
 
+export type PolyLeaderstat = {
+  id: string;
+  name: string;
+  type: "number" | "string";
+  defaultValue: number | string;
+};
+
 export type PolyStoredValue = string | number | boolean | null;
 
 export type PolyProject = {
   version: 2;
   id: string;
   name: string;
+  description: string;
   language: PolyLanguage;
   createdAt: string;
   updatedAt: string;
@@ -91,6 +107,13 @@ export type PolyProject = {
   scripts: PolyScript[];
   gui: PolyGuiObject[];
   playerSettings: PolyPlayerSettings;
+  leaderstats: PolyLeaderstat[];
+  publication?: {
+    gameId: string;
+    slug: string;
+    version: number;
+    publishedAt: string;
+  } | null;
   dataStores: Record<string, Record<string, PolyStoredValue>>;
 };
 
@@ -128,6 +151,7 @@ const WORLD_PROPERTIES = new Set([
   "Visible",
   "Transparency",
   "Material",
+  "Texture",
   "CanCollide",
   "CastShadow",
   "Friction",
@@ -177,6 +201,7 @@ export function normalizePolyProject(project: PolyProject): PolyProject {
     visible: object.visible ?? true,
     transparency: object.transparency ?? 0,
     material: object.material ?? "plastic",
+    surfaceTexture: object.surfaceTexture ?? "none",
     canCollide: object.canCollide ?? true,
     castShadow: object.castShadow ?? true,
     friction: object.friction ?? 0.82,
@@ -212,6 +237,18 @@ export function normalizePolyProject(project: PolyProject): PolyProject {
       normalized.playerSettings?.cameraFieldOfView ?? 55,
     maxHealth: normalized.playerSettings?.maxHealth ?? 100,
   };
+  normalized.description ??= "";
+  normalized.leaderstats = (normalized.leaderstats ?? []).map((stat) => ({
+    ...stat,
+    type: stat.type === "string" ? "string" : "number",
+    defaultValue:
+      stat.type === "string"
+        ? String(stat.defaultValue ?? "")
+        : Number.isFinite(Number(stat.defaultValue))
+          ? Number(stat.defaultValue)
+          : 0,
+  }));
+  normalized.publication ??= null;
   normalized.dataStores ??= {};
   return normalized;
 }
@@ -526,11 +563,17 @@ function resolveRawValue(
   return rawValue;
 }
 
-function propertySetFor(reference: Reference): Set<string> {
+function propertySetFor(
+  reference: Reference,
+  project: PolyProject,
+): Set<string> {
   if (reference.kind === "world") return WORLD_PROPERTIES;
   if (reference.kind === "gui") return GUI_PROPERTIES;
   if (reference.kind === "remote") return new Set();
-  return PLAYER_PROPERTIES;
+  return new Set([
+    ...PLAYER_PROPERTIES,
+    ...project.leaderstats.map((stat) => stat.name),
+  ]);
 }
 
 function remoteCallError(
@@ -577,7 +620,7 @@ function assignProperty(
   if (reference.kind === "remote") {
     return "Remote objects do not expose editable properties.";
   }
-  if (!propertySetFor(reference).has(property)) {
+  if (!propertySetFor(reference, project).has(property)) {
     return `${property} is not a supported property for this object.`;
   }
 
@@ -614,6 +657,21 @@ function assignProperty(
         return "Material must be Plastic, Metal, Wood, or Neon.";
       }
       object.material = value as PolyWorldObject["material"];
+    } else if (property === "Texture") {
+      const value = parseString(rawValue)?.toLowerCase();
+      const textures = [
+        "none",
+        "brick",
+        "wood",
+        "concrete",
+        "grass",
+        "fabric",
+        "marble",
+      ];
+      if (!value || !textures.includes(value)) {
+        return "Texture must be None, Brick, Wood, Concrete, Grass, Fabric, or Marble.";
+      }
+      object.surfaceTexture = value as PolyWorldObject["surfaceTexture"];
     } else if (property === "CanCollide") {
       const value = parseBoolean(rawValue);
       if (value === null) return "CanCollide must be true or false.";
@@ -692,6 +750,20 @@ function assignProperty(
       const vector = value as [number, number];
       if (property === "Position") gui.position = vector;
       if (property === "Size") gui.size = vector;
+    }
+    return null;
+  }
+
+  const leaderstat = project.leaderstats.find((stat) => stat.name === property);
+  if (leaderstat) {
+    if (leaderstat.type === "number") {
+      const value = parseNumber(rawValue);
+      if (value === null) return `${property} must be a number.`;
+      leaderstat.defaultValue = value;
+    } else {
+      const value = parseString(rawValue);
+      if (value === null) return `${property} must be a string.`;
+      leaderstat.defaultValue = value;
     }
     return null;
   }
@@ -1159,7 +1231,7 @@ export function analyzePolyScript(
         );
         return;
       }
-      if (!propertySetFor(reference).has(assignment[2])) {
+      if (!propertySetFor(reference, project).has(assignment[2])) {
         diagnostics.push(
           lineDiagnostic(
             line,

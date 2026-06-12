@@ -13,6 +13,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -31,9 +32,11 @@ import type {
 } from "./multiplayer";
 import type {
   PolyGuiObject,
+  PolyLeaderstat,
   PolyPlayerSettings,
   PolyWorldObject,
 } from "./polyProject";
+import { createSurfaceTexture } from "./surfaceTextures";
 
 type InputState = {
   forward: boolean;
@@ -628,6 +631,11 @@ function PhysicsCrate({
 }
 
 function ProjectBlock({ object }: { object: PolyWorldObject }) {
+  const surfaceTexture = useMemo(
+    () => createSurfaceTexture(object.surfaceTexture),
+    [object.surfaceTexture],
+  );
+  useEffect(() => () => surfaceTexture?.dispose(), [surfaceTexture]);
   if (object.visible === false) return null;
   const material = {
     plastic: { roughness: 0.72, metalness: 0, emissiveIntensity: 0 },
@@ -640,6 +648,7 @@ function ProjectBlock({ object }: { object: PolyWorldObject }) {
       <boxGeometry args={object.scale} />
       <meshStandardMaterial
         color={object.color}
+        map={surfaceTexture}
         roughness={material.roughness}
         metalness={material.metalness}
         emissive={object.material === "neon" ? object.color : "#000000"}
@@ -1012,6 +1021,7 @@ export default function BaseplateGame({
     cameraFieldOfView: 52,
     maxHealth: 100,
   },
+  leaderstats = [],
   projectName = "Baseplate",
   localPlayer,
   onFriendRequest,
@@ -1025,6 +1035,7 @@ export default function BaseplateGame({
   worldObjects?: PolyWorldObject[];
   guiObjects?: PolyGuiObject[];
   playerSettings?: PolyPlayerSettings;
+  leaderstats?: PolyLeaderstat[];
   projectName?: string;
   localPlayer?: {
     username: string;
@@ -1159,7 +1170,23 @@ export default function BaseplateGame({
             <strong>Players</strong>
             <span>{remotePlayers.length + 1}</span>
           </header>
+          {leaderstats.length > 0 && (
+            <div
+              className="player-list-columns"
+              style={{
+                gridTemplateColumns: `minmax(0, 1fr) repeat(${leaderstats.length}, minmax(52px, auto))`,
+              }}
+            >
+              <span>Player</span>
+              {leaderstats.map((stat) => (
+                <span key={stat.id}>{stat.name}</span>
+              ))}
+            </div>
+          )}
           <button
+            style={{
+              gridTemplateColumns: `32px minmax(0, 1fr) repeat(${leaderstats.length}, minmax(52px, auto))`,
+            }}
             onClick={() => {
               setFriendStatus("");
               setSelectedPlayer({
@@ -1174,10 +1201,16 @@ export default function BaseplateGame({
               <strong>{localPlayer?.displayName ?? "LocalPlayer"}</strong>
               <small>@{localPlayer?.username ?? "localplayer"}</small>
             </div>
+            {leaderstats.map((stat) => (
+              <b key={stat.id}>{String(stat.defaultValue)}</b>
+            ))}
           </button>
           {remotePlayers.map((player) => (
             <button
               key={player.id}
+              style={{
+                gridTemplateColumns: `32px minmax(0, 1fr) repeat(${leaderstats.length}, minmax(52px, auto))`,
+              }}
               onClick={() => {
                 setFriendStatus("");
                 setSelectedPlayer({
@@ -1191,6 +1224,9 @@ export default function BaseplateGame({
                 <strong>{player.displayName}</strong>
                 <small>@{player.username}</small>
               </div>
+              {leaderstats.map((stat) => (
+                <b key={stat.id}>{String(stat.defaultValue)}</b>
+              ))}
             </button>
           ))}
         </aside>

@@ -1,4 +1,12 @@
-import { Gamepad2, LogOut, Play, UserRound } from "lucide-react";
+import {
+  Compass,
+  Gamepad2,
+  Home,
+  LogOut,
+  Play,
+  Search,
+  Users,
+} from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import logo from "../../assets/polymons-logo.png";
 import { useMultiplayer } from "../../src/game/multiplayer";
@@ -21,6 +29,8 @@ export default function PlayerApp() {
   const [games, setGames] = useState<PlayerGameSummary[]>([]);
   const [gamesLoading, setGamesLoading] = useState(true);
   const [startingGameId, setStartingGameId] = useState<string | null>(null);
+  const [friends, setFriends] = useState<PlayerFriendship[]>([]);
+  const [query, setQuery] = useState("");
 
   useEffect(() => {
     void Promise.all([
@@ -47,15 +57,28 @@ export default function PlayerApp() {
   useEffect(() => {
     if (!auth || launch) return;
     setGamesLoading(true);
-    void window.polymons
-      .listGames()
-      .then((result) => setGames(result.games))
-      .catch((loadError: unknown) => {
-        setError(
-          loadError instanceof Error
-            ? loadError.message
-            : "Could not load games.",
-        );
+    void Promise.allSettled([
+      window.polymons.listGames(),
+      window.polymons.listFriends(),
+    ])
+      .then(([gameResult, friendResult]) => {
+        if (gameResult.status === "fulfilled") {
+          setGames(gameResult.value.games);
+        } else {
+          setError(
+            gameResult.reason instanceof Error
+              ? gameResult.reason.message
+              : "Could not load games.",
+          );
+        }
+        if (friendResult.status === "fulfilled") {
+          setFriends(
+            friendResult.value.friendships.filter(
+              (friendship) =>
+                friendship.status === "accepted" && friendship.user,
+            ),
+          );
+        }
       })
       .finally(() => setGamesLoading(false));
   }, [auth, launch]);
@@ -96,41 +119,123 @@ export default function PlayerApp() {
   if (!auth) {
     return <PlayerAuthScreen onAuthenticated={setAuth} />;
   }
+  const visibleGames = games.filter((game) =>
+    `${game.title} ${game.creator} ${game.genre}`
+      .toLowerCase()
+      .includes(query.trim().toLowerCase()),
+  );
 
   return (
     <main className="player-home">
-      <header className="player-bar">
-        <div className="player-brand">
-          <img src={logo} alt="" />
-          <strong>Polymons Player</strong>
-        </div>
-        <div className="player-account">
-          <UserRound size={17} />
-          <span>{auth.user.displayName}</span>
-          <button
-            onClick={() => {
-              void window.polymons.logout();
-              setAuth(null);
-            }}
-            aria-label="Sign out"
-          >
-            <LogOut size={16} />
-          </button>
-        </div>
-      </header>
-      <section className="player-library">
-        <div className="player-heading">
+      <aside className="player-sidebar">
+        <img src={logo} alt="Polymons" />
+        <button
+          className="active"
+          title="Home"
+          onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+        >
+          <Home size={20} />
+          <span>Home</span>
+        </button>
+        <button
+          title="Games"
+          onClick={() =>
+            document
+              .querySelector(".player-games-title")
+              ?.scrollIntoView({ behavior: "smooth" })
+          }
+        >
+          <Compass size={20} />
           <span>Games</span>
-          <h1>Pick something to play.</h1>
-        </div>
+        </button>
+        <button
+          title="Friends"
+          onClick={() =>
+            document
+              .querySelector(".player-friends-strip")
+              ?.scrollIntoView({ behavior: "smooth" })
+          }
+        >
+          <Users size={20} />
+          <span>Friends</span>
+        </button>
+      </aside>
+      <section className="player-home-content">
+        <header className="player-home-topbar">
+          <label className="player-search">
+            <Search size={18} />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search games"
+            />
+          </label>
+          <div className="player-account">
+            <span className="player-account-avatar">
+              {auth.user.displayName.slice(0, 1).toUpperCase()}
+            </span>
+            <span>{auth.user.displayName}</span>
+            <button
+              onClick={() => {
+                void window.polymons.logout();
+                setAuth(null);
+              }}
+              aria-label="Sign out"
+            >
+              <LogOut size={16} />
+            </button>
+          </div>
+        </header>
+        <section className="player-library">
+          <div className="player-heading">
+            <span>Home</span>
+            <h1>Welcome back, {auth.user.displayName}.</h1>
+          </div>
+          <section className="player-friends-strip">
+            <div className="player-section-title">
+              <h2>Friends</h2>
+              <span>{friends.length}</span>
+            </div>
+            <div className="player-friend-row">
+              {friends.length === 0 ? (
+                <div className="player-friends-empty">
+                  Friends and their active games will show here.
+                </div>
+              ) : (
+                friends.map((friendship) => (
+                  <button
+                    key={friendship.id}
+                    disabled={!friendship.gameId || startingGameId !== null}
+                    onClick={() =>
+                      friendship.gameId
+                        ? void playGame(friendship.gameId)
+                        : undefined
+                    }
+                  >
+                    <span>
+                      {friendship.user!.displayName.slice(0, 1).toUpperCase()}
+                    </span>
+                    <strong>{friendship.user!.displayName}</strong>
+                    <small>
+                      {friendship.gameId ? "Playing now" : "Offline"}
+                    </small>
+                  </button>
+                ))
+              )}
+            </div>
+          </section>
+          <div className="player-section-title player-games-title">
+            <h2>{query ? "Search results" : "Recommended for you"}</h2>
+            <span>{visibleGames.length} games</span>
+          </div>
         {error && <div className="player-error">{error}</div>}
         {gamesLoading ? (
           <div className="player-library-state">Loading games...</div>
-        ) : games.length === 0 ? (
+        ) : visibleGames.length === 0 ? (
           <div className="player-library-state">No games are published yet.</div>
         ) : (
           <div className="player-game-grid">
-            {games.map((game) => (
+            {visibleGames.map((game) => (
               <article className="player-game-card" key={game.id}>
                 <div
                   className="player-game-art"
@@ -165,6 +270,7 @@ export default function PlayerApp() {
             ))}
           </div>
         )}
+        </section>
       </section>
     </main>
   );
@@ -211,6 +317,9 @@ function OnlinePlayerGame({
     void window.polymons
       .getGame(launch.game)
       .then((result) => {
+        if (result.game.id !== launch.game) {
+          throw new Error("Polymons returned the wrong game.");
+        }
         if (result.game.manifest) {
           setRuntime(runPolyProject(result.game.manifest));
         } else if (result.game.slug === "baseplate") {
@@ -255,6 +364,7 @@ function OnlinePlayerGame({
             worldObjects={runtime?.project.objects}
             guiObjects={runtime?.project.gui}
             playerSettings={runtime?.project.playerSettings}
+            leaderstats={runtime?.project.leaderstats}
             projectName={runtime?.project.name}
             localPlayer={auth?.user}
             chatMessages={chatMessages}
@@ -350,6 +460,7 @@ function StudioPlayerGame({
               worldObjects={runtime.project.objects}
               guiObjects={runtime.project.gui}
               playerSettings={runtime.project.playerSettings}
+              leaderstats={runtime.project.leaderstats}
               projectName={runtime.project.name}
               localPlayer={auth?.user}
               onGuiActivated={(guiObjectId) => {

@@ -6,6 +6,7 @@ import {
   Play,
   Plus,
   Search,
+  Upload,
   UserRound,
   X,
 } from "lucide-react";
@@ -119,6 +120,21 @@ export default function StudioApp() {
           );
         }
       }}
+      onImport={async () => {
+        setError("");
+        try {
+          const imported = await window.polyStudio.importProject();
+          if (imported) {
+            setProject(imported);
+          }
+        } catch (importError) {
+          setError(
+            importError instanceof Error
+              ? importError.message
+              : "Could not import game.",
+          );
+        }
+      }}
       onCreated={(next) => {
         setCreating(false);
         setProject(next);
@@ -219,6 +235,7 @@ function Launcher({
   onCreate,
   onCloseCreate,
   onOpen,
+  onImport,
   onCreated,
   onError,
   onLogout,
@@ -230,6 +247,7 @@ function Launcher({
   onCreate: () => void;
   onCloseCreate: () => void;
   onOpen: (id: string) => void;
+  onImport: () => void;
   onCreated: (project: StudioProject) => void;
   onError: (message: string) => void;
   onLogout: () => void;
@@ -268,10 +286,16 @@ function Launcher({
             <h1>Projects</h1>
             <p>Create a new game or keep working on one you started.</p>
           </div>
-          <button className="studio-primary" onClick={onCreate}>
-            <Plus size={18} />
-            New project
-          </button>
+          <div className="launcher-actions">
+            <button className="studio-secondary" onClick={onImport}>
+              <Upload size={17} />
+              Import game
+            </button>
+            <button className="studio-primary" onClick={onCreate}>
+              <Plus size={18} />
+              New project
+            </button>
+          </div>
         </div>
 
         <label className="project-search">
@@ -346,6 +370,9 @@ function CreateProjectDialog({
 }) {
   const [name, setName] = useState("My Game");
   const [language, setLanguage] = useState<StudioLanguage>("luau");
+  const [template, setTemplate] = useState<"baseplate" | "tutorial">(
+    "baseplate",
+  );
   const [creating, setCreating] = useState(false);
 
   async function submit(event: FormEvent) {
@@ -353,7 +380,9 @@ function CreateProjectDialog({
     setCreating(true);
     onError("");
     try {
-      onCreated(await window.polyStudio.createProject({ name, language }));
+      onCreated(
+        await window.polyStudio.createProject({ name, language, template }),
+      );
     } catch (createError) {
       onError(
         createError instanceof Error
@@ -411,12 +440,39 @@ function CreateProjectDialog({
             );
           })}
         </fieldset>
+        <fieldset className="template-picker">
+          <legend>Starting place</legend>
+          <label className={template === "baseplate" ? "active" : ""}>
+            <input
+              type="radio"
+              name="template"
+              checked={template === "baseplate"}
+              onChange={() => setTemplate("baseplate")}
+            />
+            <strong>Baseplate</strong>
+            <span>A clean place to build from scratch.</span>
+          </label>
+          <label className={template === "tutorial" ? "active" : ""}>
+            <input
+              type="radio"
+              name="template"
+              checked={template === "tutorial"}
+              onChange={() => setTemplate("tutorial")}
+            />
+            <strong>Studio Tutorial</strong>
+            <span>Three guided objects, starter UI, and commented code.</span>
+          </label>
+        </fieldset>
         <div className="dialog-actions">
           <button type="button" className="studio-secondary" onClick={onClose}>
             Cancel
           </button>
           <button className="studio-primary" disabled={creating}>
-            {creating ? "Creating..." : "Create Baseplate"}
+            {creating
+              ? "Creating..."
+              : template === "tutorial"
+                ? "Create Tutorial"
+                : "Create Baseplate"}
           </button>
         </div>
       </form>

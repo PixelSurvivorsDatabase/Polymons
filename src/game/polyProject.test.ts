@@ -13,6 +13,7 @@ function project(): PolyProject {
     version: 2,
     id: "11111111-1111-4111-8111-111111111111",
     name: "Runtime Test",
+    description: "",
     language: "luau",
     createdAt: "2026-06-11T00:00:00.000Z",
     updatedAt: "2026-06-11T00:00:00.000Z",
@@ -29,6 +30,7 @@ function project(): PolyProject {
         visible: true,
         transparency: 0,
         material: "plastic",
+        surfaceTexture: "none",
         canCollide: true,
         castShadow: true,
         modelId: null,
@@ -103,6 +105,8 @@ label.Text = "Ready"`,
       cameraFieldOfView: 55,
       maxHealth: 100,
     },
+    leaderstats: [],
+    publication: null,
     dataStores: {},
   };
 }
@@ -512,6 +516,26 @@ player.WalkSpeed = 20`,
     parent: "tool-server",
   };
   assert.equal(analyzePolyScript(nestedModule, fixture).length, 0);
+});
+
+test("applies surface textures and preserves editable leaderstats", () => {
+  const fixture = project();
+  fixture.leaderstats = [
+    {
+      id: "coins",
+      name: "Coins",
+      type: "number",
+      defaultValue: 25,
+    },
+  ];
+  fixture.scripts[0].source = `local part = Workspace:FindFirstChild("Part")
+part.Texture = "Brick"`;
+  fixture.scripts[1].source = `local player = Players.LocalPlayer
+player.Coins = 40`;
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.project.objects[0].surfaceTexture, "brick");
+  assert.equal(result.project.leaderstats[0].defaultValue, 40);
 });
 
 test("requires an immutable game room id in multiplayer welcomes", () => {
