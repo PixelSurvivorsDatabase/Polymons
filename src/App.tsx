@@ -598,10 +598,7 @@ function GamePage() {
         <div className="detail-panel">
           <span className="eyebrow">About</span>
           <h2>About {game.title}</h2>
-          <p>
-            {game.description ||
-              `${game.title} is a game created by ${game.creator}.`}
-          </p>
+          <p>{game.description || "No description provided."}</p>
         </div>
         <div className="detail-panel rules-panel">
           <span className="eyebrow">Controls</span>
