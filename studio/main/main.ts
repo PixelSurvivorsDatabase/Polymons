@@ -47,7 +47,7 @@ type StoredAuth = {
 type SceneObject = {
   id: string;
   name: string;
-  type: "baseplate" | "spawn" | "part";
+  type: "baseplate" | "spawn" | "part" | "tool" | "handle" | "humanoidRootPart";
   position: [number, number, number];
   rotation: [number, number, number];
   scale: [number, number, number];
@@ -116,6 +116,7 @@ type StudioProject = {
   scripts: StudioScript[];
   gui: StudioGuiObject[];
   playerSettings: {
+    health: number;
     walkSpeed: number;
     jumpPower: number;
     cameraFieldOfView: number;
@@ -372,6 +373,7 @@ function migrateLegacyProject(
     ],
     gui: [],
     playerSettings: {
+      health: 100,
       walkSpeed: 18,
       jumpPower: 10.5,
       cameraFieldOfView: 52,
@@ -410,6 +412,7 @@ function normalizeProject(project: StudioProject): StudioProject {
       zIndex: gui.zIndex ?? 1,
     })),
     playerSettings: {
+      health: project.playerSettings.health ?? project.playerSettings.maxHealth ?? 100,
       walkSpeed: project.playerSettings.walkSpeed ?? 18,
       jumpPower: project.playerSettings.jumpPower ?? 10.5,
       cameraFieldOfView: project.playerSettings.cameraFieldOfView ?? 52,
@@ -506,11 +509,20 @@ function requireAuth(): StoredAuth {
 
 async function apiRequest<T>(
   path: string,
-  options: { method?: "GET" | "POST"; body?: unknown } = {},
+  options: {
+    method?: "GET" | "POST";
+    body?: unknown;
+    accessToken?: string;
+  } = {},
 ): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     method: options.method ?? "GET",
-    headers: options.body ? { "Content-Type": "application/json" } : {},
+    headers: {
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.accessToken
+        ? { Authorization: `Bearer ${options.accessToken}` }
+        : {}),
+    },
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
   const result = (await response.json().catch(() => null)) as
@@ -520,6 +532,36 @@ async function apiRequest<T>(
     throw new Error(result?.error ?? "Poly Studio could not complete the request.");
   }
   return result as T;
+}
+
+async function publishProject(project: StudioProject): Promise<{
+  game: { id: string; slug: string; title: string; version: number };
+}> {
+  validateProject(project);
+  let current = requireAuth();
+  const request = (accessToken: string) =>
+    apiRequest<{
+      game: { id: string; slug: string; title: string; version: number };
+    }>("/v1/games/publish", {
+      method: "POST",
+      accessToken,
+      body: {
+        projectId: project.id,
+        title: project.name,
+        description: `Created in Poly Studio by ${current.user.displayName}.`,
+        genre: "All",
+        manifest: project,
+      },
+    });
+  if (
+    !current.session.expiresAt ||
+    current.session.expiresAt * 1000 < Date.now() + 60_000
+  ) {
+    const renewed = await refreshAuth();
+    if (!renewed) throw new Error("Sign in again to publish.");
+    current = renewed;
+  }
+  return request(current.session.accessToken);
 }
 
 async function refreshAuth(): Promise<StoredAuth | null> {
@@ -591,7 +633,7 @@ function validateProject(project: StudioProject): void {
       typeof object.id !== "string" ||
       typeof object.name !== "string" ||
       object.name.length > 100 ||
-      !["baseplate", "spawn", "part"].includes(object.type) ||
+      !["baseplate", "spawn", "part", "tool", "handle", "humanoidRootPart"].includes(object.type) ||
       !Array.isArray(object.position) ||
       !Array.isArray(object.rotation) ||
       !Array.isArray(object.scale) ||
@@ -719,6 +761,7 @@ function validateProject(project: StudioProject): void {
   }
   if (
     !project.playerSettings ||
+    !Number.isFinite(project.playerSettings.health) ||
     !Number.isFinite(project.playerSettings.walkSpeed) ||
     !Number.isFinite(project.playerSettings.jumpPower) ||
     !Number.isFinite(project.playerSettings.cameraFieldOfView) ||
@@ -817,6 +860,7 @@ function pmxlProject(
     scripts: [],
     gui: [],
     playerSettings: {
+      health: 100,
       walkSpeed: 18,
       jumpPower: 10.5,
       cameraFieldOfView: 52,
@@ -838,7 +882,9 @@ async function exportPmxl(input: {
     input.parts.length < 1 ||
     input.parts.length > 1_000 ||
     input.parts.some(
-      (part) => part.type !== "part" || part.modelId !== input.model.id,
+      (part) =>
+        ["baseplate", "spawn"].includes(part.type) ||
+        part.modelId !== input.model.id,
     )
   ) {
     throw new Error("Select a valid Model containing Parts.");
@@ -913,7 +959,9 @@ async function importPmxl(): Promise<{
     !Array.isArray(raw.model.parts) ||
     raw.model.parts.length < 1 ||
     raw.model.parts.length > 1_000 ||
-    raw.model.parts.some((part) => part.type !== "part")
+    raw.model.parts.some((part) =>
+      !["part", "tool", "handle", "humanoidRootPart"].includes(part.type),
+    )
   ) {
     throw new Error("This is not a valid PMXL model.");
   }
@@ -1096,6 +1144,7 @@ void app.whenReady().then(async () => {
         scripts: starterScripts(input.language),
         gui: [],
         playerSettings: {
+          health: 100,
           walkSpeed: 18,
           jumpPower: 10.5,
           cameraFieldOfView: 52,
@@ -1116,6 +1165,12 @@ void app.whenReady().then(async () => {
     const next = { ...project, updatedAt: new Date().toISOString() };
     await writeProject(next);
     return next;
+  });
+  ipcMain.handle("projects:publish", async (_event, project: StudioProject) => {
+    requireAuth();
+    const next = { ...project, updatedAt: new Date().toISOString() };
+    await writeProject(next);
+    return publishProject(next);
   });
   ipcMain.handle("projects:reveal", (_event, input: { id: string }) => {
     requireAuth();

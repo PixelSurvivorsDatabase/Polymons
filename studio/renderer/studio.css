@@ -401,8 +401,8 @@ button { color: inherit; }
 }
 .editor-brand img { width: 29px; height: 29px; border-radius: 7px; }
 .project-title { margin-left: 24px; }
-.project-title strong, .project-title span { display: block; }
-.project-title strong { font-size: 12px; }
+.project-title input, .project-title span { display: block; }
+.project-title input { width: min(280px, 28vw); border: 0; outline: 0; background: transparent; color: #f2edf7; padding: 0; font-size: 12px; font-weight: 800; }
 .project-title span { color: var(--studio-muted); font-size: 9px; }
 .editor-account { gap: 6px; margin-left: auto; color: var(--studio-muted); font-size: 11px; }
 
@@ -448,6 +448,7 @@ button { color: inherit; }
 .toolbar-add { border-color: var(--studio-line) !important; }
 .workspace-tabs { display: flex; margin-left: auto; border: 1px solid var(--studio-line); border-radius: 8px; padding: 2px; }
 .save-button { border-color: var(--studio-line) !important; }
+.publish-button { background: rgba(112,75,176,.18) !important; color: #c7a7f1 !important; }
 .play-button { background: rgba(70,120,84,.16) !important; color: #8fc99d !important; }
 
 .editor-workspace {

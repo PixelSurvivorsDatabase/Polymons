@@ -148,6 +148,7 @@ function createPreviewProject(
     ],
     gui: [],
     playerSettings: {
+      health: 100,
       walkSpeed: 18,
       jumpPower: 10.5,
       cameraFieldOfView: 52,
@@ -211,6 +212,14 @@ if (isPreview && !window.polyStudio) {
       projects.set(next.id, next);
       return next;
     },
+    publishProject: async (project) => ({
+      game: {
+        id: project.id,
+        slug: project.name.toLowerCase().replace(/\s+/g, "-"),
+        title: project.name,
+        version: 1,
+      },
+    }),
     revealProject: async () => undefined,
     playProject: async () => undefined,
     exportModel: async () => "preview.pmxl",

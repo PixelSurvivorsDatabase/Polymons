@@ -40,6 +40,10 @@ interface Window {
     play: (
       gameId: string,
     ) => Promise<{ playSession: { websocketUrl: string } }>;
+    getGame: (gameId: string) => Promise<{
+      game: { manifest: import("../../src/game/polyProject").PolyProject | null };
+    }>;
+    sendFriendRequest: (username: string) => Promise<void>;
     loadStudioProject: (id: string) => Promise<import("../../src/game/polyProject").PolyProject>;
     saveStudioDataStores: (
       id: string,

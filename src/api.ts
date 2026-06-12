@@ -3,6 +3,8 @@ export const POLYMONS_API_URL =
   "https://polymons-server.onrender.com";
 export const POLYMONS_PLAYER_DOWNLOAD_URL =
   "https://github.com/PixelSurvivorsDatabase/Polymons/releases/latest/download/PolymonsPlayer.exe";
+export const POLY_STUDIO_DOWNLOAD_URL =
+  "https://github.com/PixelSurvivorsDatabase/Polymons/releases/latest/download/PolyStudio.exe";
 
 export type PolymonsUser = {
   id: string;
@@ -45,6 +47,28 @@ type ApiOptions = {
   method?: "GET" | "POST";
   body?: unknown;
   accessToken?: string;
+};
+
+export type PlatformGame = {
+  id: string;
+  slug: string;
+  title: string;
+  description: string;
+  genre: string;
+  thumbnailUrl: string | null;
+  creator: string;
+  creatorUsername: string;
+  activePlayers: number;
+  updatedAt: string;
+  manifest?: import("./game/polyProject").PolyProject | null;
+};
+
+export type Friendship = {
+  id: string;
+  status: "pending" | "accepted" | "blocked";
+  incoming: boolean;
+  user: PolymonsUser | null;
+  gameId: string | null;
 };
 
 async function apiRequest<T>(
@@ -108,6 +132,41 @@ export function createPlaySession(
     method: "POST",
     accessToken,
     body: { gameId },
+  });
+}
+
+export function listGames(): Promise<{ games: PlatformGame[] }> {
+  return apiRequest("/v1/games");
+}
+
+export function getGame(gameId: string): Promise<{ game: PlatformGame }> {
+  return apiRequest(`/v1/games/${encodeURIComponent(gameId)}`);
+}
+
+export function listFriends(
+  accessToken: string,
+): Promise<{ friendships: Friendship[] }> {
+  return apiRequest("/v1/friends", { accessToken });
+}
+
+export function sendFriendRequest(
+  username: string,
+  accessToken: string,
+): Promise<{ friendship: { id: string; status: "pending" } }> {
+  return apiRequest("/v1/friends/request", {
+    method: "POST",
+    accessToken,
+    body: { username },
+  });
+}
+
+export function acceptFriendRequest(
+  friendshipId: string,
+  accessToken: string,
+): Promise<{ friendship: { id: string; status: "accepted" } }> {
+  return apiRequest(`/v1/friends/${encodeURIComponent(friendshipId)}/accept`, {
+    method: "POST",
+    accessToken,
   });
 }
 

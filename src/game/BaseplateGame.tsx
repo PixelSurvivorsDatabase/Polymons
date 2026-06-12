@@ -553,7 +553,7 @@ function PlayerController({
   return (
     <RigidBody
       ref={body}
-      name="player"
+      name="HumanoidRootPart"
       position={[spawn.x, spawn.y, spawn.z]}
       colliders={false}
       lockRotations
@@ -574,7 +574,9 @@ function PlayerController({
           groundContacts.current = Math.max(0, groundContacts.current - 1);
         }}
       />
-      <BlockAvatar moving={moving} grounded={grounded} facing={facing} />
+      <group name="Humanoid">
+        <BlockAvatar moving={moving} grounded={grounded} facing={facing} />
+      </group>
     </RigidBody>
   );
 }
@@ -864,12 +866,15 @@ export default function BaseplateGame({
   worldObjects,
   guiObjects = [],
   playerSettings = {
+    health: 100,
     walkSpeed: 18,
     jumpPower: 10.5,
     cameraFieldOfView: 52,
     maxHealth: 100,
   },
   projectName = "Baseplate",
+  localPlayer,
+  onFriendRequest,
 }: {
   remotePlayers?: RemotePlayer[];
   onPlayerState?: (state: Omit<PlayerTransform, "sequence">) => void;
@@ -877,6 +882,11 @@ export default function BaseplateGame({
   guiObjects?: PolyGuiObject[];
   playerSettings?: PolyPlayerSettings;
   projectName?: string;
+  localPlayer?: {
+    username: string;
+    displayName: string;
+  };
+  onFriendRequest?: (username: string) => Promise<void>;
 }) {
   const spawnObject = worldObjects?.find((object) => object.type === "spawn");
   const spawn = spawnObject
@@ -888,6 +898,13 @@ export default function BaseplateGame({
     : SPAWN;
   const input = useRef<InputState>(createInputState());
   const [pointerLocked, setPointerLocked] = useState(false);
+  const [playerListOpen, setPlayerListOpen] = useState(false);
+  const [selectedPlayer, setSelectedPlayer] = useState<{
+    username: string;
+    displayName: string;
+    local?: boolean;
+  } | null>(null);
+  const [friendStatus, setFriendStatus] = useState("");
   const [telemetry, setTelemetry] = useState<Telemetry>({
     grounded: false,
     speed: 0,
@@ -897,6 +914,29 @@ export default function BaseplateGame({
     rotationY: 0,
   });
   useKeyboard(input);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code !== "Tab") return;
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement
+      ) {
+        return;
+      }
+      event.preventDefault();
+      setPlayerListOpen((open) => {
+        const next = !open;
+        if (next && document.pointerLockElement) {
+          void document.exitPointerLock();
+        }
+        return next;
+      });
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   const setMove = (
     key: "forward" | "backward" | "left" | "right" | "sprint",
@@ -942,7 +982,7 @@ export default function BaseplateGame({
 
       <div className="game-hud game-hud-left">
         <span className="game-build-label">{projectName.toUpperCase()}</span>
-        <strong>LocalPlayer</strong>
+        <strong>{localPlayer?.displayName ?? "LocalPlayer"}</strong>
         <span>
           {telemetry.grounded ? "Grounded" : "Airborne"} -{" "}
           {telemetry.speed.toFixed(1)} studs/s
@@ -951,10 +991,82 @@ export default function BaseplateGame({
           {remotePlayers.length + 1}{" "}
           {remotePlayers.length === 0 ? "player" : "players"} online
         </span>
-        <span>{playerSettings.maxHealth} max health</span>
+        <span>{playerSettings.health}/{playerSettings.maxHealth} health</span>
       </div>
 
       <ProjectGui objects={guiObjects} />
+
+      {playerListOpen && (
+        <aside className="player-list-menu">
+          <header>
+            <strong>Players</strong>
+            <span>{remotePlayers.length + 1}</span>
+          </header>
+          <button
+            onClick={() => {
+              setFriendStatus("");
+              setSelectedPlayer({
+                username: localPlayer?.username ?? "localplayer",
+                displayName: localPlayer?.displayName ?? "LocalPlayer",
+                local: true,
+              });
+            }}
+          >
+            <span>{(localPlayer?.displayName ?? "L").slice(0, 1)}</span>
+            <div>
+              <strong>{localPlayer?.displayName ?? "LocalPlayer"}</strong>
+              <small>@{localPlayer?.username ?? "localplayer"}</small>
+            </div>
+          </button>
+          {remotePlayers.map((player) => (
+            <button
+              key={player.id}
+              onClick={() => {
+                setFriendStatus("");
+                setSelectedPlayer({
+                  username: player.username,
+                  displayName: player.displayName,
+                });
+              }}
+            >
+              <span>{player.displayName.slice(0, 1)}</span>
+              <div>
+                <strong>{player.displayName}</strong>
+                <small>@{player.username}</small>
+              </div>
+            </button>
+          ))}
+        </aside>
+      )}
+
+      {selectedPlayer && (
+        <div className="player-profile-popover">
+          <button className="profile-close" onClick={() => setSelectedPlayer(null)}>
+            Close
+          </button>
+          <span>{selectedPlayer.displayName.slice(0, 1)}</span>
+          <h2>{selectedPlayer.displayName}</h2>
+          <p>@{selectedPlayer.username}</p>
+          {!selectedPlayer.local && onFriendRequest && (
+            <button
+              onClick={async () => {
+                setFriendStatus("Sending...");
+                try {
+                  await onFriendRequest(selectedPlayer.username);
+                  setFriendStatus("Friend request sent");
+                } catch (error) {
+                  setFriendStatus(
+                    error instanceof Error ? error.message : "Could not send request",
+                  );
+                }
+              }}
+            >
+              Send friend request
+            </button>
+          )}
+          {friendStatus && <small>{friendStatus}</small>}
+        </div>
+      )}
 
       <div className="game-hud game-hud-right">
         <span>WASD Move</span>

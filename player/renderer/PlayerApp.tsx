@@ -64,7 +64,13 @@ export default function PlayerApp() {
   }
 
   if (launch) {
-    return <PlayerGame launch={launch} onLeave={() => setLaunch(null)} />;
+    return (
+      <PlayerGame
+        launch={launch}
+        auth={auth}
+        onLeave={() => setLaunch(null)}
+      />
+    );
   }
 
   if (!auth) {
@@ -123,27 +129,38 @@ export default function PlayerApp() {
 
 function PlayerGame({
   launch,
+  auth,
   onLeave,
 }: {
   launch: PlayerLaunch;
+  auth: PlayerAuth | null;
   onLeave: () => void;
 }) {
   if (launch.mode === "studio") {
-    return <StudioPlayerGame launch={launch} onLeave={onLeave} />;
+    return <StudioPlayerGame launch={launch} auth={auth} onLeave={onLeave} />;
   }
-  return <OnlinePlayerGame launch={launch} onLeave={onLeave} />;
+  return <OnlinePlayerGame launch={launch} auth={auth} onLeave={onLeave} />;
 }
 
 function OnlinePlayerGame({
   launch,
+  auth,
   onLeave,
 }: {
   launch: Extract<PlayerLaunch, { mode: "online" }>;
+  auth: PlayerAuth | null;
   onLeave: () => void;
 }) {
   const { connection, remotePlayers, sendState } = useMultiplayer(
     launch.websocketUrl,
   );
+  const [project, setProject] = useState<PolyProject | null>(null);
+  useEffect(() => {
+    void window.polymons
+      .getGame(launch.game)
+      .then((result) => setProject(result.game.manifest))
+      .catch(() => setProject(null));
+  }, [launch.game]);
 
   return (
     <main className="game-screen">
@@ -162,6 +179,14 @@ function OnlinePlayerGame({
           <BaseplateGame
             remotePlayers={remotePlayers}
             onPlayerState={sendState}
+            worldObjects={project?.objects}
+            guiObjects={project?.gui}
+            playerSettings={project?.playerSettings}
+            projectName={project?.name}
+            localPlayer={auth?.user}
+            onFriendRequest={(username) =>
+              window.polymons.sendFriendRequest(username)
+            }
           />
         </Suspense>
       </section>
@@ -171,9 +196,11 @@ function OnlinePlayerGame({
 
 function StudioPlayerGame({
   launch,
+  auth,
   onLeave,
 }: {
   launch: Extract<PlayerLaunch, { mode: "studio" }>;
+  auth: PlayerAuth | null;
   onLeave: () => void;
 }) {
   const [project, setProject] = useState<PolyProject | null>(null);
@@ -228,6 +255,7 @@ function StudioPlayerGame({
               guiObjects={runtime.project.gui}
               playerSettings={runtime.project.playerSettings}
               projectName={runtime.project.name}
+              localPlayer={auth?.user}
             />
             {(runtime.output.length > 0 || runtime.diagnostics.length > 0) && (
               <aside className="player-output">

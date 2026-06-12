@@ -8,6 +8,9 @@ contextBridge.exposeInMainWorld("polymons", {
     ipcRenderer.invoke("auth:signup", { username, password, displayName }),
   logout: () => ipcRenderer.invoke("auth:logout"),
   play: (gameId) => ipcRenderer.invoke("game:play", { gameId }),
+  getGame: (gameId) => ipcRenderer.invoke("game:get", { gameId }),
+  sendFriendRequest: (username) =>
+    ipcRenderer.invoke("friends:request", { username }),
   loadStudioProject: (id) => ipcRenderer.invoke("studio:project", { id }),
   saveStudioDataStores: (id, dataStores) =>
     ipcRenderer.invoke("studio:save-data", { id, dataStores }),

@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("polyStudio", {
   createProject: (input) => ipcRenderer.invoke("projects:create", input),
   loadProject: (id) => ipcRenderer.invoke("projects:load", { id }),
   saveProject: (project) => ipcRenderer.invoke("projects:save", project),
+  publishProject: (project) => ipcRenderer.invoke("projects:publish", project),
   revealProject: (id) => ipcRenderer.invoke("projects:reveal", { id }),
   playProject: (id) => ipcRenderer.invoke("projects:play", { id }),
   exportModel: (input) => ipcRenderer.invoke("models:export", input),

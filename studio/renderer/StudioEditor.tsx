@@ -237,6 +237,7 @@ export default function StudioEditor({
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [playing, setPlaying] = useState(false);
+  const [publishing, setPublishing] = useState(false);
   const [message, setMessage] = useState("Ready");
   const [diagnostics, setDiagnostics] = useState<
     Record<string, PolyDiagnostic[]>
@@ -360,18 +361,31 @@ export default function StudioEditor({
     setMessage("Redid change");
   }
 
-  function addPart() {
+  function addPart(type: StudioObject["type"] = "part") {
+    const baseName =
+      type === "humanoidRootPart"
+        ? "HumanoidRootPart"
+        : type === "tool"
+          ? "Tool"
+          : type === "handle"
+            ? "Handle"
+            : "Part";
     const next: StudioObject = {
       id: crypto.randomUUID(),
       name: nextName(
         project.objects.map((item) => item.name),
-        "Part",
+        baseName,
       ),
-      type: "part",
+      type,
       position: [0, 2, 0],
       rotation: [0, 0, 0],
-      scale: [4, 4, 4],
-      color: "#30254D",
+      scale:
+        type === "handle"
+          ? [1, 3, 1]
+          : type === "humanoidRootPart"
+            ? [2, 2, 1]
+            : [4, 4, 4],
+      color: type === "humanoidRootPart" ? "#7F8FA6" : "#30254D",
       anchored: true,
       visible: true,
       transparency: 0,
@@ -379,8 +393,11 @@ export default function StudioEditor({
       canCollide: true,
       castShadow: true,
       modelId: null,
-      attributes: {},
-      tags: [],
+      attributes:
+        type === "humanoidRootPart"
+          ? { Health: 100, MaxHealth: 100 }
+          : {},
+      tags: type === "humanoidRootPart" ? ["Humanoid"] : [],
     };
     updateProject((current) => ({
       ...current,
@@ -442,7 +459,7 @@ export default function StudioEditor({
   function createModel() {
     const partIds = activeWorldIds.filter((id) => {
       const object = project.objects.find((item) => item.id === id);
-      return object?.type === "part";
+      return object && !["baseplate", "spawn"].includes(object.type);
     });
     if (partIds.length < 2) {
       setMessage("Select at least two Parts to create a Model.");
@@ -748,12 +765,12 @@ export default function StudioEditor({
         remotes: current.remotes.filter((remote) => remote.id !== selectedRemote.id),
       }));
     } else if (selectedWorld) {
-      if (selectedWorld.type !== "part") return;
+      if (["baseplate", "spawn"].includes(selectedWorld.type)) return;
       const ids = new Set(activeWorldIds);
       updateProject((current) => ({
         ...current,
         objects: current.objects.filter(
-          (item) => item.type !== "part" || !ids.has(item.id),
+          (item) => ["baseplate", "spawn"].includes(item.type) || !ids.has(item.id),
         ),
       }));
     } else if (selectedScript) {
@@ -814,6 +831,29 @@ export default function StudioEditor({
     setPlaying(false);
   }
 
+  async function publish() {
+    const allDiagnostics = project.scripts.flatMap((script) =>
+      analyzePolyScript(script, project as PolyProject),
+    );
+    if (allDiagnostics.some((diagnostic) => diagnostic.severity === "error")) {
+      setMessage("Fix script errors before publishing.");
+      return;
+    }
+    setPublishing(true);
+    setMessage("Publishing...");
+    try {
+      const result = await window.polyStudio.publishProject(project);
+      setDirty(false);
+      setMessage(
+        `Published ${result.game.title} version ${result.game.version}`,
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Publish failed.");
+    } finally {
+      setPublishing(false);
+    }
+  }
+
   return (
     <main className="studio-editor">
       <header className="editor-titlebar">
@@ -822,7 +862,17 @@ export default function StudioEditor({
           <span>Poly Studio</span>
         </button>
         <div className="project-title">
-          <strong>{project.name}</strong>
+          <input
+            aria-label="Game name"
+            maxLength={64}
+            value={project.name}
+            onChange={(event) =>
+              updateProject((current) => ({
+                ...current,
+                name: event.target.value,
+              }))
+            }
+          />
           <span>{dirty ? "Unsaved" : "Saved locally"}</span>
         </div>
         <div className="editor-account">
@@ -847,7 +897,10 @@ export default function StudioEditor({
           <button title="Snap selection to grid" disabled={activeWorldIds.length === 0} onClick={snapSelection}><Grid3X3 size={16} /></button>
         </div>
         <div className="insert-group">
-          <button onClick={addPart}><Plus size={14} /> Part</button>
+          <button onClick={() => addPart()}><Plus size={14} /> Part</button>
+          <button onClick={() => addPart("tool")}><Package size={14} /> Tool</button>
+          <button onClick={() => addPart("handle")}><Move3D size={14} /> Handle</button>
+          <button onClick={() => addPart("humanoidRootPart")}><UserRound size={14} /> HumanoidRoot</button>
           <button onClick={createModel} disabled={activeWorldIds.length < 2}><Boxes size={14} /> Model</button>
           <button onClick={() => void importModel()}><Upload size={14} /> PMXL</button>
           <button onClick={() => addScript("script")}><FileCode2 size={14} /> Script</button>
@@ -910,6 +963,14 @@ export default function StudioEditor({
         </div>
         <button className="save-button" onClick={() => void save()} disabled={saving}>
           <Save size={16} /> {saving ? "Saving" : "Save"}
+        </button>
+        <button
+          className="publish-button"
+          onClick={() => void publish()}
+          disabled={publishing || project.name.trim().length === 0}
+        >
+          <Upload size={16} />
+          {publishing ? "Publishing" : "Publish"}
         </button>
         <button className="play-button" onClick={() => void play()} disabled={playing}>
           <Play size={16} fill="currentColor" />
@@ -1099,7 +1160,15 @@ function Explorer({
             <TreeItem
               key={object.id}
               active={selectedPartIds.includes(object.id)}
-              icon={object.type === "part" ? <Box size={14} /> : <Grid3X3 size={14} />}
+              icon={
+                object.type === "tool"
+                  ? <Package size={14} />
+                  : object.type === "humanoidRootPart"
+                    ? <UserRound size={14} />
+                    : object.type === "part" || object.type === "handle"
+                      ? <Box size={14} />
+                      : <Grid3X3 size={14} />
+              }
               label={object.name}
               onClick={(event) => onSelectWorld(object.id, event.ctrlKey || event.metaKey)}
             />
@@ -1795,13 +1864,41 @@ function Properties({
             <ToggleField label="Visible" value={world.visible !== false} onChange={(visible) => onWorldChange({ visible })} />
           </PropertySection>
           <PropertySection title="Gameplay data">
+            {world.type === "humanoidRootPart" && (
+              <>
+                <NumberField
+                  label="Health"
+                  value={Number(world.attributes.Health ?? 100)}
+                  minimum={0}
+                  maximum={500}
+                  step={1}
+                  onChange={(Health) =>
+                    onWorldChange({
+                      attributes: { ...world.attributes, Health },
+                    })
+                  }
+                />
+                <NumberField
+                  label="MaxHealth"
+                  value={Number(world.attributes.MaxHealth ?? 100)}
+                  minimum={1}
+                  maximum={500}
+                  step={1}
+                  onChange={(MaxHealth) =>
+                    onWorldChange({
+                      attributes: { ...world.attributes, MaxHealth },
+                    })
+                  }
+                />
+              </>
+            )}
             <TagsField value={world.tags} onChange={(tags) => onWorldChange({ tags })} />
             <JsonAttributesField
               value={world.attributes}
               onChange={(attributes) => onWorldChange({ attributes })}
             />
           </PropertySection>
-          {world.type === "part" && <DeleteButton onClick={onDelete} />}
+          {!["baseplate", "spawn"].includes(world.type) && <DeleteButton onClick={onDelete} />}
         </div>
       ) : model ? (
         <div className="properties-content">
@@ -1903,6 +2000,7 @@ function Properties({
         <div className="properties-content">
           <ReadOnlyField label="Name" value="LocalPlayer" />
           <PropertySection title="Character">
+            <NumberField label="Health" value={project.playerSettings.health} minimum={0} maximum={project.playerSettings.maxHealth} step={1} onChange={(health) => onPlayerChange({ health })} />
             <NumberField label="WalkSpeed" value={project.playerSettings.walkSpeed} minimum={1} maximum={500} step={1} onChange={(walkSpeed) => onPlayerChange({ walkSpeed })} />
             <NumberField label="JumpPower" value={project.playerSettings.jumpPower} minimum={1} maximum={500} step={0.5} onChange={(jumpPower) => onPlayerChange({ jumpPower })} />
             <NumberField label="MaxHealth" value={project.playerSettings.maxHealth} minimum={1} maximum={500} step={1} onChange={(maxHealth) => onPlayerChange({ maxHealth })} />

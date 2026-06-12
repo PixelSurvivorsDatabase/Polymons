@@ -8,9 +8,10 @@ import { attachWebSocketServer } from "./websocket.js";
 const config = readConfig();
 const admin = createAdminClient(config);
 await ensureOfficialAccount(admin);
-const app = createApp(config, admin);
-const server = createServer(app);
-const closeWebSockets = attachWebSocketServer(server, config, admin);
+const server = createServer();
+const sockets = attachWebSocketServer(server, config, admin);
+const app = createApp(config, admin, () => sockets.snapshot());
+server.on("request", app);
 
 server.listen(config.port, "0.0.0.0", () => {
   console.log(`Polymons Server listening on port ${config.port}.`);
@@ -18,7 +19,7 @@ server.listen(config.port, "0.0.0.0", () => {
 
 function shutdown(signal: string) {
   console.log(`${signal} received. Closing Polymons Server.`);
-  closeWebSockets();
+  sockets.close();
   server.close(() => {
     process.exit(0);
   });

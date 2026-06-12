@@ -11,7 +11,12 @@ import {
   isReservedUsername,
   normalizeUsername,
 } from "./security.js";
-import { clientMessageSchema, signUpSchema } from "./validation.js";
+import {
+  clientMessageSchema,
+  friendRequestSchema,
+  publishGameSchema,
+  signUpSchema,
+} from "./validation.js";
 
 test("normalizes usernames and builds internal account identifiers", () => {
   assert.equal(normalizeUsername("  Nova_7 "), "nova_7");
@@ -93,6 +98,25 @@ test("accepts only bounded gameplay messages", () => {
       position: [Number.POSITIVE_INFINITY, 2, 3],
       rotationY: 0.5,
     }).success,
+    false,
+  );
+});
+
+test("validates Studio publishes and friend requests", () => {
+  assert.equal(
+    publishGameSchema.safeParse({
+      projectId: "11111111-1111-4111-8111-111111111111",
+      title: "Lava's Game",
+      manifest: { version: 2 },
+    }).success,
+    true,
+  );
+  assert.equal(
+    friendRequestSchema.safeParse({ username: "lava" }).success,
+    true,
+  );
+  assert.equal(
+    friendRequestSchema.safeParse({ username: "x" }).success,
     false,
   );
 });

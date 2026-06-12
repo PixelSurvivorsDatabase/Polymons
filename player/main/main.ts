@@ -462,6 +462,29 @@ if (!hasLock) {
         );
       }
     });
+    ipcMain.handle("game:get", (_event, input: { gameId: string }) =>
+      apiRequest(`/v1/games/${encodeURIComponent(input.gameId)}`),
+    );
+    ipcMain.handle(
+      "friends:request",
+      async (_event, input: { username: string }) => {
+        if (!auth) throw new Error("Sign in to send a friend request.");
+        if (
+          !auth.session.expiresAt ||
+          auth.session.expiresAt * 1000 < Date.now() + 60_000
+        ) {
+          const renewed = await refreshAuth();
+          if (!renewed) throw new Error("Sign in again to send a friend request.");
+        }
+        const send = (accessToken: string) =>
+          apiRequest("/v1/friends/request", {
+            method: "POST",
+            accessToken,
+            body: input,
+          });
+        return send(auth!.session.accessToken);
+      },
+    );
     createWindow();
   });
 }

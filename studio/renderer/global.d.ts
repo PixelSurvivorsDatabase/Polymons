@@ -21,7 +21,7 @@ type StudioAuth = {
 type StudioObject = {
   id: string;
   name: string;
-  type: "baseplate" | "spawn" | "part";
+  type: "baseplate" | "spawn" | "part" | "tool" | "handle" | "humanoidRootPart";
   position: [number, number, number];
   rotation: [number, number, number];
   scale: [number, number, number];
@@ -90,6 +90,7 @@ type StudioProject = {
   scripts: StudioScript[];
   gui: StudioGuiObject[];
   playerSettings: {
+    health: number;
     walkSpeed: number;
     jumpPower: number;
     cameraFieldOfView: number;
@@ -116,6 +117,9 @@ interface Window {
     }) => Promise<StudioProject>;
     loadProject: (id: string) => Promise<StudioProject>;
     saveProject: (project: StudioProject) => Promise<StudioProject>;
+    publishProject: (project: StudioProject) => Promise<{
+      game: { id: string; slug: string; title: string; version: number };
+    }>;
     revealProject: (id: string) => Promise<void>;
     playProject: (id: string) => Promise<void>;
     exportModel: (input: {

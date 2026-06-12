@@ -266,6 +266,7 @@ export default function CodeEditor({
             "WalkSpeed",
             "JumpPower",
             "CameraFieldOfView",
+            "Health",
             "MaxHealth",
             "SetAttribute",
             "GetAttribute",

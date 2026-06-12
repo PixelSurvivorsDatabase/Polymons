@@ -30,6 +30,21 @@ type RoomPlayer = {
   state: PlayerState;
 };
 
+export type PresenceSnapshot = {
+  counts: Record<string, number>;
+  players: Array<{
+    userId: string;
+    username: string;
+    displayName: string;
+    gameId: string;
+  }>;
+};
+
+export type WebSocketController = {
+  close: () => void;
+  snapshot: () => PresenceSnapshot;
+};
+
 const SPAWN_STATE: PlayerState = {
   sequence: 0,
   position: [0, 2.7, 7],
@@ -53,7 +68,7 @@ export function attachWebSocketServer(
   server: Server,
   config: ServerConfig,
   admin: SupabaseClient,
-): () => void {
+): WebSocketController {
   const webSocketServer = new WebSocketServer({
     noServer: true,
     maxPayload: 16 * 1024,
@@ -259,11 +274,27 @@ export function attachWebSocketServer(
     }
   }, 30_000);
 
-  return () => {
-    clearInterval(keepAlive);
-    for (const socket of webSocketServer.clients) {
-      socket.close(1001, "Server shutting down.");
-    }
-    webSocketServer.close();
+  return {
+    snapshot: () => {
+      const counts: Record<string, number> = {};
+      const players: PresenceSnapshot["players"] = [];
+      for (const connection of connections.values()) {
+        counts[connection.gameId] = (counts[connection.gameId] ?? 0) + 1;
+        players.push({
+          userId: connection.profile.id,
+          username: connection.profile.username,
+          displayName: connection.profile.displayName,
+          gameId: connection.gameId,
+        });
+      }
+      return { counts, players };
+    },
+    close: () => {
+      clearInterval(keepAlive);
+      for (const socket of webSocketServer.clients) {
+        socket.close(1001, "Server shutting down.");
+      }
+      webSocketServer.close();
+    },
   };
 }

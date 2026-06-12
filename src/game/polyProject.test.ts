@@ -95,6 +95,7 @@ label.Text = "Ready"`,
       },
     ],
     playerSettings: {
+      health: 100,
       walkSpeed: 18,
       jumpPower: 10.5,
       cameraFieldOfView: 55,

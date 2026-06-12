@@ -954,6 +954,17 @@ h3,
   line-height: 1.65;
 }
 
+.friend-list { display: grid; gap: 10px; }
+.friend-row { display: flex; align-items: center; gap: 13px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); padding: 14px 16px; }
+.friend-row > div { min-width: 0; flex: 1; }
+.friend-row strong, .friend-row span { display: block; }
+.friend-row span { margin-top: 3px; color: var(--muted); font-size: 12px; }
+.friend-status { color: var(--muted); font-weight: 700; }
+.create-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.model-import-button { cursor: pointer; }
+.model-import-button input { display: none; }
+.model-import-status { margin-top: 12px !important; color: #c8b8e5 !important; font-size: 12px; }
+
 .filter-row {
   display: flex;
   gap: 8px;
@@ -1081,6 +1092,34 @@ h3,
   backdrop-filter: blur(10px);
   pointer-events: none;
 }
+
+.player-list-menu {
+  position: absolute;
+  z-index: 20;
+  top: 18px;
+  right: 18px;
+  width: min(310px, calc(100% - 36px));
+  max-height: 65%;
+  overflow: auto;
+  border: 1px solid rgba(255,255,255,.14);
+  border-radius: 14px;
+  background: rgba(13,12,19,.92);
+  padding: 8px;
+  backdrop-filter: blur(16px);
+}
+.player-list-menu header { display: flex; justify-content: space-between; padding: 9px 10px 12px; color: #dcd5e6; }
+.player-list-menu > button { display: flex; width: 100%; align-items: center; gap: 10px; border: 0; border-radius: 9px; background: transparent; color: #eee9f4; cursor: pointer; padding: 9px; text-align: left; }
+.player-list-menu > button:hover { background: rgba(255,255,255,.07); }
+.player-list-menu > button > span, .player-profile-popover > span { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 8px; background: #704bb0; font-weight: 900; }
+.player-list-menu button div { min-width: 0; }
+.player-list-menu button strong, .player-list-menu button small { display: block; }
+.player-list-menu button small { margin-top: 2px; color: #938b9e; }
+.player-profile-popover { position: absolute; z-index: 22; top: 50%; left: 50%; width: min(340px, calc(100% - 36px)); border: 1px solid rgba(255,255,255,.14); border-radius: 18px; background: #15131d; padding: 25px; text-align: center; transform: translate(-50%, -50%); box-shadow: 0 28px 90px rgba(0,0,0,.5); }
+.player-profile-popover > span { width: 56px; height: 56px; margin: 0 auto; font-size: 22px; }
+.player-profile-popover h2 { margin: 12px 0 2px; }
+.player-profile-popover p, .player-profile-popover small { color: #9b94a4; }
+.player-profile-popover > button:not(.profile-close) { border: 0; border-radius: 9px; background: #704bb0; color: white; cursor: pointer; padding: 9px 12px; font-weight: 800; }
+.profile-close { position: absolute; top: 12px; right: 12px; border: 0; background: transparent; color: #938b9e; cursor: pointer; }
 
 .launch-error,
 .auth-error {

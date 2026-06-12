@@ -12,7 +12,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import {
   Link,
   NavLink,
@@ -23,18 +23,56 @@ import {
   useParams,
 } from "react-router-dom";
 import {
+  acceptFriendRequest,
   createPlayerAccountLink,
   createPlaySession,
+  getGame,
+  listFriends,
+  listGames,
   playerAccountUrl,
   playerLaunchUrl,
   POLYMONS_PLAYER_DOWNLOAD_URL,
+  POLY_STUDIO_DOWNLOAD_URL,
+  sendFriendRequest,
+  type Friendship,
+  type PlatformGame,
   type PlaySession,
 } from "./api";
 import { useAuth } from "./auth";
-import { games, type Game } from "./data";
+import { games as fallbackGames, type Game } from "./data";
 import { useMultiplayer } from "./game/multiplayer";
 
 const BaseplateGame = lazy(() => import("./game/BaseplateGame"));
+
+function displayGame(game: PlatformGame): Game {
+  return {
+    id: game.slug,
+    title: game.title,
+    creator: game.creator,
+    players: String(game.activePlayers),
+    rating: 0,
+    genre: game.genre,
+    description: game.description,
+    colors: ["#7247d8", "#36a777"],
+    glyph: game.title.slice(0, 1).toUpperCase(),
+  };
+}
+
+function useGames() {
+  const [games, setGames] = useState<Game[]>(fallbackGames);
+  useEffect(() => {
+    void listGames()
+      .then((result) => setGames(result.games.map(displayGame)))
+      .catch(() => undefined);
+    const timer = window.setInterval(() => {
+      void listGames()
+        .then((result) => setGames(result.games.map(displayGame)))
+        .catch(() => undefined);
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return games;
+}
 
 const navItems = [
   { to: "/", label: "Home", icon: Home },
@@ -260,7 +298,7 @@ function GameCard({ game }: { game: Game }) {
         <p>by {game.creator}</p>
         <div className="game-stats">
           <span className="test-dot" />
-          <span>Playable</span>
+          <span>{game.players} playing</span>
           <span className="stat-divider" />
           <span>Baseplate</span>
         </div>
@@ -290,6 +328,7 @@ function SectionHeading({
 }
 
 function HomePage() {
+  const games = useGames();
   const featured = games[0];
   const { user, showAuth } = useAuth();
   return (
@@ -370,6 +409,7 @@ function HomePage() {
 }
 
 function DiscoverPage() {
+  const games = useGames();
   return (
     <>
       <section className="page-heading">
@@ -380,7 +420,7 @@ function DiscoverPage() {
         <p>Find something to play.</p>
       </section>
       <section className="content-section discover-section">
-        <SectionHeading title="All games" eyebrow="1 game" />
+        <SectionHeading title="All games" eyebrow={`${games.length} games`} />
         <div className="game-grid discover-grid">
           {games.map((game) => (
             <GameCard key={game.id} game={game} />
@@ -392,6 +432,7 @@ function DiscoverPage() {
 }
 
 function GamePage() {
+  const games = useGames();
   const { gameId } = useParams<{ gameId: string }>();
   const game = games.find((item) => item.id === gameId) ?? games[0];
   const { session, showAuth, refresh } = useAuth();
@@ -552,6 +593,13 @@ function GamePage() {
 }
 
 function BrowserGame({ playSession }: { playSession: PlaySession }) {
+  const { user, session, refresh } = useAuth();
+  const [project, setProject] = useState<import("./game/polyProject").PolyProject | null>(null);
+  useEffect(() => {
+    void getGame(playSession.game.id)
+      .then((result) => setProject(result.game.manifest ?? null))
+      .catch(() => setProject(null));
+  }, [playSession.game.id]);
   const { connection, remotePlayers, sendState } = useMultiplayer(
     playSession.websocketUrl,
   );
@@ -569,6 +617,27 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
         <BaseplateGame
           remotePlayers={remotePlayers}
           onPlayerState={sendState}
+          worldObjects={project?.objects}
+          guiObjects={project?.gui}
+          playerSettings={project?.playerSettings}
+          projectName={project?.name}
+          localPlayer={user ?? undefined}
+          onFriendRequest={
+            session
+              ? async (username) => {
+                  let activeSession = session;
+                  if (
+                    !activeSession.expiresAt ||
+                    activeSession.expiresAt * 1000 < Date.now() + 60_000
+                  ) {
+                    const renewed = await refresh();
+                    if (!renewed) throw new Error("Please sign in again.");
+                    activeSession = renewed;
+                  }
+                  await sendFriendRequest(username, activeSession.accessToken);
+                }
+              : undefined
+          }
         />
       </Suspense>
     </div>
@@ -576,6 +645,40 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
 }
 
 function FriendsPage() {
+  const { session, showAuth, refresh } = useAuth();
+  const [friendships, setFriendships] = useState<Friendship[]>([]);
+  const [message, setMessage] = useState("");
+  const accessToken = useCallback(async () => {
+    if (!session) return null;
+    if (
+      session.expiresAt &&
+      session.expiresAt * 1000 >= Date.now() + 60_000
+    ) {
+      return session.accessToken;
+    }
+    return (await refresh())?.accessToken ?? null;
+  }, [refresh, session]);
+  const load = useCallback(async () => {
+    const token = await accessToken();
+    if (!token) return;
+    try {
+      setFriendships((await listFriends(token)).friendships);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not load friends.");
+    }
+  }, [accessToken]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  if (!session) {
+    return (
+      <section className="large-empty-state">
+        <Users size={44} />
+        <h2>Sign in to see your friends.</h2>
+        <button className="primary-button" onClick={() => showAuth()}>Sign in</button>
+      </section>
+    );
+  }
   return (
     <>
       <section className="page-heading">
@@ -584,19 +687,56 @@ function FriendsPage() {
           <h1>Friends</h1>
         </div>
       </section>
-      <section className="large-empty-state">
-        <div className="side-card-art">
-          <Users size={44} />
-        </div>
-        <span className="eyebrow">Friends</span>
-        <h2>No friends here yet.</h2>
-        <p>Find people you know and play games together.</p>
+      {message && <div className="launch-error">{message}</div>}
+      <section className="friend-list">
+        {friendships.length === 0 ? (
+          <div className="large-empty-state">
+            <Users size={44} />
+            <h2>No friends here yet.</h2>
+            <p>Open the player list in a game with Tab and send someone a request.</p>
+          </div>
+        ) : (
+          friendships.map((friendship) => (
+            <article className="friend-row" key={friendship.id}>
+              <Avatar name={friendship.user?.displayName ?? "?"} />
+              <div>
+                <strong>{friendship.user?.displayName ?? "Unknown player"}</strong>
+                <span>@{friendship.user?.username ?? "unknown"}</span>
+              </div>
+              {friendship.status === "pending" && friendship.incoming ? (
+                <button
+                  className="primary-button"
+                  onClick={async () => {
+                    const token = await accessToken();
+                    if (!token) {
+                      setMessage("Please sign in again.");
+                      return;
+                    }
+                    await acceptFriendRequest(friendship.id, token);
+                    await load();
+                  }}
+                >
+                  Accept
+                </button>
+              ) : friendship.status === "accepted" && friendship.gameId ? (
+                <Link className="primary-button" to={`/games/${friendship.gameId}`}>
+                  Join game
+                </Link>
+              ) : (
+                <span className="friend-status">
+                  {friendship.status === "accepted" ? "Offline" : "Pending"}
+                </span>
+              )}
+            </article>
+          ))
+        )}
       </section>
     </>
   );
 }
 
 function ProfilePage() {
+  const games = useGames();
   const { user, session, logout, showAuth, refresh } = useAuth();
   const [playerOptions, setPlayerOptions] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -772,6 +912,7 @@ function PlayerOptionsDialog({
 }
 
 function CreatePage() {
+  const [modelInfo, setModelInfo] = useState("");
   return (
     <>
       <section className="create-hero">
@@ -781,10 +922,44 @@ function CreatePage() {
           <p>
             Start with Baseplate and shape it into your own game.
           </p>
-          <Link to="/games/baseplate" className="primary-button">
-            <Plus size={19} />
-            Open Baseplate project
-          </Link>
+          <div className="create-actions">
+            <a href={POLY_STUDIO_DOWNLOAD_URL} className="primary-button">
+              <Download size={19} />
+              Download Poly Studio
+            </a>
+            <label className="secondary-button model-import-button">
+              Import .pmxl model
+              <input
+                type="file"
+                accept=".pmxl,application/json"
+                onChange={async (event) => {
+                  const file = event.target.files?.[0];
+                  if (!file) return;
+                  try {
+                    const parsed = JSON.parse(await file.text()) as {
+                      format?: string;
+                      version?: number;
+                      model?: { name?: string; parts?: unknown[] };
+                    };
+                    if (
+                      parsed.format !== "pmxl" ||
+                      parsed.version !== 1 ||
+                      !parsed.model?.name ||
+                      !Array.isArray(parsed.model.parts)
+                    ) {
+                      throw new Error("That is not a valid PMXL model.");
+                    }
+                    setModelInfo(
+                      `${parsed.model.name}: ${parsed.model.parts.length} parts. Open it from Poly Studio's PMXL button.`,
+                    );
+                  } catch (error) {
+                    setModelInfo(error instanceof Error ? error.message : "Could not read PMXL.");
+                  }
+                }}
+              />
+            </label>
+          </div>
+          {modelInfo && <p className="model-import-status">{modelInfo}</p>}
         </div>
         <div className="create-blocks" aria-hidden="true">
           <span />

@@ -35,6 +35,18 @@ export const playSessionSchema = z.object({
   gameId: z.string().trim().min(1).max(64),
 });
 
+export const publishGameSchema = z.object({
+  projectId: z.uuid(),
+  title: z.string().trim().min(1).max(64),
+  description: z.string().trim().max(2000).default(""),
+  genre: z.string().trim().min(1).max(64).default("All"),
+  manifest: z.record(z.string(), z.unknown()),
+});
+
+export const friendRequestSchema = z.object({
+  username: z.string().trim().toLowerCase().min(3).max(20),
+});
+
 export const playerAccountLinkSchema = z.object({
   ticket: z.string().min(40).max(256),
 });

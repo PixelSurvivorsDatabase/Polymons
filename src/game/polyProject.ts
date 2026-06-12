@@ -8,7 +8,7 @@ export type PolyScriptParent =
 export type PolyWorldObject = {
   id: string;
   name: string;
-  type: "baseplate" | "spawn" | "part";
+  type: "baseplate" | "spawn" | "part" | "tool" | "handle" | "humanoidRootPart";
   position: [number, number, number];
   rotation: [number, number, number];
   scale: [number, number, number];
@@ -65,6 +65,7 @@ export type PolyScript = {
 };
 
 export type PolyPlayerSettings = {
+  health: number;
   walkSpeed: number;
   jumpPower: number;
   cameraFieldOfView: number;
@@ -141,6 +142,7 @@ const GUI_PROPERTIES = new Set([
   "ZIndex",
 ]);
 const PLAYER_PROPERTIES = new Set([
+  "Health",
   "WalkSpeed",
   "JumpPower",
   "CameraFieldOfView",
@@ -189,6 +191,10 @@ export function normalizePolyProject(project: PolyProject): PolyProject {
     zIndex: gui.zIndex ?? 1,
   }));
   normalized.playerSettings = {
+    health:
+      normalized.playerSettings?.health ??
+      normalized.playerSettings?.maxHealth ??
+      100,
     walkSpeed: normalized.playerSettings?.walkSpeed ?? 18,
     jumpPower: normalized.playerSettings?.jumpPower ?? 10.5,
     cameraFieldOfView:
@@ -561,6 +567,12 @@ function assignProperty(
     return `${property} must be a positive number no greater than 500.`;
   }
   if (property === "WalkSpeed") project.playerSettings.walkSpeed = value;
+  if (property === "Health") {
+    project.playerSettings.health = Math.min(
+      value,
+      project.playerSettings.maxHealth,
+    );
+  }
   if (property === "JumpPower") project.playerSettings.jumpPower = value;
   if (property === "CameraFieldOfView") {
     if (value < 20 || value > 120) {
@@ -568,7 +580,13 @@ function assignProperty(
     }
     project.playerSettings.cameraFieldOfView = value;
   }
-  if (property === "MaxHealth") project.playerSettings.maxHealth = value;
+  if (property === "MaxHealth") {
+    project.playerSettings.maxHealth = value;
+    project.playerSettings.health = Math.min(
+      project.playerSettings.health,
+      value,
+    );
+  }
   return null;
 }
 

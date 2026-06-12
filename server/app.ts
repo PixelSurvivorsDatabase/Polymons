@@ -25,16 +25,29 @@ import {
   publicSession,
 } from "./supabase.js";
 import { isLoginDisabled } from "./official-account.js";
+import type { PresenceSnapshot } from "./websocket.js";
 import {
+  friendRequestSchema,
   loginSchema,
   playerAccountLinkSchema,
   playSessionSchema,
+  publishGameSchema,
   refreshSchema,
   signUpSchema,
 } from "./validation.js";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function gameSlug(title: string, projectId: string): string {
+  const base =
+    title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48) || "game";
+  return `${base}-${projectId.replace(/-/g, "").slice(0, 8)}`;
+}
 
 function websocketUrl(request: Request, ticket: string): string {
   const forwardedProtocol = request.get("x-forwarded-proto");
@@ -64,6 +77,7 @@ async function authenticatedUser(
 export function createApp(
   config: ServerConfig,
   admin: SupabaseClient,
+  presence: () => PresenceSnapshot = () => ({ counts: {}, players: [] }),
 ) {
   const app = express();
   app.disable("x-powered-by");
@@ -76,7 +90,7 @@ export function createApp(
       allowedHeaders: ["Authorization", "Content-Type"],
     }),
   );
-  app.use(express.json({ limit: "16kb" }));
+  app.use(express.json({ limit: "2mb" }));
   app.use(
     rateLimit({
       windowMs: 60_000,
@@ -293,7 +307,7 @@ export function createApp(
     let query = admin
       .from("games")
       .select(
-        "id, slug, title, description, visibility, genre, thumbnail_url, platform_owned, updated_at",
+        "id, slug, title, description, visibility, genre, thumbnail_url, platform_owned, owner_id, updated_at",
       )
       .eq("visibility", "public");
 
@@ -309,6 +323,21 @@ export function createApp(
       throw new HttpError(404, "Game not found.");
     }
 
+    const { data: owner } = data.owner_id
+      ? await admin
+          .from("profiles")
+          .select("username, display_name")
+          .eq("id", data.owner_id)
+          .maybeSingle()
+      : { data: null };
+    const { data: version } = await admin
+      .from("game_versions")
+      .select("manifest, version_number")
+      .eq("game_id", data.id)
+      .eq("status", "published")
+      .order("version_number", { ascending: false })
+      .limit(1)
+      .maybeSingle();
     response.json({
       game: {
         id: data.id,
@@ -319,9 +348,239 @@ export function createApp(
         genre: data.genre,
         thumbnailUrl: data.thumbnail_url,
         platformOwned: data.platform_owned,
+        creator: owner?.display_name ?? "Polymons",
+        creatorUsername: owner?.username ?? "polymons",
+        activePlayers: presence().counts[data.id] ?? 0,
         updatedAt: data.updated_at,
+        manifest: version?.manifest ?? null,
+        version: version?.version_number ?? null,
       },
     });
+  });
+
+  app.get("/v1/games", async (_request, response) => {
+    const { data, error } = await admin
+      .from("games")
+      .select(
+        "id, slug, title, description, genre, thumbnail_url, owner_id, updated_at",
+      )
+      .eq("visibility", "public")
+      .order("updated_at", { ascending: false })
+      .limit(100);
+    if (error) throw error;
+    const ownerIds = [
+      ...new Set(
+        (data ?? []).flatMap((game) => (game.owner_id ? [game.owner_id] : [])),
+      ),
+    ];
+    const { data: owners } = ownerIds.length
+      ? await admin
+          .from("profiles")
+          .select("id, username, display_name")
+          .in("id", ownerIds)
+      : { data: [] };
+    const ownerById = new Map((owners ?? []).map((owner) => [owner.id, owner]));
+    const counts = presence().counts;
+    response.json({
+      games: (data ?? []).map((game) => {
+        const owner = game.owner_id ? ownerById.get(game.owner_id) : null;
+        return {
+          id: game.id,
+          slug: game.slug,
+          title: game.title,
+          description: game.description,
+          genre: game.genre,
+          thumbnailUrl: game.thumbnail_url,
+          creator: owner?.display_name ?? "Polymons",
+          creatorUsername: owner?.username ?? "polymons",
+          activePlayers: counts[game.id] ?? 0,
+          updatedAt: game.updated_at,
+        };
+      }),
+    });
+  });
+
+  app.post("/v1/games/publish", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const input = parseBody(publishGameSchema, request.body);
+    if (Buffer.byteLength(JSON.stringify(input.manifest), "utf8") > 1_500_000) {
+      throw new HttpError(413, "This game is too large to publish.");
+    }
+    const { data: existing, error: lookupError } = await admin
+      .from("games")
+      .select("id, slug")
+      .eq("owner_id", user.id)
+      .eq("studio_project_id", input.projectId)
+      .maybeSingle();
+    if (lookupError) throw lookupError;
+    let game = existing;
+    if (game) {
+      const { data, error } = await admin
+        .from("games")
+        .update({
+          title: input.title,
+          description: input.description,
+          genre: input.genre,
+          visibility: "public",
+        })
+        .eq("id", game.id)
+        .select("id, slug")
+        .single();
+      if (error) throw error;
+      game = data;
+    } else {
+      const { data, error } = await admin
+        .from("games")
+        .insert({
+          owner_id: user.id,
+          studio_project_id: input.projectId,
+          slug: gameSlug(input.title, input.projectId),
+          title: input.title,
+          description: input.description,
+          genre: input.genre,
+          visibility: "public",
+          platform_owned: false,
+        })
+        .select("id, slug")
+        .single();
+      if (error) throw error;
+      game = data;
+    }
+    const { data: latest } = await admin
+      .from("game_versions")
+      .select("version_number")
+      .eq("game_id", game.id)
+      .order("version_number", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const { error: retireError } = await admin
+      .from("game_versions")
+      .update({ status: "retired" })
+      .eq("game_id", game.id)
+      .eq("status", "published");
+    if (retireError) throw retireError;
+    const versionNumber = (latest?.version_number ?? 0) + 1;
+    const { error: versionError } = await admin.from("game_versions").insert({
+      game_id: game.id,
+      version_number: versionNumber,
+      status: "published",
+      manifest: input.manifest,
+      created_by: user.id,
+      published_at: new Date().toISOString(),
+    });
+    if (versionError) throw versionError;
+    response.status(201).json({
+      game: {
+        id: game.id,
+        slug: game.slug,
+        title: input.title,
+        version: versionNumber,
+      },
+    });
+  });
+
+  app.get("/v1/friends", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const { data, error } = await admin
+      .from("friendships")
+      .select("id, requester_id, addressee_id, status, created_at")
+      .or(`requester_id.eq.${user.id},addressee_id.eq.${user.id}`)
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    const profileIds = [
+      ...new Set(
+        (data ?? []).map((friendship) =>
+          friendship.requester_id === user.id
+            ? friendship.addressee_id
+            : friendship.requester_id,
+        ),
+      ),
+    ];
+    const { data: profiles } = profileIds.length
+      ? await admin
+          .from("profiles")
+          .select("id, username, display_name, avatar_url")
+          .in("id", profileIds)
+      : { data: [] };
+    const profileById = new Map(
+      (profiles ?? []).map((profile) => [profile.id, profile]),
+    );
+    const live = presence().players;
+    const liveGameIds = [...new Set(live.map((player) => player.gameId))];
+    const { data: liveGames } = liveGameIds.length
+      ? await admin.from("games").select("id, slug").in("id", liveGameIds)
+      : { data: [] };
+    const gameSlugById = new Map(
+      (liveGames ?? []).map((game) => [game.id, game.slug]),
+    );
+    response.json({
+      friendships: (data ?? []).map((friendship) => {
+        const profileId =
+          friendship.requester_id === user.id
+            ? friendship.addressee_id
+            : friendship.requester_id;
+        const profile = profileById.get(profileId);
+        const online = live.find((player) => player.userId === profileId);
+        return {
+          id: friendship.id,
+          status: friendship.status,
+          incoming: friendship.addressee_id === user.id,
+          user: profile
+            ? {
+                id: profile.id,
+                username: profile.username,
+                displayName: profile.display_name,
+                avatarUrl: profile.avatar_url,
+              }
+            : null,
+          gameId: online ? gameSlugById.get(online.gameId) ?? null : null,
+        };
+      }),
+    });
+  });
+
+  app.post("/v1/friends/request", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const input = parseBody(friendRequestSchema, request.body);
+    const { data: addressee, error: profileError } = await admin
+      .from("profiles")
+      .select("id")
+      .eq("username", input.username)
+      .maybeSingle();
+    if (profileError) throw profileError;
+    if (!addressee) throw new HttpError(404, "Player not found.");
+    if (addressee.id === user.id) {
+      throw new HttpError(400, "You cannot friend yourself.");
+    }
+    const { data, error } = await admin
+      .from("friendships")
+      .insert({
+        requester_id: user.id,
+        addressee_id: addressee.id,
+        status: "pending",
+      })
+      .select("id")
+      .single();
+    if (error?.code === "23505") {
+      throw new HttpError(409, "A friendship already exists.");
+    }
+    if (error) throw error;
+    response.status(201).json({ friendship: { id: data.id, status: "pending" } });
+  });
+
+  app.post("/v1/friends/:friendshipId/accept", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const { data, error } = await admin
+      .from("friendships")
+      .update({ status: "accepted" })
+      .eq("id", request.params.friendshipId)
+      .eq("addressee_id", user.id)
+      .eq("status", "pending")
+      .select("id")
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw new HttpError(404, "Friend request not found.");
+    response.json({ friendship: { id: data.id, status: "accepted" } });
   });
 
   app.post("/v1/play-sessions", async (request, response) => {
