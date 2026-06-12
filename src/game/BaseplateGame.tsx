@@ -4,6 +4,7 @@ import {
   CuboidCollider,
   Physics,
   RigidBody,
+  type CollisionPayload,
   type RapierRigidBody,
   useRapier,
 } from "@react-three/rapier";
@@ -684,13 +685,16 @@ function ProjectBlock({
   object,
   animations,
   animationRequests,
+  onTouched,
 }: {
   object: PolyWorldObject;
   animations: PolyAnimation[];
   animationRequests: string[];
+  onTouched?: (worldObjectId: string) => void;
 }) {
   const animated = useRef<Group>(null);
   const animationStartedAt = useRef<number | null>(null);
+  const touchingPlayerColliders = useRef(new Set<number>());
   const surfaceTexture = useMemo(
     () => createSurfaceTexture(object.surfaceTexture),
     [object.surfaceTexture],
@@ -732,10 +736,23 @@ function ProjectBlock({
       </mesh>
     </group>
   );
+  const playerEntered = ({ other }: CollisionPayload) => {
+    if (other.rigidBodyObject?.name !== "HumanoidRootPart") return;
+    const colliderHandle = other.collider.handle;
+    if (touchingPlayerColliders.current.has(colliderHandle)) return;
+    const firstContact = touchingPlayerColliders.current.size === 0;
+    touchingPlayerColliders.current.add(colliderHandle);
+    if (firstContact) onTouched?.(object.id);
+  };
+  const playerExited = ({ other }: CollisionPayload) => {
+    if (other.rigidBodyObject?.name !== "HumanoidRootPart") return;
+    touchingPlayerColliders.current.delete(other.collider.handle);
+  };
   return (
     <RigidBody
+      name={object.id}
       type={object.anchored ? "fixed" : "dynamic"}
-      colliders={object.canCollide ? "cuboid" : false}
+      colliders={false}
       position={object.position}
       rotation={object.rotation}
       restitution={object.restitution ?? 0.03}
@@ -743,6 +760,18 @@ function ProjectBlock({
       mass={object.mass ?? 1}
       ccd={!object.anchored}
     >
+      <CuboidCollider
+        args={[
+          Math.max(0.01, object.scale[0] / 2),
+          Math.max(0.01, object.scale[1] / 2),
+          Math.max(0.01, object.scale[2] / 2),
+        ]}
+        sensor={!object.canCollide}
+        onCollisionEnter={playerEntered}
+        onCollisionExit={playerExited}
+        onIntersectionEnter={playerEntered}
+        onIntersectionExit={playerExited}
+      />
       {content}
     </RigidBody>
   );
@@ -780,6 +809,7 @@ function Scene({
   animationVersion,
   playerSettings,
   spawn,
+  onWorldTouched,
 }: {
   input: MutableRefObject<InputState>;
   onTelemetry: (telemetry: Telemetry) => void;
@@ -792,6 +822,7 @@ function Scene({
   animationVersion: number;
   playerSettings: PolyPlayerSettings;
   spawn: { x: number; y: number; z: number };
+  onWorldTouched?: (worldObjectId: string) => void;
 }) {
   return (
     <>
@@ -815,6 +846,7 @@ function Scene({
               object={object}
               animations={animations}
               animationRequests={animationRequests}
+              onTouched={onWorldTouched}
             />
           ))
         ) : (
@@ -1118,6 +1150,7 @@ export default function BaseplateGame({
   onSendChat,
   onGuiActivated,
   onToolActivated,
+  onWorldTouched,
 }: {
   remotePlayers?: RemotePlayer[];
   onPlayerState?: (state: Omit<PlayerTransform, "sequence">) => void;
@@ -1139,6 +1172,7 @@ export default function BaseplateGame({
   onSendChat?: (text: string) => boolean;
   onGuiActivated?: (guiObjectId: string) => void;
   onToolActivated?: (toolObjectId: string) => void;
+  onWorldTouched?: (worldObjectId: string) => void;
 }) {
   const spawnObject = worldObjects?.find((object) => object.type === "spawn");
   const spawn = spawnObject
@@ -1233,6 +1267,7 @@ export default function BaseplateGame({
             animationVersion={animationVersion}
             playerSettings={playerSettings}
             spawn={spawn}
+            onWorldTouched={onWorldTouched}
           />
         </Suspense>
       </Canvas>

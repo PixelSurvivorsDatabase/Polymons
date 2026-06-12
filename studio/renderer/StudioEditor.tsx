@@ -2952,12 +2952,116 @@ function CameraControls({ enabled }: { enabled: boolean }) {
     controls.maxPolarAngle = Math.PI * 0.49;
     controls.minDistance = 4;
     controls.maxDistance = 80;
-    let frameId = requestAnimationFrame(function frame() {
+    const pressed = new Set<string>();
+    const forward = new Vector3();
+    const right = new Vector3();
+    const movement = new Vector3();
+    const direction = new Vector3();
+    const nextDirection = new Vector3();
+    const up = new Vector3(0, 1, 0);
+    const supportedKeys = new Set([
+      "KeyW",
+      "KeyA",
+      "KeyS",
+      "KeyD",
+      "ArrowUp",
+      "ArrowDown",
+      "ArrowLeft",
+      "ArrowRight",
+    ]);
+    const rotateView = (yaw: number, pitch: number) => {
+      camera.getWorldDirection(direction).normalize();
+      const viewDistance = Math.max(
+        1,
+        camera.position.distanceTo(controls.target),
+      );
+      if (yaw !== 0) direction.applyAxisAngle(up, yaw);
+      if (pitch !== 0) {
+        right.crossVectors(direction, up).normalize();
+        nextDirection.copy(direction).applyAxisAngle(right, pitch);
+        if (Math.abs(nextDirection.y) < 0.96) {
+          direction.copy(nextDirection);
+        }
+      }
+      controls.target
+        .copy(camera.position)
+        .addScaledVector(direction.normalize(), viewDistance);
+    };
+    gl.domElement.tabIndex = 0;
+    const focusViewport = () => gl.domElement.focus({ preventScroll: true });
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!supportedKeys.has(event.code)) return;
+      event.preventDefault();
+      pressed.add(event.code);
+      if (!event.repeat) {
+        const lookStep = Math.PI / 90;
+        if (event.code === "ArrowLeft") rotateView(lookStep, 0);
+        if (event.code === "ArrowRight") rotateView(-lookStep, 0);
+        if (event.code === "ArrowUp") rotateView(0, lookStep);
+        if (event.code === "ArrowDown") rotateView(0, -lookStep);
+        controls.update();
+      }
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      pressed.delete(event.code);
+    };
+    const clearKeys = () => pressed.clear();
+    gl.domElement.addEventListener("pointerdown", focusViewport);
+    gl.domElement.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", clearKeys);
+
+    let previousTime = performance.now();
+    let frameId = requestAnimationFrame(function frame(time) {
+      const delta = Math.min(0.05, Math.max(0, (time - previousTime) / 1000));
+      previousTime = time;
+      if (enabled && pressed.size > 0) {
+        camera.getWorldDirection(direction).normalize();
+
+        const yaw =
+          (Number(pressed.has("ArrowLeft")) -
+            Number(pressed.has("ArrowRight"))) *
+          0.62 *
+          delta;
+        const pitch =
+          (Number(pressed.has("ArrowUp")) -
+            Number(pressed.has("ArrowDown"))) *
+          0.5 *
+          delta;
+        if (yaw !== 0 || pitch !== 0) {
+          rotateView(yaw, pitch);
+          camera.getWorldDirection(direction).normalize();
+        }
+
+        forward.copy(direction).setY(0);
+        if (forward.lengthSq() < 0.0001) forward.set(0, 0, -1);
+        forward.normalize();
+        right.crossVectors(forward, up).normalize();
+        movement
+          .set(0, 0, 0)
+          .addScaledVector(
+            forward,
+            Number(pressed.has("KeyW")) - Number(pressed.has("KeyS")),
+          )
+          .addScaledVector(
+            right,
+            Number(pressed.has("KeyD")) - Number(pressed.has("KeyA")),
+          );
+        if (movement.lengthSq() > 0) {
+          movement.normalize().multiplyScalar(8 * delta);
+          camera.position.add(movement);
+          controls.target.add(movement);
+        }
+      }
       controls.update();
       frameId = requestAnimationFrame(frame);
     });
     return () => {
       cancelAnimationFrame(frameId);
+      gl.domElement.removeEventListener("pointerdown", focusViewport);
+      gl.domElement.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", clearKeys);
       controls.dispose();
     };
   }, [camera, enabled, gl]);
@@ -3076,7 +3180,7 @@ function SceneViewport({
         {tool === "select"
           ? "Click parts to select"
           : `Drag handles to ${tool}`}{" "}
-        | Right drag to orbit | Wheel to zoom
+        | WASD move | Arrow keys look | Right drag orbit | Wheel zoom
       </div>
     </div>
   );

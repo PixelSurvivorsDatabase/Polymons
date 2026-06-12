@@ -287,6 +287,7 @@ export default function CodeEditor({
             "FireAllClients",
             "InvokeServer",
             "InvokeClient",
+            "Touched",
             ...projectRef.current.leaderstats.map((stat) => stat.name),
           ];
           const isLuau = projectRef.current.language === "luau";
@@ -344,6 +345,11 @@ export default function CodeEditor({
             : isCpp
               ? "void ${1:name}(${2}) {\n\t${3:// code}\n}"
               : "void ${1:Name}(${2})\n{\n\t${3:// code}\n}";
+          const touchedText = isLuau
+            ? "${1:part}.Touched:Connect(function(hit)\n\t${2:-- code}\nend)"
+            : isCpp
+              ? "${1:part}.Touched.Connect([&](auto hit) {\n\t${2:// code}\n});"
+              : "${1:part}.Touched += (hit) => {\n\t${2:// code}\n};";
           return {
             suggestions: [
               ...names.map((name) => ({
@@ -406,6 +412,15 @@ export default function CodeEditor({
                 kind: monaco.languages.CompletionItemKind.Event,
                 insertText: "MouseButton1Click",
                 detail: "TextButton primary click event",
+                range,
+              },
+              {
+                label: "Touched event",
+                kind: monaco.languages.CompletionItemKind.Event,
+                insertText: touchedText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: "Run a server Script when the avatar touches a Part",
                 range,
               },
               {

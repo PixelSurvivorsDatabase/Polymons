@@ -12,6 +12,7 @@ import logo from "../../assets/polymons-logo.png";
 import { useMultiplayer } from "../../src/game/multiplayer";
 import {
   activatePolyGui,
+  activatePolyTouched,
   activatePolyTool,
   type PolyProject,
   type PolyRuntimeResult,
@@ -421,6 +422,32 @@ function OnlinePlayerGame({
                 };
               });
             }}
+            onWorldTouched={(worldObjectId) => {
+              setRuntime((current) => {
+                if (!current) return current;
+                const activated = activatePolyTouched(
+                  current.project,
+                  worldObjectId,
+                );
+                return {
+                  ...activated,
+                  diagnostics: [
+                    ...current.diagnostics,
+                    ...activated.diagnostics,
+                  ],
+                  output: [...current.output, ...activated.output],
+                  animationRequests: [
+                    ...new Set([
+                      ...current.animationRequests,
+                      ...activated.animationRequests,
+                    ]),
+                  ],
+                  animationVersion:
+                    current.animationVersion +
+                    (activated.animationRequests.length > 0 ? 1 : 0),
+                };
+              });
+            }}
             onFriendRequest={(username) =>
               window.polymons.sendFriendRequest(username)
             }
@@ -535,6 +562,32 @@ function StudioPlayerGame({
                   const activated = activatePolyTool(
                     current.project,
                     toolObjectId,
+                  );
+                  return {
+                    ...activated,
+                    diagnostics: [
+                      ...current.diagnostics,
+                      ...activated.diagnostics,
+                    ],
+                    output: [...current.output, ...activated.output],
+                    animationRequests: [
+                      ...new Set([
+                        ...current.animationRequests,
+                        ...activated.animationRequests,
+                      ]),
+                    ],
+                    animationVersion:
+                      current.animationVersion +
+                      (activated.animationRequests.length > 0 ? 1 : 0),
+                  };
+                });
+              }}
+              onWorldTouched={(worldObjectId) => {
+                setRuntime((current) => {
+                  if (!current) return current;
+                  const activated = activatePolyTouched(
+                    current.project,
+                    worldObjectId,
                   );
                   return {
                     ...activated,

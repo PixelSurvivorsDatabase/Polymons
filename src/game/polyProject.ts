@@ -411,8 +411,9 @@ function findDirectReference(
   return null;
 }
 
-type GuiEventHandler = {
-  event: "MouseButton1Click" | "Activated";
+type ScriptEventHandler = {
+  event: "MouseButton1Click" | "Activated" | "Touched";
+  target: string;
   prelude: string;
   body: string;
   line: number;
@@ -421,13 +422,21 @@ type GuiEventHandler = {
   endIndex: number;
 };
 
-function guiEventHandlers(script: PolyScript): GuiEventHandler[] {
+function scriptEventHandlers(script: PolyScript): ScriptEventHandler[] {
   const lines = script.source.split("\n");
-  const handlers: GuiEventHandler[] = [];
+  const handlers: ScriptEventHandler[] = [];
+  const target =
+    String.raw`((?:script|Script)\.Parent|[A-Za-z_]\w*|(?:Workspace|workspace)\.[A-Za-z_]\w*)`;
   const startPatterns = [
-    /^\s*(?:script\.Parent|[A-Za-z_]\w*)\.(MouseButton1Click|Activated)\s*:\s*Connect\s*\(\s*function\s*\([^)]*\)\s*$/,
-    /^\s*(?:Script\.Parent|[A-Za-z_]\w*)\.(MouseButton1Click|Activated)\s*\+=\s*\([^)]*\)\s*=>\s*\{\s*$/,
-    /^\s*(?:Script\.Parent|[A-Za-z_]\w*)\.(MouseButton1Click|Activated)\.Connect\s*\(.*\{\s*$/,
+    new RegExp(
+      String.raw`^\s*${target}\.(MouseButton1Click|Activated|Touched)\s*:\s*Connect\s*\(\s*function\s*\([^)]*\)\s*$`,
+    ),
+    new RegExp(
+      String.raw`^\s*${target}\.(MouseButton1Click|Activated|Touched)\s*\+=\s*\([^)]*\)\s*=>\s*\{\s*$`,
+    ),
+    new RegExp(
+      String.raw`^\s*${target}\.(MouseButton1Click|Activated|Touched)\.Connect\s*\(.*\{\s*$`,
+    ),
   ];
   const endPatterns = [
     /^\s*end\s*\)\s*;?\s*$/,
@@ -457,7 +466,8 @@ function guiEventHandlers(script: PolyScript): GuiEventHandler[] {
       }
     }
     handlers.push({
-      event: startMatch[1] as GuiEventHandler["event"],
+      target: startMatch[1],
+      event: startMatch[2] as ScriptEventHandler["event"],
       prelude: lines.slice(0, index).join("\n"),
       body: lines.slice(index + 1, closed ? endIndex : lines.length).join("\n"),
       line: index + 1,
@@ -470,10 +480,22 @@ function guiEventHandlers(script: PolyScript): GuiEventHandler[] {
   return handlers;
 }
 
-function withoutGuiEventHandlers(script: PolyScript): string {
+function guiEventHandlers(script: PolyScript): ScriptEventHandler[] {
+  return scriptEventHandlers(script).filter(
+    (handler) => handler.event !== "Touched",
+  );
+}
+
+function touchedEventHandlers(script: PolyScript): ScriptEventHandler[] {
+  return scriptEventHandlers(script).filter(
+    (handler) => handler.event === "Touched",
+  );
+}
+
+function withoutEventHandlers(script: PolyScript): string {
   const lines = script.source.split("\n");
   const ignored = new Set<number>();
-  for (const handler of guiEventHandlers(script)) {
+  for (const handler of scriptEventHandlers(script)) {
     for (
       let index = handler.startIndex;
       index <= handler.endIndex;
@@ -483,6 +505,25 @@ function withoutGuiEventHandlers(script: PolyScript): string {
     }
   }
   return lines.filter((_, index) => !ignored.has(index)).join("\n");
+}
+
+function eventTargetReference(
+  handler: ScriptEventHandler,
+  script: PolyScript,
+  project: PolyProject,
+): Reference | null {
+  const direct = findDirectReference(handler.target, project, script);
+  if (direct) return direct;
+  for (const source of handler.prelude.split("\n")) {
+    const declaration = findReferenceDeclaration(source, project, script);
+    if (
+      declaration?.variable === handler.target &&
+      declaration.reference
+    ) {
+      return declaration.reference;
+    }
+  }
+  return null;
 }
 
 function parseNumbers(value: string, count: number): number[] | null {
@@ -939,7 +980,7 @@ function syntaxDiagnostics(
     let kind: string | null = null;
     if (
       /^(?:local\s+)?function\b/.test(code) ||
-      /\.(?:MouseButton1Click|Activated)\s*:\s*Connect\s*\(\s*function\b/.test(
+      /\.(?:MouseButton1Click|Activated|Touched)\s*:\s*Connect\s*\(\s*function\b/.test(
         code,
       )
     ) {
@@ -981,6 +1022,7 @@ export function analyzePolyScript(
     ...syntaxDiagnostics(script, project.language),
   ];
   const buttonHandlers = guiEventHandlers(script);
+  const touchHandlers = touchedEventHandlers(script);
   const guiScriptParent = project.gui.find(
     (item) => item.id === script.parent,
   );
@@ -1010,6 +1052,36 @@ export function analyzePolyScript(
       severity: "error",
       message: `${handler.event} is missing its closing callback delimiter.`,
     });
+  }
+  if (touchHandlers.length > 0 && script.kind !== "script") {
+    diagnostics.push({
+      line: touchHandlers[0].line,
+      column: 1,
+      endColumn: 2,
+      severity: "error",
+      message: "Touched events must run in a server Script.",
+    });
+  }
+  for (const handler of touchHandlers) {
+    const reference = eventTargetReference(handler, script, project);
+    if (reference?.kind !== "world") {
+      diagnostics.push({
+        line: handler.line,
+        column: 1,
+        endColumn: 2,
+        severity: "error",
+        message: "Touched requires a Workspace Part.",
+      });
+    }
+    if (!handler.closed) {
+      diagnostics.push({
+        line: handler.line,
+        column: 1,
+        endColumn: 2,
+        severity: "error",
+        message: "Touched is missing its closing callback delimiter.",
+      });
+    }
   }
   const validationProject = cloneProject(project);
   const variables = new Map<string, Reference>();
@@ -1365,7 +1437,7 @@ function executeScript(
   const modules = new Map<string, Record<string, PolyStoredValue>>();
   const stores = new Map<string, string>();
   const values = new Map<string, PolyStoredValue>();
-  const sourceText = sourceOverride ?? withoutGuiEventHandlers(script);
+  const sourceText = sourceOverride ?? withoutEventHandlers(script);
   for (const source of sourceText.split("\n")) {
     const moduleDeclaration = findModuleDeclaration(source, project);
     if (moduleDeclaration?.module) {
@@ -1699,6 +1771,63 @@ export function activatePolyTool(
       }
     }
   }
+  return {
+    project,
+    diagnostics,
+    output,
+    animationRequests,
+    animationVersion: animationRequests.length > 0 ? 1 : 0,
+  };
+}
+
+export function activatePolyTouched(
+  input: PolyProject,
+  worldObjectId: string,
+): PolyRuntimeResult {
+  const project = normalizePolyProject(input);
+  const scripts = project.scripts.filter(
+    (script) =>
+      script.kind === "script" &&
+      touchedEventHandlers(script).some(
+        (handler) =>
+          eventTargetReference(handler, script, project)?.kind === "world" &&
+          eventTargetReference(handler, script, project)?.id === worldObjectId,
+      ),
+  );
+  const diagnostics = scripts.flatMap((script) =>
+    analyzePolyScript(script, project).map((diagnostic) => ({
+      ...diagnostic,
+      scriptId: script.id,
+      scriptName: script.name,
+    })),
+  );
+  const output: PolyRuntimeResult["output"] = [];
+  const animationRequests: string[] = [];
+
+  for (const script of scripts) {
+    if (
+      diagnostics.some(
+        (diagnostic) =>
+          diagnostic.scriptId === script.id && diagnostic.severity === "error",
+      )
+    ) {
+      continue;
+    }
+    for (const handler of touchedEventHandlers(script)) {
+      const reference = eventTargetReference(handler, script, project);
+      if (reference?.kind !== "world" || reference.id !== worldObjectId) continue;
+      executeScript(
+        script,
+        project,
+        output,
+        `${handler.prelude}\n${handler.body}`,
+      );
+      for (const name of requestedAnimations(handler.body, project)) {
+        if (!animationRequests.includes(name)) animationRequests.push(name);
+      }
+    }
+  }
+
   return {
     project,
     diagnostics,

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   activatePolyGui,
+  activatePolyTouched,
   activatePolyTool,
   analyzePolyScript,
   type PolyProject,
@@ -401,6 +402,75 @@ end)`,
   const clicked = activatePolyGui(activated.project, "play-button");
   assert.equal(clicked.diagnostics.length, 0);
   assert.equal(clicked.project.gui[2].text, "Clicked");
+});
+
+test("runs Part Touched scripts only when the avatar enters the part", () => {
+  const fixture = project();
+  fixture.scripts = [
+    {
+      id: "touch-script",
+      name: "TouchScript",
+      kind: "script",
+      parent: "part",
+      source: `local block = script.Parent
+
+block.Touched:Connect(function(hit)
+    block.Color = "#22CC88"
+    print("Avatar touched the block")
+end)`,
+    },
+  ];
+
+  const started = runPolyProject(fixture);
+  assert.equal(started.diagnostics.length, 0);
+  assert.equal(started.project.objects[0].color, "#342856");
+  assert.deepEqual(started.output, []);
+
+  const touched = activatePolyTouched(started.project, "part");
+  assert.equal(touched.project.objects[0].color, "#22CC88");
+  assert.deepEqual(touched.output, [
+    {
+      level: "info",
+      message: "Avatar touched the block",
+      scriptName: "TouchScript",
+    },
+  ]);
+});
+
+test("supports Touched handlers in all Studio scripting languages", () => {
+  const sources = {
+    luau: `local block = script.Parent
+block.Touched:Connect(function(hit)
+    block.Transparency = 0.5
+end)`,
+    cpp: `#include <poly/server.hpp>
+auto block = Script.Parent;
+block.Touched.Connect([&](auto hit) {
+    block.Transparency = 0.5;
+});`,
+    csharp: `using Poly;
+var block = Script.Parent;
+block.Touched += (hit) => {
+    block.Transparency = 0.5;
+};`,
+  } as const;
+
+  for (const [language, source] of Object.entries(sources)) {
+    const fixture = project();
+    fixture.language = language as PolyProject["language"];
+    fixture.scripts = [
+      {
+        id: `touch-${language}`,
+        name: "TouchScript",
+        kind: "script",
+        parent: "part",
+        source,
+      },
+    ];
+    const touched = activatePolyTouched(fixture, "part");
+    assert.equal(touched.diagnostics.length, 0, language);
+    assert.equal(touched.project.objects[0].transparency, 0.5, language);
+  }
 });
 
 test("supports TextButton activation callbacks in C++ and C#", () => {

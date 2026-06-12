@@ -48,6 +48,7 @@ import { games as fallbackGames, type Game } from "./data";
 import { useMultiplayer } from "./game/multiplayer";
 import {
   activatePolyGui,
+  activatePolyTouched,
   activatePolyTool,
   runPolyProject,
   type PolyRuntimeResult,
@@ -777,6 +778,29 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
             setRuntime((current) => {
               if (!current) return current;
               const activated = activatePolyTool(current.project, toolObjectId);
+              return {
+                ...activated,
+                diagnostics: [...current.diagnostics, ...activated.diagnostics],
+                output: [...current.output, ...activated.output],
+                animationRequests: [
+                  ...new Set([
+                    ...current.animationRequests,
+                    ...activated.animationRequests,
+                  ]),
+                ],
+                animationVersion:
+                  current.animationVersion +
+                  (activated.animationRequests.length > 0 ? 1 : 0),
+              };
+            });
+          }}
+          onWorldTouched={(worldObjectId) => {
+            setRuntime((current) => {
+              if (!current) return current;
+              const activated = activatePolyTouched(
+                current.project,
+                worldObjectId,
+              );
               return {
                 ...activated,
                 diagnostics: [...current.diagnostics, ...activated.diagnostics],
