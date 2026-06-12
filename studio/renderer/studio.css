@@ -528,6 +528,205 @@ button { color: inherit; }
   font-size: 10px;
 }
 
+.animation-workspace {
+  height: 100%;
+  overflow: auto;
+  background: #111015;
+  color: #ece8f2;
+}
+
+.animation-workspace > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border-bottom: 1px solid #2c2932;
+  padding: 20px 24px;
+}
+
+.animation-workspace > header span {
+  color: #9f92ac;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.animation-workspace > header h2 {
+  margin: 4px 0 0;
+  font-size: 20px;
+}
+
+.animation-header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.animation-header-actions button,
+.animation-create,
+.keyframe-builder > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid #3a3541;
+  border-radius: 8px;
+  background: #211d27;
+  color: #eee8f5;
+  cursor: pointer;
+  padding: 8px 11px;
+  font-weight: 750;
+}
+
+.animation-header-actions button:disabled {
+  cursor: default;
+  opacity: .45;
+}
+
+.animation-layout {
+  display: grid;
+  min-height: calc(100% - 82px);
+  grid-template-columns: 230px 1fr;
+}
+
+.animation-layout > aside {
+  border-right: 1px solid #2c2932;
+  background: #17151b;
+  padding: 16px;
+}
+
+.animation-layout label,
+.keyframe-builder label {
+  display: grid;
+  gap: 6px;
+  color: #aaa1b3;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.animation-layout select,
+.animation-layout input {
+  min-width: 0;
+  border: 1px solid #393540;
+  border-radius: 7px;
+  background: #111015;
+  color: #eee8f5;
+  padding: 8px;
+}
+
+.animation-create {
+  width: 100%;
+  margin-top: 12px;
+  background: #6741a5;
+}
+
+.animation-list {
+  display: grid;
+  gap: 5px;
+  margin-top: 14px;
+}
+
+.animation-list button {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #c8c0d0;
+  cursor: pointer;
+  padding: 8px;
+  text-align: left;
+}
+
+.animation-list button.active {
+  background: #312640;
+  color: #fff;
+}
+
+.animation-list small {
+  color: #877e91;
+  font-size: 10px;
+}
+
+.animation-layout > section {
+  padding: 22px;
+}
+
+.animation-fields {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 140px 140px;
+  gap: 12px;
+}
+
+.keyframe-builder {
+  display: grid;
+  gap: 12px;
+  max-width: 620px;
+  margin-top: 22px;
+  border: 1px solid #302c36;
+  border-radius: 12px;
+  background: #17151b;
+  padding: 17px;
+}
+
+.keyframe-builder h3,
+.keyframe-list h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.keyframe-builder > button {
+  justify-self: start;
+  background: #6741a5;
+}
+
+.keyframe-list {
+  max-width: 620px;
+  margin-top: 20px;
+}
+
+.keyframe-list > div {
+  display: grid;
+  grid-template-columns: 90px 1fr auto;
+  align-items: center;
+  border-bottom: 1px solid #2b2830;
+  padding: 9px 4px;
+  color: #aaa1b3;
+  font-size: 12px;
+}
+
+.keyframe-list button {
+  border: 0;
+  background: transparent;
+  color: #a89daf;
+  cursor: pointer;
+}
+
+.animation-layout code {
+  display: inline-block;
+  margin-top: 20px;
+  border: 1px solid #322d39;
+  border-radius: 7px;
+  background: #0d0c10;
+  color: #b79be8;
+  padding: 9px 11px;
+}
+
+.animation-empty {
+  display: grid;
+  min-height: 320px;
+  place-content: center;
+  color: #978e9f;
+  text-align: center;
+}
+
+.animation-empty h3 {
+  margin: 12px 0 4px;
+  color: #e8e2ee;
+}
+
 .editor-workspace {
   display: grid;
   min-height: 0;

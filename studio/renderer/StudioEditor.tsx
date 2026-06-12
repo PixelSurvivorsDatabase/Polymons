@@ -341,7 +341,9 @@ export default function StudioEditor({
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [gridSnap, setGridSnap] = useState(1);
   const [angleSnap, setAngleSnap] = useState(15);
-  const [workspace, setWorkspace] = useState<"scene" | "script" | "ui">("scene");
+  const [workspace, setWorkspace] = useState<
+    "scene" | "script" | "ui" | "animation"
+  >("scene");
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -503,6 +505,10 @@ export default function StudioEditor({
     type: StudioObject["type"] = "part",
     target: ContextTarget = { type: "service", id: "Workspace" },
   ) {
+    if (type === "humanoidRootPart") {
+      addHumanoidRig(target);
+      return;
+    }
     const parentObject =
       target.type === "world"
         ? project.objects.find((object) => object.id === target.id) ?? null
@@ -513,13 +519,7 @@ export default function StudioEditor({
         : null;
     const targetModelId = parentModel?.id ?? parentObject?.modelId ?? null;
     const baseName =
-      type === "humanoidRootPart"
-        ? "HumanoidRootPart"
-        : type === "tool"
-          ? "Tool"
-          : type === "handle"
-            ? "Handle"
-            : "Part";
+      type === "tool" ? "Tool" : type === "handle" ? "Handle" : "Part";
     const next: StudioObject = {
       id: crypto.randomUUID(),
       name: nextName(
@@ -535,13 +535,8 @@ export default function StudioEditor({
           ]
         : [0, 2, 0],
       rotation: [0, 0, 0],
-      scale:
-        type === "handle"
-          ? [1, 3, 1]
-          : type === "humanoidRootPart"
-            ? [2, 2, 1]
-            : [4, 4, 4],
-      color: type === "humanoidRootPart" ? "#7F8FA6" : "#30254D",
+      scale: type === "handle" ? [1, 3, 1] : [4, 4, 4],
+      color: "#30254D",
       anchored: true,
       visible: true,
       transparency: 0,
@@ -554,11 +549,8 @@ export default function StudioEditor({
       mass: 1,
       parentId: parentObject?.id ?? null,
       modelId: targetModelId,
-      attributes:
-        type === "humanoidRootPart"
-          ? { Health: 100, MaxHealth: 100 }
-          : {},
-      tags: type === "humanoidRootPart" ? ["Humanoid"] : [],
+      attributes: {},
+      tags: [],
     };
     updateProject((current) => ({
       ...current,
@@ -574,6 +566,269 @@ export default function StudioEditor({
     setSelection({ type: "world", id: next.id });
     setSelectedPartIds([next.id]);
     setWorkspace("scene");
+  }
+
+  function addHumanoidRig(target: ContextTarget) {
+    const targetObject =
+      target.type === "world"
+        ? project.objects.find((object) => object.id === target.id) ?? null
+        : null;
+    const origin: [number, number, number] = targetObject
+      ? [targetObject.position[0], targetObject.position[1] + 3, targetObject.position[2]]
+      : [0, 3, 0];
+    const modelId = crypto.randomUUID();
+    const rootId = crypto.randomUUID();
+    const part = (
+      name: string,
+      type: StudioObject["type"],
+      offset: [number, number, number],
+      scale: [number, number, number],
+      color: string,
+      options: Partial<StudioObject> = {},
+    ): StudioObject => ({
+      id: name === "HumanoidRootPart" ? rootId : crypto.randomUUID(),
+      name,
+      type,
+      position: [
+        origin[0] + offset[0],
+        origin[1] + offset[1],
+        origin[2] + offset[2],
+      ],
+      rotation: [0, 0, 0],
+      scale,
+      color,
+      anchored: true,
+      visible: true,
+      transparency: 0,
+      material: "plastic",
+      surfaceTexture: "none",
+      canCollide: true,
+      castShadow: true,
+      friction: 0.82,
+      restitution: 0.03,
+      mass: 1,
+      parentId: name === "HumanoidRootPart" ? null : rootId,
+      modelId,
+      attributes: { RigPart: name },
+      tags: ["HumanoidLimb"],
+      ...options,
+    });
+    const parts = [
+      part(
+        "HumanoidRootPart",
+        "humanoidRootPart",
+        [0, 0, 0],
+        [2, 2, 1],
+        "#7F8FA6",
+        {
+          visible: false,
+          transparency: 1,
+          canCollide: false,
+          attributes: { Health: 100, MaxHealth: 100, RigPart: "Root" },
+          tags: ["Humanoid", "RigRoot"],
+        },
+      ),
+      part("Torso", "part", [0, 0, 0], [2, 2, 1], "#5635B8"),
+      part("Head", "part", [0, 1.65, 0], [1.55, 1.15, 1.45], "#C9A978"),
+      part("Left Arm", "part", [-1.5, 0, 0], [1, 2.05, 1], "#C9A978"),
+      part("Right Arm", "part", [1.5, 0, 0], [1, 2.05, 1], "#C9A978"),
+      part("Left Leg", "part", [-0.5, -2, 0], [1, 2, 1], "#181A23"),
+      part("Right Leg", "part", [0.5, -2, 0], [1, 2, 1], "#181A23"),
+    ];
+    const model: StudioModel = {
+      id: modelId,
+      name: nextName(project.models.map((item) => item.name), "Humanoid"),
+      primaryPartId: rootId,
+      attributes: { Health: 100, MaxHealth: 100, RigType: "Blocky6" },
+      tags: ["Humanoid", "BlockyRig"],
+    };
+    updateProject((current) => ({
+      ...current,
+      objects: [...current.objects, ...parts],
+      models: [...current.models, model],
+    }));
+    setSelection({ type: "model", id: model.id });
+    setSelectedPartIds(parts.map((item) => item.id));
+    setWorkspace("scene");
+    setMessage("Blocky humanoid created");
+  }
+
+  function linkedSwordSource(language: StudioLanguage): string {
+    if (language === "cpp") {
+      return `#include <poly/client.hpp>
+
+auto tool = Script.Parent;
+tool.Activated.Connect([&]() {
+    Animations::Play("LinkedSwordSwing");
+    Combat::DamageNearest(20, 6);
+});
+`;
+    }
+    if (language === "csharp") {
+      return `using Poly;
+
+var tool = Script.Parent;
+tool.Activated += () => {
+    Animations.Play("LinkedSwordSwing");
+    Combat.DamageNearest(20, 6);
+};
+`;
+    }
+    return `local tool = script.Parent
+
+tool.Activated:Connect(function()
+    Animations:Play("LinkedSwordSwing")
+    Combat:DamageNearest(20, 6)
+end)
+`;
+  }
+
+  function addLinkedSword(target: ContextTarget) {
+    const parentObject =
+      target.type === "world"
+        ? project.objects.find((object) => object.id === target.id) ?? null
+        : null;
+    const existingTool = parentObject?.type === "tool" ? parentObject : null;
+    const modelId =
+      target.type === "model"
+        ? target.id
+        : parentObject?.modelId ?? null;
+    const origin: [number, number, number] = parentObject
+      ? [parentObject.position[0], parentObject.position[1] + 1.5, parentObject.position[2]]
+      : [0, 3, 0];
+    const tool: StudioObject =
+      existingTool ?? {
+        id: crypto.randomUUID(),
+        name: nextName(project.objects.map((item) => item.name), "LinkedSword"),
+        type: "tool",
+        position: origin,
+        rotation: [0, 0, 0],
+        scale: [0.2, 0.2, 0.2],
+        color: "#22242B",
+        anchored: true,
+        visible: false,
+        transparency: 1,
+        material: "metal",
+        surfaceTexture: "none",
+        canCollide: false,
+        castShadow: false,
+        friction: 0.6,
+        restitution: 0,
+        mass: 1,
+        parentId: parentObject?.id ?? null,
+        modelId,
+        attributes: { Damage: 20, Range: 6, Cooldown: 0.45 },
+        tags: ["LinkedSword", "DamageTool"],
+      };
+    const makePart = (
+      name: string,
+      type: StudioObject["type"],
+      offset: [number, number, number],
+      scale: [number, number, number],
+      color: string,
+      material: StudioObject["material"],
+    ): StudioObject => ({
+      id: crypto.randomUUID(),
+      name,
+      type,
+      position: [
+        origin[0] + offset[0],
+        origin[1] + offset[1],
+        origin[2] + offset[2],
+      ],
+      rotation: [0, 0, 0],
+      scale,
+      color,
+      anchored: true,
+      visible: true,
+      transparency: 0,
+      material,
+      surfaceTexture: "none",
+      canCollide: false,
+      castShadow: true,
+      friction: 0.65,
+      restitution: 0,
+      mass: 0.25,
+      parentId: tool.id,
+      modelId: tool.modelId,
+      attributes: {},
+      tags: ["LinkedSwordPart"],
+    });
+    const handle = makePart("Handle", "handle", [0, -1.2, 0], [0.38, 2.2, 0.38], "#372A23", "wood");
+    const guard = makePart("Crossguard", "part", [0, 0, 0], [2.1, 0.25, 0.35], "#D5A928", "metal");
+    const blade = makePart("Blade", "part", [0, 2.25, 0], [0.48, 4.2, 0.18], "#D7E0E8", "metal");
+    const tip = makePart("BladeTip", "part", [0, 4.45, 0], [0.36, 0.35, 0.12], "#EEF4FA", "metal");
+    const links = [-0.62, -0.2, 0.22, 0.64].map((x, index) =>
+      makePart(
+        `GuardLink${index + 1}`,
+        "part",
+        [x, 0.18 + Math.abs(x) * 0.18, 0],
+        [0.23, 0.23, 0.23],
+        "#B7851C",
+        "metal",
+      ),
+    );
+    const swordParts = [handle, guard, blade, tip, ...links];
+    const animation: StudioAnimation = {
+      id: crypto.randomUUID(),
+      name: nextName(
+        project.animations.map((item) => item.name),
+        "LinkedSwordSwing",
+      ),
+      rigModelId: tool.modelId,
+      duration: 0.45,
+      looped: false,
+      keyframes: [
+        {
+          time: 0,
+          poses: Object.fromEntries(
+            swordParts.map((part) => [part.id, { rotation: [0, 0, 0] }]),
+          ),
+        },
+        {
+          time: 0.16,
+          poses: Object.fromEntries(
+            swordParts.map((part) => [part.id, { rotation: [0, 0, -1.15] }]),
+          ),
+        },
+        {
+          time: 0.32,
+          poses: Object.fromEntries(
+            swordParts.map((part) => [part.id, { rotation: [0, 0, 0.28] }]),
+          ),
+        },
+        {
+          time: 0.45,
+          poses: Object.fromEntries(
+            swordParts.map((part) => [part.id, { rotation: [0, 0, 0] }]),
+          ),
+        },
+      ],
+    };
+    const script: StudioScript = {
+      id: crypto.randomUUID(),
+      name: "LinkedSwordClient",
+      kind: "localScript",
+      parent: tool.id,
+      source: linkedSwordSource(project.language).replace(
+        /LinkedSwordSwing/g,
+        animation.name,
+      ),
+    };
+    updateProject((current) => ({
+      ...current,
+      objects: [
+        ...current.objects,
+        ...(existingTool ? [] : [tool]),
+        ...swordParts,
+      ],
+      scripts: [...current.scripts, script],
+      animations: [...current.animations, animation],
+    }));
+    setSelection({ type: "world", id: tool.id });
+    setSelectedPartIds([tool.id, ...swordParts.map((part) => part.id)]);
+    setWorkspace("scene");
+    setMessage("Linked sword template created");
   }
 
   function addRemote(kind: StudioRemote["kind"]) {
@@ -923,6 +1178,72 @@ export default function StudioEditor({
     }
   }
 
+  async function exportAnimation(animation: StudioAnimation) {
+    try {
+      const parts = project.objects.filter(
+        (object) =>
+          !animation.rigModelId || object.modelId === animation.rigModelId,
+      );
+      const path = await window.polyStudio.exportAnimation({
+        animation,
+        parts,
+      });
+      setMessage(path ? "PMA animation exported" : "Export canceled");
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : "Could not export animation.",
+      );
+    }
+  }
+
+  async function importAnimation(rigModelId: string) {
+    try {
+      const file = await window.polyStudio.importAnimation();
+      if (!file) {
+        setMessage("Import canceled");
+        return;
+      }
+      const rigParts = project.objects.filter(
+        (object) => object.modelId === rigModelId,
+      );
+      const targetByName = new Map(rigParts.map((part) => [part.name, part.id]));
+      const oldToNew = new Map(
+        Object.entries(file.partNames).flatMap(([oldId, name]) => {
+          const nextId = targetByName.get(name);
+          return nextId ? [[oldId, nextId] as const] : [];
+        }),
+      );
+      const animation: StudioAnimation = {
+        ...file.animation,
+        id: crypto.randomUUID(),
+        name: nextName(
+          project.animations.map((item) => item.name),
+          file.animation.name,
+        ),
+        rigModelId,
+        keyframes: file.animation.keyframes.map((keyframe) => ({
+          time: keyframe.time,
+          poses: Object.fromEntries(
+            Object.entries(keyframe.poses).flatMap(([oldId, pose]) => {
+              const nextId = oldToNew.get(oldId);
+              return nextId ? [[nextId, pose] as const] : [];
+            }),
+          ),
+        })),
+      };
+      updateProject((current) => ({
+        ...current,
+        animations: [...current.animations, animation],
+      }));
+      setWorkspace("animation");
+      setMessage("PMA animation imported");
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : "Could not import animation.",
+      );
+    }
+  }
+
   async function importGame() {
     try {
       const imported = await window.polyStudio.importProject();
@@ -1023,8 +1344,8 @@ export default function StudioEditor({
       }
     }
     setContextMenu({
-      x: Math.min(event.clientX, window.innerWidth - 230),
-      y: Math.min(event.clientY, window.innerHeight - 330),
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 330)),
       target,
     });
   }
@@ -1044,6 +1365,11 @@ export default function StudioEditor({
           label: "HumanoidRootPart",
           icon: <UserRound size={14} />,
           run: () => addPart("humanoidRootPart", target),
+        },
+        {
+          label: "Linked Sword Template",
+          icon: <Package size={14} />,
+          run: () => addLinkedSword(target),
         },
       );
     };
@@ -1115,6 +1441,7 @@ export default function StudioEditor({
       if (object?.type === "tool") {
         actions.push(
           { label: "Handle", icon: <Move3D size={14} />, run: () => addPart("handle", target) },
+          { label: "Linked Sword Template", icon: <Package size={14} />, run: () => addLinkedSword(target) },
           { label: "Script", icon: <FileCode2 size={14} />, run: () => addScript("script", target) },
           { label: "LocalScript", icon: <Code2 size={14} />, run: () => addScript("localScript", target) },
         );
@@ -1446,6 +1773,12 @@ export default function StudioEditor({
           >
             <Code2 size={15} /> Script
           </button>
+          <button
+            className={workspace === "animation" ? "active" : ""}
+            onClick={() => setWorkspace("animation")}
+          >
+            <RotateCw size={15} /> Animation
+          </button>
         </div>
         <button className="save-button" onClick={() => void save()} disabled={saving}>
           <Save size={16} /> {saving ? "Saving" : "Save"}
@@ -1490,7 +1823,14 @@ export default function StudioEditor({
         />
 
         <section className="editor-center">
-          {workspace === "script" && selectedScript ? (
+          {workspace === "animation" ? (
+            <AnimationWorkspace
+              project={project}
+              onChange={updateProject}
+              onExport={(animation) => void exportAnimation(animation)}
+              onImport={(rigModelId) => void importAnimation(rigModelId)}
+            />
+          ) : workspace === "script" && selectedScript ? (
             <ScriptWorkspace
               key={selectedScript.id}
               project={project}
@@ -1749,6 +2089,228 @@ function PublishDialog({
           </button>
         </div>
       </form>
+    </div>
+  );
+}
+
+function AnimationWorkspace({
+  project,
+  onChange,
+  onExport,
+  onImport,
+}: {
+  project: StudioProject;
+  onChange: (updater: (current: StudioProject) => StudioProject) => void;
+  onExport: (animation: StudioAnimation) => void;
+  onImport: (rigModelId: string) => void;
+}) {
+  const rigs = project.models.filter((model) => model.tags.includes("Humanoid"));
+  const [rigId, setRigId] = useState(rigs[0]?.id ?? "");
+  const [selectedId, setSelectedId] = useState(project.animations[0]?.id ?? "");
+  const selected =
+    project.animations.find((animation) => animation.id === selectedId) ?? null;
+  const parts = project.objects.filter(
+    (object) => object.modelId === (selected?.rigModelId ?? rigId),
+  );
+  const [partId, setPartId] = useState(parts[0]?.id ?? "");
+  const [time, setTime] = useState(0);
+  const [rotation, setRotation] = useState<[number, number, number]>([0, 0, 0]);
+
+  useEffect(() => {
+    if (!rigs.some((rig) => rig.id === rigId)) setRigId(rigs[0]?.id ?? "");
+  }, [rigId, rigs]);
+  useEffect(() => {
+    if (!project.animations.some((animation) => animation.id === selectedId)) {
+      setSelectedId(project.animations[0]?.id ?? "");
+    }
+  }, [project.animations, selectedId]);
+  useEffect(() => {
+    if (!parts.some((part) => part.id === partId)) {
+      setPartId(parts[0]?.id ?? "");
+    }
+  }, [partId, parts]);
+
+  const patchAnimation = (patch: Partial<StudioAnimation>) => {
+    if (!selected) return;
+    onChange((current) => ({
+      ...current,
+      animations: current.animations.map((animation) =>
+        animation.id === selected.id ? { ...animation, ...patch } : animation,
+      ),
+    }));
+  };
+
+  const createAnimation = () => {
+    if (!rigId) return;
+    const next: StudioAnimation = {
+      id: crypto.randomUUID(),
+      name: nextName(
+        project.animations.map((animation) => animation.name),
+        "NewAnimation",
+      ),
+      rigModelId: rigId,
+      duration: 1,
+      looped: false,
+      keyframes: [],
+    };
+    onChange((current) => ({
+      ...current,
+      animations: [...current.animations, next],
+    }));
+    setSelectedId(next.id);
+  };
+
+  const addKeyframe = () => {
+    if (!selected || !partId) return;
+    const keyTime = Math.min(selected.duration, Math.max(0, time));
+    const pose = {
+      rotation: rotation.map(
+        (value) => (value * Math.PI) / 180,
+      ) as [number, number, number],
+    };
+    const existing = selected.keyframes.find(
+      (keyframe) => Math.abs(keyframe.time - keyTime) < 0.0001,
+    );
+    const keyframes = existing
+      ? selected.keyframes.map((keyframe) =>
+          keyframe === existing
+            ? { ...keyframe, poses: { ...keyframe.poses, [partId]: pose } }
+            : keyframe,
+        )
+      : [
+          ...selected.keyframes,
+          { time: keyTime, poses: { [partId]: pose } },
+        ].sort((a, b) => a.time - b.time);
+    patchAnimation({ keyframes });
+  };
+
+  return (
+    <div className="animation-workspace">
+      <header>
+        <div>
+          <span>Animation editor</span>
+          <h2>Blocky humanoid animation</h2>
+        </div>
+        <div className="animation-header-actions">
+          <button disabled={!rigId} onClick={() => onImport(rigId)}>
+            <Upload size={15} /> Import .pma
+          </button>
+          <button disabled={!selected} onClick={() => selected && onExport(selected)}>
+            <Download size={15} /> Export .pma
+          </button>
+        </div>
+      </header>
+      {rigs.length === 0 ? (
+        <div className="animation-empty">
+          <UserRound size={32} />
+          <h3>Add a HumanoidRootPart first.</h3>
+          <p>Studio will create the full editable humanoid rig automatically.</p>
+        </div>
+      ) : (
+        <div className="animation-layout">
+          <aside>
+            <label>
+              Humanoid rig
+              <select value={rigId} onChange={(event) => setRigId(event.target.value)}>
+                {rigs.map((rig) => <option key={rig.id} value={rig.id}>{rig.name}</option>)}
+              </select>
+            </label>
+            <button className="animation-create" onClick={createAnimation}>
+              <Plus size={15} /> New animation
+            </button>
+            <div className="animation-list">
+              {project.animations.map((animation) => (
+                <button
+                  key={animation.id}
+                  className={animation.id === selectedId ? "active" : ""}
+                  onClick={() => {
+                    setSelectedId(animation.id);
+                    if (animation.rigModelId) setRigId(animation.rigModelId);
+                  }}
+                >
+                  <RotateCw size={14} />
+                  <span>{animation.name}</span>
+                  <small>{animation.duration.toFixed(2)}s</small>
+                </button>
+              ))}
+            </div>
+          </aside>
+          <section>
+            {selected ? (
+              <>
+                <div className="animation-fields">
+                  <TextField
+                    label="Name"
+                    value={selected.name}
+                    onChange={(name) => patchAnimation({ name })}
+                  />
+                  <NumberField
+                    label="Duration"
+                    value={selected.duration}
+                    minimum={0.05}
+                    maximum={600}
+                    step={0.05}
+                    onChange={(duration) => patchAnimation({ duration })}
+                  />
+                  <ToggleField
+                    label="Looped"
+                    value={selected.looped}
+                    onChange={(looped) => patchAnimation({ looped })}
+                  />
+                </div>
+                <div className="keyframe-builder">
+                  <h3>Add or update a pose</h3>
+                  <label>
+                    Limb
+                    <select value={partId} onChange={(event) => setPartId(event.target.value)}>
+                      {parts.map((part) => <option key={part.id} value={part.id}>{part.name}</option>)}
+                    </select>
+                  </label>
+                  <NumberField
+                    label="Time (seconds)"
+                    value={time}
+                    minimum={0}
+                    maximum={selected.duration}
+                    step={0.05}
+                    onChange={setTime}
+                  />
+                  <VectorField
+                    label="Rotation offset (degrees)"
+                    value={rotation}
+                    step={1}
+                    onChange={setRotation}
+                  />
+                  <button onClick={addKeyframe}>Set keyframe</button>
+                </div>
+                <div className="keyframe-list">
+                  <h3>Keyframes</h3>
+                  {selected.keyframes.map((keyframe, index) => (
+                    <div key={`${keyframe.time}-${index}`}>
+                      <strong>{keyframe.time.toFixed(2)}s</strong>
+                      <span>{Object.keys(keyframe.poses).length} posed part(s)</span>
+                      <button
+                        title="Delete keyframe"
+                        onClick={() =>
+                          patchAnimation({
+                            keyframes: selected.keyframes.filter(
+                              (_, keyframeIndex) => keyframeIndex !== index,
+                            ),
+                          })
+                        }
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <code>Animations.Play("{selected.name}")</code>
+              </>
+            ) : (
+              <div className="animation-empty"><p>Create an animation to begin.</p></div>
+            )}
+          </section>
+        </div>
+      )}
     </div>
   );
 }
@@ -2929,6 +3491,34 @@ function Properties({
             />
           </PropertySection>
           <PropertySection title="Gameplay data">
+            {model.tags.includes("Humanoid") && (
+              <>
+                <NumberField
+                  label="Health"
+                  value={Number(model.attributes.Health ?? 100)}
+                  minimum={0}
+                  maximum={500}
+                  step={1}
+                  onChange={(Health) =>
+                    onModelChange({
+                      attributes: { ...model.attributes, Health },
+                    })
+                  }
+                />
+                <NumberField
+                  label="MaxHealth"
+                  value={Number(model.attributes.MaxHealth ?? 100)}
+                  minimum={1}
+                  maximum={500}
+                  step={1}
+                  onChange={(MaxHealth) =>
+                    onModelChange({
+                      attributes: { ...model.attributes, MaxHealth },
+                    })
+                  }
+                />
+              </>
+            )}
             <TagsField value={model.tags} onChange={(tags) => onModelChange({ tags })} />
             <JsonAttributesField
               value={model.attributes}

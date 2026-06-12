@@ -59,8 +59,23 @@ export type PlatformGame = {
   creator: string;
   creatorUsername: string;
   activePlayers: number;
+  visits: number;
   updatedAt: string;
   manifest?: import("./game/polyProject").PolyProject | null;
+};
+
+export type PublicPlayer = PolymonsUser & {
+  joinedAt: string;
+};
+
+export type PublicPlayerProfile = {
+  player: PublicPlayer;
+  stats: {
+    friends: number;
+    games: number;
+    gameVisits: number;
+  };
+  games: PlatformGame[];
 };
 
 export type Friendship = {
@@ -141,6 +156,18 @@ export function listGames(): Promise<{ games: PlatformGame[] }> {
 
 export function getGame(gameId: string): Promise<{ game: PlatformGame }> {
   return apiRequest(`/v1/games/${encodeURIComponent(gameId)}`);
+}
+
+export function searchPlayers(
+  query: string,
+): Promise<{ players: PublicPlayer[] }> {
+  return apiRequest(`/v1/players?query=${encodeURIComponent(query)}`);
+}
+
+export function getPlayerProfile(
+  username: string,
+): Promise<PublicPlayerProfile> {
+  return apiRequest(`/v1/players/${encodeURIComponent(username)}`);
 }
 
 export function listFriends(

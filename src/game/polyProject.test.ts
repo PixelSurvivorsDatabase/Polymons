@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   activatePolyGui,
+  activatePolyTool,
   analyzePolyScript,
   type PolyProject,
   runPolyProject,
@@ -106,6 +107,7 @@ label.Text = "Ready"`,
       maxHealth: 100,
     },
     leaderstats: [],
+    animations: [],
     publication: null,
     dataStores: {},
   };
@@ -565,4 +567,102 @@ test("requires an immutable game room id in multiplayer welcomes", () => {
 
   assert.equal(valid?.type, "welcome");
   assert.equal(missingRoom, null);
+});
+
+test("normalizes animations and collects script playback requests", () => {
+  const fixture = project();
+  fixture.animations = [
+    {
+      id: "wave-animation",
+      name: "Wave",
+      rigModelId: null,
+      duration: 0.5,
+      looped: false,
+      keyframes: [
+        {
+          time: 0,
+          poses: {
+            part: { rotation: [0, 0, 0] },
+          },
+        },
+      ],
+    },
+  ];
+  fixture.scripts[0].source = 'Animations:Play("Wave")';
+
+  const result = runPolyProject(fixture);
+
+  assert.deepEqual(result.animationRequests, ["Wave"]);
+  assert.equal(result.project.animations[0].duration, 0.5);
+});
+
+test("activates sword tools, restarts animations, and damages nearby humanoids", () => {
+  const fixture = project();
+  const toolId = "sword-tool";
+  const rootId = "dummy-root";
+  fixture.objects.push(
+    {
+      ...fixture.objects[0],
+      id: toolId,
+      name: "LinkedSword",
+      type: "tool",
+      position: [0, 3, 0],
+      scale: [1, 1, 1],
+      modelId: null,
+      parentId: null,
+      attributes: { Damage: 20 },
+      tags: ["DamageTool"],
+    },
+    {
+      ...fixture.objects[0],
+      id: rootId,
+      name: "HumanoidRootPart",
+      type: "humanoidRootPart",
+      position: [2, 3, 0],
+      scale: [2, 2, 1],
+      modelId: "dummy-model",
+      parentId: null,
+      attributes: { Health: 100, MaxHealth: 100 },
+      tags: ["Humanoid"],
+    },
+  );
+  fixture.models.push({
+    id: "dummy-model",
+    name: "Training Dummy",
+    primaryPartId: rootId,
+    attributes: { Health: 100, MaxHealth: 100 },
+    tags: ["Humanoid"],
+  });
+  fixture.animations = [
+    {
+      id: "swing",
+      name: "LinkedSwordSwing",
+      rigModelId: null,
+      duration: 0.45,
+      looped: false,
+      keyframes: [],
+    },
+  ];
+  fixture.scripts.push({
+    id: "sword-script",
+    name: "SwordClient",
+    kind: "localScript",
+    parent: toolId,
+    source: `local tool = script.Parent
+tool.Activated:Connect(function()
+    Animations:Play("LinkedSwordSwing")
+    Combat:DamageNearest(20, 6)
+end)`,
+  });
+
+  const result = activatePolyTool(fixture, toolId);
+
+  assert.deepEqual(result.animationRequests, ["LinkedSwordSwing"]);
+  assert.equal(result.animationVersion, 1);
+  assert.equal(result.project.models[0].attributes.Health, 80);
+  assert.equal(
+    result.project.objects.find((object) => object.id === rootId)?.attributes
+      .Health,
+    80,
+  );
 });

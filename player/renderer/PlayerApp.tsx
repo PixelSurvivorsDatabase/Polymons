@@ -12,6 +12,7 @@ import logo from "../../assets/polymons-logo.png";
 import { useMultiplayer } from "../../src/game/multiplayer";
 import {
   activatePolyGui,
+  activatePolyTool,
   type PolyProject,
   type PolyRuntimeResult,
   runPolyProject,
@@ -362,6 +363,9 @@ function OnlinePlayerGame({
             remotePlayers={remotePlayers}
             onPlayerState={sendState}
             worldObjects={runtime?.project.objects}
+            animations={runtime?.project.animations}
+            animationRequests={runtime?.animationRequests}
+            animationVersion={runtime?.animationVersion}
             guiObjects={runtime?.project.gui}
             playerSettings={runtime?.project.playerSettings}
             leaderstats={runtime?.project.leaderstats}
@@ -381,6 +385,38 @@ function OnlinePlayerGame({
                     ...activated.diagnostics,
                   ],
                   output: [...current.output, ...activated.output],
+                  animationRequests: [
+                    ...new Set([
+                      ...current.animationRequests,
+                      ...activated.animationRequests,
+                    ]),
+                  ],
+                  animationVersion:
+                    current.animationVersion +
+                    (activated.animationRequests.length > 0 ? 1 : 0),
+                };
+              });
+            }}
+            onToolActivated={(toolObjectId) => {
+              setRuntime((current) => {
+                if (!current) return current;
+                const activated = activatePolyTool(current.project, toolObjectId);
+                return {
+                  ...activated,
+                  diagnostics: [
+                    ...current.diagnostics,
+                    ...activated.diagnostics,
+                  ],
+                  output: [...current.output, ...activated.output],
+                  animationRequests: [
+                    ...new Set([
+                      ...current.animationRequests,
+                      ...activated.animationRequests,
+                    ]),
+                  ],
+                  animationVersion:
+                    current.animationVersion +
+                    (activated.animationRequests.length > 0 ? 1 : 0),
                 };
               });
             }}
@@ -458,6 +494,9 @@ function StudioPlayerGame({
           >
             <BaseplateGame
               worldObjects={runtime.project.objects}
+              animations={runtime.project.animations}
+              animationRequests={runtime.animationRequests}
+              animationVersion={runtime.animationVersion}
               guiObjects={runtime.project.gui}
               playerSettings={runtime.project.playerSettings}
               leaderstats={runtime.project.leaderstats}
@@ -477,6 +516,41 @@ function StudioPlayerGame({
                       ...activated.diagnostics,
                     ],
                     output: [...current.output, ...activated.output],
+                    animationRequests: [
+                      ...new Set([
+                        ...current.animationRequests,
+                        ...activated.animationRequests,
+                      ]),
+                    ],
+                    animationVersion:
+                      current.animationVersion +
+                      (activated.animationRequests.length > 0 ? 1 : 0),
+                  };
+                });
+              }}
+              onToolActivated={(toolObjectId) => {
+                setRuntime((current) => {
+                  if (!current) return current;
+                  const activated = activatePolyTool(
+                    current.project,
+                    toolObjectId,
+                  );
+                  return {
+                    ...activated,
+                    diagnostics: [
+                      ...current.diagnostics,
+                      ...activated.diagnostics,
+                    ],
+                    output: [...current.output, ...activated.output],
+                    animationRequests: [
+                      ...new Set([
+                        ...current.animationRequests,
+                        ...activated.animationRequests,
+                      ]),
+                    ],
+                    animationVersion:
+                      current.animationVersion +
+                      (activated.animationRequests.length > 0 ? 1 : 0),
                   };
                 });
               }}

@@ -31,6 +31,7 @@ import type {
   RemotePlayer,
 } from "./multiplayer";
 import type {
+  PolyAnimation,
   PolyGuiObject,
   PolyLeaderstat,
   PolyPlayerSettings,
@@ -630,12 +631,83 @@ function PhysicsCrate({
   );
 }
 
-function ProjectBlock({ object }: { object: PolyWorldObject }) {
+function sampleAnimationPose(
+  objectId: string,
+  animations: PolyAnimation[],
+  requests: string[],
+  elapsed: number,
+) {
+  const animation = animations.find(
+    (candidate) =>
+      requests.includes(candidate.name) &&
+      candidate.keyframes.some((keyframe) => keyframe.poses[objectId]),
+  );
+  if (!animation) return null;
+  const time = animation.looped
+    ? elapsed % animation.duration
+    : Math.min(elapsed, animation.duration);
+  const posed = animation.keyframes.filter(
+    (keyframe) => keyframe.poses[objectId],
+  );
+  if (posed.length === 0) return null;
+  const before =
+    [...posed].reverse().find((keyframe) => keyframe.time <= time) ?? posed[0];
+  const after =
+    posed.find((keyframe) => keyframe.time >= time) ?? posed[posed.length - 1];
+  const span = Math.max(0.0001, after.time - before.time);
+  const alpha = before === after ? 0 : (time - before.time) / span;
+  const interpolate = (
+    first: [number, number, number] | undefined,
+    second: [number, number, number] | undefined,
+  ): [number, number, number] => {
+    const a = first ?? [0, 0, 0];
+    const b = second ?? a;
+    return [
+      a[0] + (b[0] - a[0]) * alpha,
+      a[1] + (b[1] - a[1]) * alpha,
+      a[2] + (b[2] - a[2]) * alpha,
+    ];
+  };
+  return {
+    position: interpolate(
+      before.poses[objectId].position,
+      after.poses[objectId].position,
+    ),
+    rotation: interpolate(
+      before.poses[objectId].rotation,
+      after.poses[objectId].rotation,
+    ),
+  };
+}
+
+function ProjectBlock({
+  object,
+  animations,
+  animationRequests,
+}: {
+  object: PolyWorldObject;
+  animations: PolyAnimation[];
+  animationRequests: string[];
+}) {
+  const animated = useRef<Group>(null);
+  const animationStartedAt = useRef<number | null>(null);
   const surfaceTexture = useMemo(
     () => createSurfaceTexture(object.surfaceTexture),
     [object.surfaceTexture],
   );
   useEffect(() => () => surfaceTexture?.dispose(), [surfaceTexture]);
+  useFrame(({ clock }) => {
+    if (!animated.current) return;
+    animationStartedAt.current ??= clock.elapsedTime;
+    const pose = sampleAnimationPose(
+      object.id,
+      animations,
+      animationRequests,
+      clock.elapsedTime - animationStartedAt.current,
+    );
+    animated.current.position.set(...(pose?.position ?? [0, 0, 0]));
+    animated.current.rotation.set(...(pose?.rotation ?? [0, 0, 0]));
+  });
   if (object.visible === false) return null;
   const material = {
     plastic: { roughness: 0.72, metalness: 0, emissiveIntensity: 0 },
@@ -644,19 +716,21 @@ function ProjectBlock({ object }: { object: PolyWorldObject }) {
     neon: { roughness: 0.35, metalness: 0.05, emissiveIntensity: 0.65 },
   }[object.material];
   const content = (
-    <mesh castShadow={object.castShadow} receiveShadow>
-      <boxGeometry args={object.scale} />
-      <meshStandardMaterial
-        color={object.color}
-        map={surfaceTexture}
-        roughness={material.roughness}
-        metalness={material.metalness}
-        emissive={object.material === "neon" ? object.color : "#000000"}
-        emissiveIntensity={material.emissiveIntensity}
-        transparent={object.transparency > 0}
-        opacity={1 - object.transparency}
-      />
-    </mesh>
+    <group ref={animated}>
+      <mesh castShadow={object.castShadow} receiveShadow>
+        <boxGeometry args={object.scale} />
+        <meshStandardMaterial
+          color={object.color}
+          map={surfaceTexture}
+          roughness={material.roughness}
+          metalness={material.metalness}
+          emissive={object.material === "neon" ? object.color : "#000000"}
+          emissiveIntensity={material.emissiveIntensity}
+          transparent={object.transparency > 0}
+          opacity={1 - object.transparency}
+        />
+      </mesh>
+    </group>
   );
   return (
     <RigidBody
@@ -701,6 +775,9 @@ function Scene({
   remotePlayers,
   onPlayerState,
   worldObjects,
+  animations,
+  animationRequests,
+  animationVersion,
   playerSettings,
   spawn,
 }: {
@@ -710,6 +787,9 @@ function Scene({
   remotePlayers: RemotePlayer[];
   onPlayerState?: (state: Omit<PlayerTransform, "sequence">) => void;
   worldObjects?: PolyWorldObject[];
+  animations: PolyAnimation[];
+  animationRequests: string[];
+  animationVersion: number;
   playerSettings: PolyPlayerSettings;
   spawn: { x: number; y: number; z: number };
 }) {
@@ -730,7 +810,12 @@ function Scene({
         ))}
         {worldObjects ? (
           worldObjects.map((object) => (
-            <ProjectBlock key={object.id} object={object} />
+            <ProjectBlock
+              key={`${object.id}-${animationVersion}`}
+              object={object}
+              animations={animations}
+              animationRequests={animationRequests}
+            />
           ))
         ) : (
           <>
@@ -1013,6 +1098,9 @@ export default function BaseplateGame({
   remotePlayers = [],
   onPlayerState,
   worldObjects,
+  animations = [],
+  animationRequests = [],
+  animationVersion = 0,
   guiObjects = [],
   playerSettings = {
     health: 100,
@@ -1029,10 +1117,14 @@ export default function BaseplateGame({
   chatError,
   onSendChat,
   onGuiActivated,
+  onToolActivated,
 }: {
   remotePlayers?: RemotePlayer[];
   onPlayerState?: (state: Omit<PlayerTransform, "sequence">) => void;
   worldObjects?: PolyWorldObject[];
+  animations?: PolyAnimation[];
+  animationRequests?: string[];
+  animationVersion?: number;
   guiObjects?: PolyGuiObject[];
   playerSettings?: PolyPlayerSettings;
   leaderstats?: PolyLeaderstat[];
@@ -1046,6 +1138,7 @@ export default function BaseplateGame({
   chatError?: string;
   onSendChat?: (text: string) => boolean;
   onGuiActivated?: (guiObjectId: string) => void;
+  onToolActivated?: (toolObjectId: string) => void;
 }) {
   const spawnObject = worldObjects?.find((object) => object.type === "spawn");
   const spawn = spawnObject
@@ -1056,6 +1149,7 @@ export default function BaseplateGame({
       }
     : SPAWN;
   const input = useRef<InputState>(createInputState());
+  const tools = worldObjects?.filter((object) => object.type === "tool") ?? [];
   const [pointerLocked, setPointerLocked] = useState(false);
   const [playerListOpen, setPlayerListOpen] = useState(false);
   const [selectedPlayer, setSelectedPlayer] = useState<{
@@ -1134,6 +1228,9 @@ export default function BaseplateGame({
             remotePlayers={remotePlayers}
             onPlayerState={onPlayerState}
             worldObjects={worldObjects}
+            animations={animations}
+            animationRequests={animationRequests}
+            animationVersion={animationVersion}
             playerSettings={playerSettings}
             spawn={spawn}
           />
@@ -1155,6 +1252,21 @@ export default function BaseplateGame({
       </div>
 
       <ProjectGui objects={guiObjects} onActivate={onGuiActivated} />
+
+      {tools.length > 0 && (
+        <div className="tool-hotbar" aria-label="Tools">
+          {tools.map((tool, index) => (
+            <button
+              key={tool.id}
+              onClick={() => onToolActivated?.(tool.id)}
+              disabled={!onToolActivated}
+            >
+              <kbd>{index + 1}</kbd>
+              <span>{tool.name}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {onSendChat && (
         <ChatPanel

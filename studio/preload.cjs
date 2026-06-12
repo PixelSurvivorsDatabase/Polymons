@@ -18,4 +18,6 @@ contextBridge.exposeInMainWorld("polyStudio", {
   playProject: (id) => ipcRenderer.invoke("projects:play", { id }),
   exportModel: (input) => ipcRenderer.invoke("models:export", input),
   importModel: () => ipcRenderer.invoke("models:import"),
+  exportAnimation: (input) => ipcRenderer.invoke("animations:export", input),
+  importAnimation: () => ipcRenderer.invoke("animations:import"),
 });

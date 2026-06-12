@@ -307,7 +307,7 @@ export function createApp(
     let query = admin
       .from("games")
       .select(
-        "id, slug, title, description, visibility, genre, thumbnail_url, platform_owned, owner_id, updated_at",
+        "id, slug, title, description, visibility, genre, thumbnail_url, platform_owned, owner_id, visit_count, updated_at",
       )
       .eq("visibility", "public");
 
@@ -351,6 +351,7 @@ export function createApp(
         creator: owner?.display_name ?? "Polymons",
         creatorUsername: owner?.username ?? "polymons",
         activePlayers: presence().counts[data.id] ?? 0,
+        visits: Number(data.visit_count ?? 0),
         updatedAt: data.updated_at,
         manifest: version?.manifest ?? null,
         version: version?.version_number ?? null,
@@ -362,7 +363,7 @@ export function createApp(
     const { data, error } = await admin
       .from("games")
       .select(
-        "id, slug, title, description, genre, thumbnail_url, owner_id, updated_at",
+        "id, slug, title, description, genre, thumbnail_url, owner_id, visit_count, updated_at",
       )
       .eq("visibility", "public")
       .order("updated_at", { ascending: false })
@@ -394,9 +395,116 @@ export function createApp(
           creator: owner?.display_name ?? "Polymons",
           creatorUsername: owner?.username ?? "polymons",
           activePlayers: counts[game.id] ?? 0,
+          visits: Number(game.visit_count ?? 0),
           updatedAt: game.updated_at,
         };
       }),
+    });
+  });
+
+  app.get("/v1/players", async (request, response) => {
+    const query =
+      typeof request.query.query === "string"
+        ? request.query.query.trim().toLowerCase()
+        : "";
+    if (query.length < 1) {
+      response.json({ players: [] });
+      return;
+    }
+    if (query.length > 32 || !/^[a-z0-9_ -]+$/.test(query)) {
+      throw new HttpError(400, "Enter a valid player search.");
+    }
+    const pattern = `%${query.replace(/[%_]/g, "\\$&")}%`;
+    const [usernames, displayNames] = await Promise.all([
+      admin
+        .from("profiles")
+        .select("id, username, display_name, avatar_url, created_at")
+        .ilike("username", pattern)
+        .order("username")
+        .limit(12),
+      admin
+        .from("profiles")
+        .select("id, username, display_name, avatar_url, created_at")
+        .ilike("display_name", pattern)
+        .order("username")
+        .limit(12),
+    ]);
+    if (usernames.error) throw usernames.error;
+    if (displayNames.error) throw displayNames.error;
+    const players = new Map(
+      [...(usernames.data ?? []), ...(displayNames.data ?? [])].map((player) => [
+        player.id,
+        {
+          id: player.id,
+          username: player.username,
+          displayName: player.display_name,
+          avatarUrl: player.avatar_url,
+          joinedAt: player.created_at,
+        },
+      ]),
+    );
+    response.json({ players: [...players.values()].slice(0, 12) });
+  });
+
+  app.get("/v1/players/:username", async (request, response) => {
+    const username = request.params.username.trim().toLowerCase();
+    if (!/^[a-z0-9_]{3,20}$/.test(username)) {
+      throw new HttpError(404, "Player not found.");
+    }
+    const { data: player, error: playerError } = await admin
+      .from("profiles")
+      .select("id, username, display_name, avatar_url, created_at")
+      .eq("username", username)
+      .maybeSingle();
+    if (playerError) throw playerError;
+    if (!player) throw new HttpError(404, "Player not found.");
+
+    const [{ data: games, error: gamesError }, { count: friends, error: friendsError }] =
+      await Promise.all([
+        admin
+          .from("games")
+          .select(
+            "id, slug, title, description, genre, thumbnail_url, visit_count, updated_at",
+          )
+          .eq("owner_id", player.id)
+          .eq("visibility", "public")
+          .order("updated_at", { ascending: false }),
+        admin
+          .from("friendships")
+          .select("id", { count: "exact", head: true })
+          .eq("status", "accepted")
+          .or(`requester_id.eq.${player.id},addressee_id.eq.${player.id}`),
+      ]);
+    if (gamesError) throw gamesError;
+    if (friendsError) throw friendsError;
+    const counts = presence().counts;
+    const publicGames = (games ?? []).map((game) => ({
+      id: game.id,
+      slug: game.slug,
+      title: game.title,
+      description: game.description,
+      genre: game.genre,
+      thumbnailUrl: game.thumbnail_url,
+      creator: player.display_name,
+      creatorUsername: player.username,
+      activePlayers: counts[game.id] ?? 0,
+      visits: Number(game.visit_count ?? 0),
+      updatedAt: game.updated_at,
+    }));
+    response.json({
+      player: {
+        id: player.id,
+        username: player.username,
+        displayName: player.display_name,
+        avatarUrl: player.avatar_url,
+        joinedAt: player.created_at,
+      },
+      stats: {
+        friends: friends ?? 0,
+        games: publicGames.length,
+        gameVisits: publicGames.reduce((total, game) => total + game.visits, 0),
+      },
+      games: publicGames,
     });
   });
 
@@ -629,6 +737,12 @@ export function createApp(
 
     if (sessionError || !playSession) {
       throw sessionError ?? new Error("Could not create play session.");
+    }
+    const { error: visitError } = await admin.rpc("increment_game_visit", {
+      target_game_id: game.id,
+    });
+    if (visitError) {
+      console.error("Could not increment game visits:", visitError.message);
     }
 
     response.status(201).json({

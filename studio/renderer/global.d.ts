@@ -89,6 +89,24 @@ type StudioGuiObject = {
   zIndex: number;
 };
 
+type StudioAnimation = {
+  id: string;
+  name: string;
+  rigModelId: string | null;
+  duration: number;
+  looped: boolean;
+  keyframes: Array<{
+    time: number;
+    poses: Record<
+      string,
+      {
+        position?: [number, number, number];
+        rotation?: [number, number, number];
+      }
+    >;
+  }>;
+};
+
 type StudioProject = {
   version: 2;
   id: string;
@@ -115,6 +133,7 @@ type StudioProject = {
     type: "number" | "string";
     defaultValue: number | string;
   }>;
+  animations: StudioAnimation[];
   publication: {
     gameId: string;
     slug: string;
@@ -161,6 +180,16 @@ interface Window {
     importModel: () => Promise<{
       model: StudioModel;
       parts: StudioObject[];
+    } | null>;
+    exportAnimation: (input: {
+      animation: StudioAnimation;
+      parts: StudioObject[];
+    }) => Promise<string | null>;
+    importAnimation: () => Promise<{
+      format: "pma";
+      version: 1;
+      animation: Omit<StudioAnimation, "id" | "rigModelId">;
+      partNames: Record<string, string>;
     } | null>;
   };
 }

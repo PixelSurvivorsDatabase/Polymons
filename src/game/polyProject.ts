@@ -91,6 +91,23 @@ export type PolyLeaderstat = {
   defaultValue: number | string;
 };
 
+export type PolyAnimationPose = {
+  position?: [number, number, number];
+  rotation?: [number, number, number];
+};
+
+export type PolyAnimation = {
+  id: string;
+  name: string;
+  rigModelId: string | null;
+  duration: number;
+  looped: boolean;
+  keyframes: Array<{
+    time: number;
+    poses: Record<string, PolyAnimationPose>;
+  }>;
+};
+
 export type PolyStoredValue = string | number | boolean | null;
 
 export type PolyProject = {
@@ -108,6 +125,7 @@ export type PolyProject = {
   gui: PolyGuiObject[];
   playerSettings: PolyPlayerSettings;
   leaderstats: PolyLeaderstat[];
+  animations: PolyAnimation[];
   publication?: {
     gameId: string;
     slug: string;
@@ -133,6 +151,8 @@ export type PolyRuntimeResult = {
     message: string;
     scriptName: string;
   }>;
+  animationRequests: string[];
+  animationVersion: number;
 };
 
 type Reference =
@@ -247,6 +267,18 @@ export function normalizePolyProject(project: PolyProject): PolyProject {
         : Number.isFinite(Number(stat.defaultValue))
           ? Number(stat.defaultValue)
           : 0,
+  }));
+  normalized.animations = (normalized.animations ?? []).map((animation) => ({
+    ...animation,
+    rigModelId: animation.rigModelId ?? null,
+    duration: Math.max(0.05, Number(animation.duration) || 1),
+    looped: animation.looped ?? false,
+    keyframes: (animation.keyframes ?? [])
+      .map((keyframe) => ({
+        time: Math.max(0, Number(keyframe.time) || 0),
+        poses: keyframe.poses ?? {},
+      }))
+      .sort((a, b) => a.time - b.time),
   }));
   normalized.publication ??= null;
   normalized.dataStores ??= {};
@@ -1488,6 +1520,87 @@ function executeScript(
   }
 }
 
+function requestedAnimations(source: string, project: PolyProject): string[] {
+  const requests: string[] = [];
+  const pattern =
+    /Animations(?:(?:::|\.)Play|:Play)\s*\(\s*["']([^"']+)["']\s*\)/g;
+  for (const match of source.matchAll(pattern)) {
+    if (
+      project.animations.some((animation) => animation.name === match[1]) &&
+      !requests.includes(match[1])
+    ) {
+      requests.push(match[1]);
+    }
+  }
+  return requests;
+}
+
+function applyNearestDamage(
+  source: string,
+  project: PolyProject,
+  toolId: string,
+  output: PolyRuntimeResult["output"],
+  scriptName: string,
+) {
+  const match = source.match(
+    /Combat(?:(?:::|\.)DamageNearest|:DamageNearest)\s*\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*\)/,
+  );
+  if (!match) return;
+  const damage = Math.max(0, Math.min(500, Number(match[1])));
+  const range = Math.max(0, Math.min(100, Number(match[2])));
+  const tool = project.objects.find((object) => object.id === toolId);
+  if (!tool) return;
+  const target = project.models
+    .filter(
+      (model) =>
+        model.tags.includes("Humanoid") &&
+        model.id !== tool.modelId &&
+        Number(model.attributes.Health ?? 100) > 0,
+    )
+    .map((model) => {
+      const root = project.objects.find(
+        (object) =>
+          object.modelId === model.id && object.type === "humanoidRootPart",
+      );
+      if (!root) return null;
+      const distance = Math.hypot(
+        root.position[0] - tool.position[0],
+        root.position[1] - tool.position[1],
+        root.position[2] - tool.position[2],
+      );
+      return { model, root, distance };
+    })
+    .filter(
+      (
+        candidate,
+      ): candidate is {
+        model: PolyModel;
+        root: PolyWorldObject;
+        distance: number;
+      } => Boolean(candidate && candidate.distance <= range),
+    )
+    .sort((a, b) => a.distance - b.distance)[0];
+  if (!target) {
+    output.push({
+      level: "info",
+      message: "Sword swing did not hit a Humanoid.",
+      scriptName,
+    });
+    return;
+  }
+  const health = Math.max(
+    0,
+    Number(target.model.attributes.Health ?? 100) - damage,
+  );
+  target.model.attributes.Health = health;
+  target.root.attributes.Health = health;
+  output.push({
+    level: "info",
+    message: `${target.model.name} took ${damage} damage (${health} HP remaining).`,
+    scriptName,
+  });
+}
+
 export function activatePolyGui(
   input: PolyProject,
   guiObjectId: string,
@@ -1509,6 +1622,7 @@ export function activatePolyGui(
     })),
   );
   const output: PolyRuntimeResult["output"] = [];
+  const animationRequests: string[] = [];
 
   for (const script of scripts) {
     if (
@@ -1526,10 +1640,72 @@ export function activatePolyGui(
         output,
         `${handler.prelude}\n${handler.body}`,
       );
+      for (const name of requestedAnimations(handler.body, project)) {
+        if (!animationRequests.includes(name)) animationRequests.push(name);
+      }
     }
   }
 
-  return { project, diagnostics, output };
+  return {
+    project,
+    diagnostics,
+    output,
+    animationRequests,
+    animationVersion: animationRequests.length > 0 ? 1 : 0,
+  };
+}
+
+export function activatePolyTool(
+  input: PolyProject,
+  toolId: string,
+): PolyRuntimeResult {
+  const project = normalizePolyProject(input);
+  const tool = project.objects.find(
+    (object) => object.id === toolId && object.type === "tool",
+  );
+  const scripts = tool
+    ? project.scripts.filter(
+        (script) =>
+          script.kind === "localScript" &&
+          (script.parent === toolId ||
+            project.objects.some(
+              (object) =>
+                object.id === script.parent && object.parentId === toolId,
+            )),
+      )
+    : [];
+  const diagnostics = scripts.flatMap((script) =>
+    analyzePolyScript(script, project).map((diagnostic) => ({
+      ...diagnostic,
+      scriptId: script.id,
+      scriptName: script.name,
+    })),
+  );
+  const output: PolyRuntimeResult["output"] = [];
+  const animationRequests: string[] = [];
+  for (const script of scripts) {
+    for (const handler of guiEventHandlers(script).filter(
+      (candidate) => candidate.event === "Activated",
+    )) {
+      executeScript(
+        script,
+        project,
+        output,
+        `${handler.prelude}\n${handler.body}`,
+      );
+      applyNearestDamage(handler.body, project, toolId, output, script.name);
+      for (const name of requestedAnimations(handler.body, project)) {
+        if (!animationRequests.includes(name)) animationRequests.push(name);
+      }
+    }
+  }
+  return {
+    project,
+    diagnostics,
+    output,
+    animationRequests,
+    animationVersion: animationRequests.length > 0 ? 1 : 0,
+  };
 }
 
 export function runPolyProject(input: PolyProject): PolyRuntimeResult {
@@ -1542,6 +1718,7 @@ export function runPolyProject(input: PolyProject): PolyRuntimeResult {
     })),
   );
   const output: PolyRuntimeResult["output"] = [];
+  const animationRequests: string[] = [];
 
   for (const script of project.scripts.filter((item) => item.kind === "script")) {
     if (
@@ -1551,6 +1728,9 @@ export function runPolyProject(input: PolyProject): PolyRuntimeResult {
       )
     ) {
       executeScript(script, project, output);
+      for (const name of requestedAnimations(script.source, project)) {
+        if (!animationRequests.includes(name)) animationRequests.push(name);
+      }
     }
   }
   for (const script of project.scripts.filter(
@@ -1563,8 +1743,17 @@ export function runPolyProject(input: PolyProject): PolyRuntimeResult {
       )
     ) {
       executeScript(script, project, output);
+      for (const name of requestedAnimations(script.source, project)) {
+        if (!animationRequests.includes(name)) animationRequests.push(name);
+      }
     }
   }
 
-  return { project, diagnostics, output };
+  return {
+    project,
+    diagnostics,
+    output,
+    animationRequests,
+    animationVersion: animationRequests.length > 0 ? 1 : 0,
+  };
 }

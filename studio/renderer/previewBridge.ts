@@ -166,6 +166,7 @@ function createPreviewProject(
         defaultValue: 0,
       },
     ],
+    animations: [],
     publication: null,
     dataStores: {},
   };
@@ -254,5 +255,7 @@ if (isPreview && !window.polyStudio) {
     playProject: async () => undefined,
     exportModel: async () => "preview.pmxl",
     importModel: async () => null,
+    exportAnimation: async () => "preview.pma",
+    importAnimation: async () => null,
   };
 }

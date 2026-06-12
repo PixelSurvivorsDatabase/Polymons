@@ -242,6 +242,58 @@ h3,
   padding: 10px 12px;
 }
 
+.search-shell {
+  position: relative;
+  width: min(480px, 52vw);
+}
+
+.search-shell .search {
+  width: 100%;
+}
+
+.player-search-results {
+  position: absolute;
+  top: calc(100% + 9px);
+  right: 0;
+  left: 0;
+  z-index: 30;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #15131d;
+  box-shadow: 0 20px 55px rgba(0, 0, 0, 0.45);
+}
+
+.player-search-results a {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  color: #fff;
+  padding: 11px 13px;
+  text-decoration: none;
+}
+
+.player-search-results a:hover {
+  background: rgba(139, 92, 246, 0.12);
+}
+
+.player-search-results span,
+.player-search-results strong,
+.player-search-results small {
+  display: block;
+}
+
+.player-search-results small,
+.player-search-results p {
+  color: var(--muted);
+}
+
+.player-search-results p {
+  margin: 0;
+  padding: 14px;
+  font-size: 13px;
+}
+
 .search:focus-within {
   border-color: rgba(139, 92, 246, 0.6);
   box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.12);
@@ -1123,6 +1175,10 @@ h3,
 .player-profile-popover p, .player-profile-popover small { color: #9b94a4; }
 .player-profile-popover > button:not(.profile-close) { border: 0; border-radius: 9px; background: #704bb0; color: white; cursor: pointer; padding: 9px 12px; font-weight: 800; }
 .profile-close { position: absolute; top: 12px; right: 12px; border: 0; background: transparent; color: #938b9e; cursor: pointer; }
+.tool-hotbar { position: absolute; z-index: 18; right: 18px; bottom: 18px; display: flex; gap: 8px; }
+.tool-hotbar button { display: flex; min-width: 118px; align-items: center; gap: 9px; border: 1px solid rgba(255,255,255,.18); border-radius: 10px; background: rgba(16,14,21,.9); color: white; cursor: pointer; padding: 8px 11px; font-weight: 800; backdrop-filter: blur(12px); }
+.tool-hotbar button:hover { border-color: #9067ce; background: #251d30; }
+.tool-hotbar kbd { display: grid; width: 22px; height: 22px; place-items: center; border: 1px solid rgba(255,255,255,.2); border-radius: 5px; background: rgba(255,255,255,.08); }
 
 .launch-error,
 .auth-error {

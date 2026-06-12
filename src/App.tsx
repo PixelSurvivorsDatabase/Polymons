@@ -27,6 +27,7 @@ import {
   createPlayerAccountLink,
   createPlaySession,
   getGame,
+  getPlayerProfile,
   listFriends,
   listGames,
   playerAccountUrl,
@@ -34,15 +35,19 @@ import {
   POLYMONS_PLAYER_DOWNLOAD_URL,
   POLY_STUDIO_DOWNLOAD_URL,
   sendFriendRequest,
+  searchPlayers,
   type Friendship,
   type PlatformGame,
   type PlaySession,
+  type PublicPlayer,
+  type PublicPlayerProfile,
 } from "./api";
 import { useAuth } from "./auth";
 import { games as fallbackGames, type Game } from "./data";
 import { useMultiplayer } from "./game/multiplayer";
 import {
   activatePolyGui,
+  activatePolyTool,
   runPolyProject,
   type PolyRuntimeResult,
 } from "./game/polyProject";
@@ -177,7 +182,26 @@ function MobileNav() {
 
 function Header() {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [players, setPlayers] = useState<PublicPlayer[]>([]);
+  const [searching, setSearching] = useState(false);
   const { user, showAuth } = useAuth();
+  useEffect(() => {
+    const value = query.trim();
+    if (!value) {
+      setPlayers([]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const timer = window.setTimeout(() => {
+      void searchPlayers(value)
+        .then((result) => setPlayers(result.players))
+        .catch(() => setPlayers([]))
+        .finally(() => setSearching(false));
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [query]);
   return (
     <>
       <header className="topbar">
@@ -191,11 +215,37 @@ function Header() {
         <div className="mobile-brand">
           <Logo />
         </div>
-        <label className="search">
-          <Search size={18} />
-          <input aria-label="Search Polymons" placeholder="Search games and people" />
-          <kbd>/</kbd>
-        </label>
+        <div className="search-shell">
+          <label className="search">
+            <Search size={18} />
+            <input
+              aria-label="Search Polymons players"
+              placeholder="Search players"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+            <kbd>/</kbd>
+          </label>
+          {query.trim() && (
+            <div className="player-search-results">
+              {players.map((player) => (
+                <Link
+                  key={player.id}
+                  to={`/players/${player.username}`}
+                  onClick={() => setQuery("")}
+                >
+                  <Avatar name={player.displayName} size="small" />
+                  <span>
+                    <strong>{player.displayName}</strong>
+                    <small>@{player.username}</small>
+                  </span>
+                </Link>
+              ))}
+              {!searching && players.length === 0 && <p>No players found.</p>}
+              {searching && <p>Searching...</p>}
+            </div>
+          )}
+        </div>
         {user ? (
           <>
             <button
@@ -264,6 +314,7 @@ function Layout() {
             <Route path="/games/:gameId" element={<GamePage />} />
             <Route path="/friends" element={<FriendsPage />} />
             <Route path="/profile" element={<ProfilePage />} />
+            <Route path="/players/:username" element={<ProfilePage />} />
             <Route path="/create" element={<CreatePage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
@@ -673,6 +724,9 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
           remotePlayers={remotePlayers}
           onPlayerState={sendState}
           worldObjects={runtime?.project.objects}
+          animations={runtime?.project.animations}
+          animationRequests={runtime?.animationRequests}
+          animationVersion={runtime?.animationVersion}
           guiObjects={runtime?.project.gui}
           playerSettings={runtime?.project.playerSettings}
           leaderstats={runtime?.project.leaderstats}
@@ -689,6 +743,35 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
                 ...activated,
                 diagnostics: [...current.diagnostics, ...activated.diagnostics],
                 output: [...current.output, ...activated.output],
+                animationRequests: [
+                  ...new Set([
+                    ...current.animationRequests,
+                    ...activated.animationRequests,
+                  ]),
+                ],
+                animationVersion:
+                  current.animationVersion +
+                  (activated.animationRequests.length > 0 ? 1 : 0),
+              };
+            });
+          }}
+          onToolActivated={(toolObjectId) => {
+            setRuntime((current) => {
+              if (!current) return current;
+              const activated = activatePolyTool(current.project, toolObjectId);
+              return {
+                ...activated,
+                diagnostics: [...current.diagnostics, ...activated.diagnostics],
+                output: [...current.output, ...activated.output],
+                animationRequests: [
+                  ...new Set([
+                    ...current.animationRequests,
+                    ...activated.animationRequests,
+                  ]),
+                ],
+                animationVersion:
+                  current.animationVersion +
+                  (activated.animationRequests.length > 0 ? 1 : 0),
               };
             });
           }}
@@ -807,13 +890,30 @@ function FriendsPage() {
 }
 
 function ProfilePage() {
-  const { games } = useGames();
+  const { username: routeUsername } = useParams();
   const { user, session, logout, showAuth, refresh } = useAuth();
+  const requestedUsername = routeUsername ?? user?.username;
+  const ownProfile = Boolean(user && requestedUsername === user.username);
+  const [profile, setProfile] = useState<PublicPlayerProfile | null>(null);
+  const [profileError, setProfileError] = useState("");
   const [playerOptions, setPlayerOptions] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncAttempted, setSyncAttempted] = useState(false);
   const [syncError, setSyncError] = useState("");
-  if (!user) {
+  useEffect(() => {
+    if (!requestedUsername) return;
+    setProfile(null);
+    setProfileError("");
+    void getPlayerProfile(requestedUsername)
+      .then(setProfile)
+      .catch((error) =>
+        setProfileError(
+          error instanceof Error ? error.message : "Could not load this player.",
+        ),
+      );
+  }, [requestedUsername]);
+
+  if (!requestedUsername) {
     return (
       <section className="large-empty-state">
         <Avatar name="P" size="large" />
@@ -823,6 +923,12 @@ function ProfilePage() {
         </button>
       </section>
     );
+  }
+  if (profileError) {
+    return <section className="large-empty-state"><h2>{profileError}</h2></section>;
+  }
+  if (!profile) {
+    return <section className="large-empty-state"><h2>Loading profile...</h2></section>;
   }
 
   async function syncPlayer() {
@@ -856,13 +962,13 @@ function ProfilePage() {
     <>
       <section className="profile-hero">
         <div className="profile-glow" />
-        <Avatar name={user.displayName} size="large" />
+        <Avatar name={profile.player.displayName} size="large" />
         <div className="profile-copy">
-          <h1>{user.displayName}</h1>
-          <span>@{user.username}</span>
-          <p>Playing and building on Polymons.</p>
+          <h1>{profile.player.displayName}</h1>
+          <span>@{profile.player.username}</span>
+          <p>Joined {new Date(profile.player.joinedAt).toLocaleDateString()}.</p>
         </div>
-        <div className="profile-actions">
+        {ownProfile && <div className="profile-actions">
           <button
             className="primary-button"
             onClick={() => {
@@ -874,7 +980,7 @@ function ProfilePage() {
             Sync to Player
           </button>
           <button className="secondary-button" onClick={logout}>Sign out</button>
-        </div>
+        </div>}
       </section>
       {playerOptions && (
         <PlayerOptionsDialog
@@ -893,24 +999,25 @@ function ProfilePage() {
       )}
       <section className="profile-stats">
         <div>
-          <strong>0</strong>
+          <strong>{profile.stats.friends.toLocaleString()}</strong>
           <span>Friends</span>
         </div>
         <div>
-          <strong>1</strong>
+          <strong>{profile.stats.games.toLocaleString()}</strong>
           <span>Games</span>
         </div>
         <div>
-          <strong>0</strong>
+          <strong>{profile.stats.gameVisits.toLocaleString()}</strong>
           <span>Game visits</span>
         </div>
       </section>
       <section className="content-section">
-        <SectionHeading title={`${user.displayName}'s games`} />
+        <SectionHeading title={`${profile.player.displayName}'s games`} />
         <div className="game-grid profile-games">
-          {games.map((game) => (
-            <GameCard key={game.id} game={game} />
+          {profile.games.map((game) => (
+            <GameCard key={game.id} game={displayGame(game)} />
           ))}
+          {profile.games.length === 0 && <p className="muted-copy">No public games yet.</p>}
         </div>
       </section>
     </>

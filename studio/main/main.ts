@@ -115,6 +115,24 @@ type StudioGuiObject = {
   zIndex: number;
 };
 
+type StudioAnimation = {
+  id: string;
+  name: string;
+  rigModelId: string | null;
+  duration: number;
+  looped: boolean;
+  keyframes: Array<{
+    time: number;
+    poses: Record<
+      string,
+      {
+        position?: [number, number, number];
+        rotation?: [number, number, number];
+      }
+    >;
+  }>;
+};
+
 type StudioProject = {
   version: 2;
   id: string;
@@ -141,6 +159,7 @@ type StudioProject = {
     type: "number" | "string";
     defaultValue: number | string;
   }>;
+  animations: StudioAnimation[];
   publication: {
     gameId: string;
     slug: string;
@@ -170,6 +189,13 @@ type PmxlFile = {
       }
     >;
   };
+};
+
+type PmaFile = {
+  format: "pma";
+  version: 1;
+  animation: Omit<StudioAnimation, "id" | "rigModelId">;
+  partNames: Record<string, string>;
 };
 
 type ProjectSummary = Pick<
@@ -434,6 +460,7 @@ function migrateLegacyProject(
       maxHealth: 100,
     },
     leaderstats: [],
+    animations: [],
     publication: null,
     dataStores: {},
   };
@@ -489,6 +516,18 @@ function normalizeProject(project: StudioProject): StudioProject {
           : Number.isFinite(Number(stat.defaultValue))
             ? Number(stat.defaultValue)
             : 0,
+    })),
+    animations: (project.animations ?? []).map((animation) => ({
+      ...animation,
+      rigModelId: animation.rigModelId ?? null,
+      duration: Math.max(0.05, Number(animation.duration) || 1),
+      looped: animation.looped ?? false,
+      keyframes: (animation.keyframes ?? [])
+        .map((keyframe) => ({
+          time: Math.max(0, Number(keyframe.time) || 0),
+          poses: keyframe.poses ?? {},
+        }))
+        .sort((a, b) => a.time - b.time),
     })),
     publication: project.publication ?? null,
     dataStores: project.dataStores ?? {},
@@ -1127,6 +1166,57 @@ function validateProject(project: StudioProject): void {
     throw new Error("Invalid leaderstats.");
   }
   if (
+    !Array.isArray(project.animations) ||
+    project.animations.length > 200
+  ) {
+    throw new Error("Invalid animations.");
+  }
+  for (const animation of project.animations) {
+    if (
+      typeof animation.id !== "string" ||
+      typeof animation.name !== "string" ||
+      animation.name.trim().length < 1 ||
+      animation.name.length > 64 ||
+      (animation.rigModelId !== null &&
+        !project.models.some((model) => model.id === animation.rigModelId)) ||
+      !Number.isFinite(animation.duration) ||
+      animation.duration < 0.05 ||
+      animation.duration > 600 ||
+      typeof animation.looped !== "boolean" ||
+      !Array.isArray(animation.keyframes) ||
+      animation.keyframes.length > 2_000
+    ) {
+      throw new Error("Invalid animation.");
+    }
+    for (const keyframe of animation.keyframes) {
+      if (
+        !Number.isFinite(keyframe.time) ||
+        keyframe.time < 0 ||
+        keyframe.time > animation.duration ||
+        !keyframe.poses ||
+        typeof keyframe.poses !== "object" ||
+        Array.isArray(keyframe.poses)
+      ) {
+        throw new Error("Invalid animation keyframe.");
+      }
+      for (const [partId, pose] of Object.entries(keyframe.poses)) {
+        if (
+          !project.objects.some((object) => object.id === partId) ||
+          !pose ||
+          typeof pose !== "object" ||
+          (pose.position &&
+            (pose.position.length !== 3 ||
+              !pose.position.every(Number.isFinite))) ||
+          (pose.rotation &&
+            (pose.rotation.length !== 3 ||
+              !pose.rotation.every(Number.isFinite)))
+        ) {
+          throw new Error("Invalid animation pose.");
+        }
+      }
+    }
+  }
+  if (
     project.publication &&
     (typeof project.publication.gameId !== "string" ||
       typeof project.publication.slug !== "string" ||
@@ -1234,6 +1324,7 @@ function pmxlProject(
       maxHealth: 100,
     },
     leaderstats: [],
+    animations: [],
     publication: null,
     dataStores: {},
   };
@@ -1452,6 +1543,59 @@ async function importProject(): Promise<StudioProject | null> {
   return project;
 }
 
+async function exportPma(input: {
+  animation: StudioAnimation;
+  parts: SceneObject[];
+}): Promise<string | null> {
+  requireAuth();
+  const result = await dialog.showSaveDialog({
+    title: "Export Polymons Animation",
+    defaultPath: `${safeFileName(input.animation.name)}.pma`,
+    filters: [{ name: "Polymons Animation", extensions: ["pma"] }],
+  });
+  if (result.canceled || !result.filePath) return null;
+  const path = result.filePath.toLowerCase().endsWith(".pma")
+    ? result.filePath
+    : `${result.filePath}.pma`;
+  const file: PmaFile = {
+    format: "pma",
+    version: 1,
+    animation: {
+      name: input.animation.name,
+      duration: input.animation.duration,
+      looped: input.animation.looped,
+      keyframes: input.animation.keyframes,
+    },
+    partNames: Object.fromEntries(
+      input.parts.map((part) => [part.id, part.name]),
+    ),
+  };
+  await writeFile(path, JSON.stringify(file, null, 2));
+  return path;
+}
+
+async function importPma(): Promise<PmaFile | null> {
+  requireAuth();
+  const result = await dialog.showOpenDialog({
+    title: "Import Polymons Animation",
+    properties: ["openFile"],
+    filters: [{ name: "Polymons Animation", extensions: ["pma"] }],
+  });
+  if (result.canceled || !result.filePaths[0]) return null;
+  const file = JSON.parse(
+    await readFile(result.filePaths[0], "utf8"),
+  ) as Partial<PmaFile>;
+  if (
+    file.format !== "pma" ||
+    file.version !== 1 ||
+    !file.animation ||
+    !file.partNames
+  ) {
+    throw new Error("This is not a valid Polymons animation file.");
+  }
+  return file as PmaFile;
+}
+
 async function listProjects(): Promise<ProjectSummary[]> {
   requireAuth();
   await mkdir(projectsRoot(), { recursive: true });
@@ -1624,6 +1768,7 @@ void app.whenReady().then(async () => {
             defaultValue: 0,
           },
         ],
+        animations: [],
         publication: null,
         dataStores: {},
       };
@@ -1709,6 +1854,14 @@ void app.whenReady().then(async () => {
       exportPmxl(input),
   );
   ipcMain.handle("models:import", () => importPmxl());
+  ipcMain.handle(
+    "animations:export",
+    (
+      _event,
+      input: { animation: StudioAnimation; parts: SceneObject[] },
+    ) => exportPma(input),
+  );
+  ipcMain.handle("animations:import", () => importPma());
 
   createWindow();
 });
