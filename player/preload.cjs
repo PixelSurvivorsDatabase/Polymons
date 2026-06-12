@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld("polymons", {
   signUp: (username, password, displayName) =>
     ipcRenderer.invoke("auth:signup", { username, password, displayName }),
   logout: () => ipcRenderer.invoke("auth:logout"),
+  listGames: () => ipcRenderer.invoke("games:list"),
   play: (gameId) => ipcRenderer.invoke("game:play", { gameId }),
   getGame: (gameId) => ipcRenderer.invoke("game:get", { gameId }),
   sendFriendRequest: (username) =>

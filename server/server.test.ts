@@ -17,6 +17,10 @@ import {
   publishGameSchema,
   signUpSchema,
 } from "./validation.js";
+import {
+  claimAccountConnection,
+  releaseAccountConnection,
+} from "./websocket.js";
 
 test("normalizes usernames and builds internal account identifiers", () => {
   assert.equal(normalizeUsername("  Nova_7 "), "nova_7");
@@ -147,4 +151,17 @@ test("normalizes the configured web origin", () => {
 
   assert.equal(config.webOrigin, "https://example.com");
   assert.equal(config.serverId, "local-polymons-server");
+});
+
+test("keeps only the newest live connection for an account", () => {
+  const registry = new Map<string, object>();
+  const first = {};
+  const second = {};
+
+  assert.equal(claimAccountConnection(registry, "player-1", first), undefined);
+  assert.equal(claimAccountConnection(registry, "player-1", second), first);
+  releaseAccountConnection(registry, "player-1", first);
+  assert.equal(registry.get("player-1"), second);
+  releaseAccountConnection(registry, "player-1", second);
+  assert.equal(registry.has("player-1"), false);
 });

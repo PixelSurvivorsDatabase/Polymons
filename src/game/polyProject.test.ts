@@ -6,6 +6,7 @@ import {
   type PolyProject,
   runPolyProject,
 } from "./polyProject";
+import { parseServerMessage } from "./multiplayer";
 
 function project(): PolyProject {
   return {
@@ -511,4 +512,33 @@ player.WalkSpeed = 20`,
     parent: "tool-server",
   };
   assert.equal(analyzePolyScript(nestedModule, fixture).length, 0);
+});
+
+test("requires an immutable game room id in multiplayer welcomes", () => {
+  const player = {
+    id: "connection-1",
+    userId: "player-1",
+    username: "lava",
+    displayName: "Lava",
+  };
+  const valid = parseServerMessage(
+    JSON.stringify({
+      type: "welcome",
+      gameId: "11111111-1111-4111-8111-111111111111",
+      player,
+      players: [],
+      chatMessages: [],
+    }),
+  );
+  const missingRoom = parseServerMessage(
+    JSON.stringify({
+      type: "welcome",
+      player,
+      players: [],
+      chatMessages: [],
+    }),
+  );
+
+  assert.equal(valid?.type, "welcome");
+  assert.equal(missingRoom, null);
 });

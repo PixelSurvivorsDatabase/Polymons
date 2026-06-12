@@ -428,6 +428,7 @@ if (!hasLock) {
     ipcMain.handle("auth:logout", async () => {
       await saveAuth(null);
     });
+    ipcMain.handle("games:list", () => apiRequest("/v1/games"));
     ipcMain.handle("launch:get", () => pendingLaunch);
     ipcMain.handle(
       "studio:project",
@@ -441,7 +442,12 @@ if (!hasLock) {
     ipcMain.handle("game:play", async (_event, input: { gameId: string }) => {
       if (!auth) throw new Error("Sign in to play.");
       try {
-        return await apiRequest<{ playSession: { websocketUrl: string } }>(
+        return await apiRequest<{
+          playSession: {
+            game: { id: string; slug: string; title: string };
+            websocketUrl: string;
+          };
+        }>(
           "/v1/play-sessions",
           {
             method: "POST",
@@ -452,7 +458,12 @@ if (!hasLock) {
       } catch {
         const renewed = await refreshAuth();
         if (!renewed) throw new Error("Sign in again to play.");
-        return apiRequest<{ playSession: { websocketUrl: string } }>(
+        return apiRequest<{
+          playSession: {
+            game: { id: string; slug: string; title: string };
+            websocketUrl: string;
+          };
+        }>(
           "/v1/play-sessions",
           {
             method: "POST",

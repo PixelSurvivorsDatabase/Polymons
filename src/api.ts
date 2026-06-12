@@ -190,7 +190,7 @@ export function playerLaunchUrl(
   accountTicket?: string,
 ): string {
   const launch = new URL("polymons://play");
-  launch.searchParams.set("game", playSession.game.slug);
+  launch.searchParams.set("game", playSession.game.id);
   launch.searchParams.set("ws", playSession.websocketUrl);
   if (accountTicket) launch.searchParams.set("link", accountTicket);
   return launch.toString();

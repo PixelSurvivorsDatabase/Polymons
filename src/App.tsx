@@ -65,10 +65,12 @@ function displayGame(game: PlatformGame): Game {
 
 function useGames() {
   const [games, setGames] = useState<Game[]>(fallbackGames);
+  const [loaded, setLoaded] = useState(false);
   useEffect(() => {
     void listGames()
       .then((result) => setGames(result.games.map(displayGame)))
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => setLoaded(true));
     const timer = window.setInterval(() => {
       void listGames()
         .then((result) => setGames(result.games.map(displayGame)))
@@ -76,7 +78,7 @@ function useGames() {
     }, 15_000);
     return () => window.clearInterval(timer);
   }, []);
-  return games;
+  return { games, loaded };
 }
 
 const navItems = [
@@ -333,7 +335,7 @@ function SectionHeading({
 }
 
 function HomePage() {
-  const games = useGames();
+  const { games } = useGames();
   const featured = games[0];
   const { user, showAuth } = useAuth();
   return (
@@ -414,7 +416,7 @@ function HomePage() {
 }
 
 function DiscoverPage() {
-  const games = useGames();
+  const { games } = useGames();
   return (
     <>
       <section className="page-heading">
@@ -437,15 +439,32 @@ function DiscoverPage() {
 }
 
 function GamePage() {
-  const games = useGames();
+  const { games, loaded } = useGames();
   const { gameId } = useParams<{ gameId: string }>();
-  const game = games.find((item) => item.id === gameId) ?? games[0];
+  const game = games.find((item) => item.id === gameId);
   const { session, showAuth, refresh } = useAuth();
   const [launching, setLaunching] = useState<"player" | "browser" | null>(null);
   const [launchError, setLaunchError] = useState("");
   const [browserSession, setBrowserSession] = useState<PlaySession | null>(null);
   const [playerOptions, setPlayerOptions] = useState(false);
   const [playerAttempted, setPlayerAttempted] = useState(false);
+
+  useEffect(() => {
+    setBrowserSession(null);
+    setPlayerOptions(false);
+    setLaunchError("");
+  }, [gameId]);
+
+  if (!game) {
+    return loaded ? (
+      <Navigate to="/discover" replace />
+    ) : (
+      <div className="baseplate-player baseplate-player-loading">
+        Loading game...
+      </div>
+    );
+  }
+  const selectedGame = game;
 
   async function getPlaySession() {
     if (!session) {
@@ -454,11 +473,13 @@ function GamePage() {
     }
 
     try {
-      return (await createPlaySession(game.id, session.accessToken)).playSession;
+      return (await createPlaySession(selectedGame.id, session.accessToken))
+        .playSession;
     } catch (error) {
       const renewed = await refresh();
       if (renewed) {
-        return (await createPlaySession(game.id, renewed.accessToken)).playSession;
+        return (await createPlaySession(selectedGame.id, renewed.accessToken))
+          .playSession;
       }
       throw error;
     }
@@ -476,7 +497,7 @@ function GamePage() {
         }
         const getPlayerResources = async (accessToken: string) =>
           Promise.all([
-            createPlaySession(game.id, accessToken),
+            createPlaySession(selectedGame.id, accessToken),
             createPlayerAccountLink(accessToken),
           ]);
         let resources;
@@ -567,7 +588,7 @@ function GamePage() {
           <div>
             <h2>Choose where to play</h2>
             <p>
-              Open the Polymons Player or start Baseplate directly in this
+              Open the Polymons Player or start {game.title} directly in this
               browser.
             </p>
           </div>
@@ -600,14 +621,30 @@ function GamePage() {
 function BrowserGame({ playSession }: { playSession: PlaySession }) {
   const { user, session, refresh } = useAuth();
   const [runtime, setRuntime] = useState<PolyRuntimeResult | null>(null);
+  const [gameLoading, setGameLoading] = useState(true);
+  const [gameError, setGameError] = useState("");
   useEffect(() => {
+    setGameLoading(true);
+    setGameError("");
     void getGame(playSession.game.id)
-      .then((result) =>
-        setRuntime(
-          result.game.manifest ? runPolyProject(result.game.manifest) : null,
-        ),
-      )
-      .catch(() => setRuntime(null));
+      .then((result) => {
+        if (result.game.manifest) {
+          setRuntime(runPolyProject(result.game.manifest));
+        } else if (result.game.slug === "baseplate") {
+          setRuntime(null);
+        } else {
+          throw new Error("This game does not have a published world.");
+        }
+      })
+      .catch((loadError: unknown) => {
+        setRuntime(null);
+        setGameError(
+          loadError instanceof Error
+            ? loadError.message
+            : "Could not load this game.",
+        );
+      })
+      .finally(() => setGameLoading(false));
   }, [playSession.game.id]);
   const {
     connection,
@@ -616,18 +653,27 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
     chatError,
     sendState,
     sendChat,
-  } = useMultiplayer(playSession.websocketUrl);
+  } = useMultiplayer(playSession.websocketUrl, playSession.game.id);
 
   return (
     <div className="browser-game-wrap">
       <span className="connection-pill">{connection}</span>
-      <Suspense
-        fallback={
-          <div className="baseplate-player baseplate-player-loading">
-            Loading Baseplate...
-          </div>
-        }
-      >
+      {gameLoading ? (
+        <div className="baseplate-player baseplate-player-loading">
+          Loading game...
+        </div>
+      ) : gameError ? (
+        <div className="baseplate-player baseplate-player-loading">
+          {gameError}
+        </div>
+      ) : (
+        <Suspense
+          fallback={
+            <div className="baseplate-player baseplate-player-loading">
+              Loading game...
+            </div>
+          }
+        >
         <BaseplateGame
           remotePlayers={remotePlayers}
           onPlayerState={sendState}
@@ -667,7 +713,8 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
               : undefined
           }
         />
-      </Suspense>
+        </Suspense>
+      )}
     </div>
   );
 }
@@ -764,7 +811,7 @@ function FriendsPage() {
 }
 
 function ProfilePage() {
-  const games = useGames();
+  const { games } = useGames();
   const { user, session, logout, showAuth, refresh } = useAuth();
   const [playerOptions, setPlayerOptions] = useState(false);
   const [syncing, setSyncing] = useState(false);

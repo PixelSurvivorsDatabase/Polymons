@@ -30,6 +30,7 @@ type ServerPlayer = Omit<RemotePlayer, "state"> & {
 type ServerMessage =
   | {
       type: "welcome";
+      gameId: string;
       player: ServerPlayer;
       players: ServerPlayer[];
       chatMessages: ChatMessage[];
@@ -98,7 +99,11 @@ export function parseServerMessage(value: string): ServerMessage | null {
 
   const candidate = message as Record<string, unknown>;
   if (candidate.type === "welcome") {
-    if (!isPlayer(candidate.player) || !Array.isArray(candidate.players)) {
+    if (
+      typeof candidate.gameId !== "string" ||
+      !isPlayer(candidate.player) ||
+      !Array.isArray(candidate.players)
+    ) {
       return null;
     }
     if (
@@ -149,7 +154,10 @@ function withState(player: ServerPlayer): RemotePlayer {
   };
 }
 
-export function useMultiplayer(websocketUrl: string) {
+export function useMultiplayer(
+  websocketUrl: string,
+  expectedGameId?: string,
+) {
   const socket = useRef<WebSocket | null>(null);
   const sequence = useRef(0);
   const [connection, setConnection] = useState("Connecting");
@@ -176,6 +184,13 @@ export function useMultiplayer(websocketUrl: string) {
       if (!message) return;
 
       if (message.type === "welcome") {
+        if (expectedGameId && message.gameId !== expectedGameId) {
+          setConnection("Wrong game session");
+          setRemotePlayers([]);
+          setChatMessages([]);
+          nextSocket.close(1008, "Game session mismatch.");
+          return;
+        }
         setRemotePlayers(message.players.map(withState));
         setChatMessages(message.chatMessages);
         return;
@@ -220,9 +235,15 @@ export function useMultiplayer(websocketUrl: string) {
         setChatError(message.message);
       }
     });
-    nextSocket.addEventListener("close", () => {
+    nextSocket.addEventListener("close", (event) => {
       if (socket.current === nextSocket) {
-        setConnection("Disconnected");
+        setConnection(
+          event.code === 4001
+            ? "Account opened in another client"
+            : event.code === 1008 && event.reason === "Game session mismatch."
+              ? "Wrong game session"
+            : "Disconnected",
+        );
       }
     });
     nextSocket.addEventListener("error", () => {
@@ -235,7 +256,7 @@ export function useMultiplayer(websocketUrl: string) {
       if (socket.current === nextSocket) socket.current = null;
       nextSocket.close();
     };
-  }, [websocketUrl]);
+  }, [expectedGameId, websocketUrl]);
 
   const sendState = useCallback(
     (state: Omit<PlayerTransform, "sequence">) => {

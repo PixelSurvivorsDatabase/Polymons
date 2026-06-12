@@ -101,15 +101,20 @@ button {
   letter-spacing: -0.05em;
 }
 
+.player-game-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 20px;
+}
+
 .player-game-card {
   display: grid;
-  grid-template-columns: minmax(280px, 0.85fr) minmax(300px, 1fr);
-  align-items: center;
-  gap: 45px;
+  align-content: start;
+  gap: 20px;
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 24px;
+  border-radius: 18px;
   background: #17141f;
-  padding: 34px;
+  padding: 18px;
 }
 
 .player-game-art {
@@ -123,21 +128,40 @@ button {
     linear-gradient(90deg, rgba(255, 255, 255, 0.12) 1px, transparent 1px),
     linear-gradient(145deg, #7050da, #39a879);
   background-size: 26px 26px, 26px 26px, auto;
+  background-position: center;
+  background-repeat: no-repeat;
 }
 
 .player-game-art strong {
-  font-size: 100px;
+  font-size: 72px;
   text-shadow: 0 18px 35px rgba(0, 0, 0, 0.3);
 }
 
 .player-game-card h2 {
   margin: 7px 0 9px;
-  font-size: 42px;
+  font-size: 28px;
 }
 
 .player-game-card p {
+  min-height: 3.3em;
   color: #aaa3b5;
   line-height: 1.65;
+}
+
+.player-game-meta {
+  margin: 0 0 14px;
+  color: #8f899a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.player-library-state {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  background: #17141f;
+  color: #aaa3b5;
+  padding: 28px;
+  text-align: center;
 }
 
 .player-play {
@@ -302,10 +326,4 @@ button {
 
 .player-output .output-error {
   color: #ef8fa3;
-}
-
-@media (max-width: 800px) {
-  .player-game-card {
-    grid-template-columns: 1fr;
-  }
 }

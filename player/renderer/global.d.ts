@@ -27,6 +27,19 @@ type PlayerLaunch =
       projectId: string;
     };
 
+type PlayerGameSummary = {
+  id: string;
+  slug: string;
+  title: string;
+  description: string;
+  genre: string;
+  thumbnailUrl: string | null;
+  creator: string;
+  creatorUsername: string;
+  activePlayers: number;
+  updatedAt: string;
+};
+
 interface Window {
   polymons: {
     getAuth: () => Promise<PlayerAuth | null>;
@@ -37,11 +50,22 @@ interface Window {
       displayName?: string,
     ) => Promise<PlayerAuth>;
     logout: () => Promise<void>;
+    listGames: () => Promise<{ games: PlayerGameSummary[] }>;
     play: (
       gameId: string,
-    ) => Promise<{ playSession: { websocketUrl: string } }>;
+    ) => Promise<{
+      playSession: {
+        game: { id: string; slug: string; title: string };
+        websocketUrl: string;
+      };
+    }>;
     getGame: (gameId: string) => Promise<{
-      game: { manifest: import("../../src/game/polyProject").PolyProject | null };
+      game: {
+        id: string;
+        slug: string;
+        title: string;
+        manifest: import("../../src/game/polyProject").PolyProject | null;
+      };
     }>;
     sendFriendRequest: (username: string) => Promise<void>;
     loadStudioProject: (id: string) => Promise<import("../../src/game/polyProject").PolyProject>;

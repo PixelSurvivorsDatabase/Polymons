@@ -56,6 +56,26 @@ export type WebSocketController = {
   snapshot: () => PresenceSnapshot;
 };
 
+export function claimAccountConnection<T>(
+  registry: Map<string, T>,
+  userId: string,
+  connection: T,
+): T | undefined {
+  const previous = registry.get(userId);
+  registry.set(userId, connection);
+  return previous;
+}
+
+export function releaseAccountConnection<T>(
+  registry: Map<string, T>,
+  userId: string,
+  connection: T,
+): void {
+  if (registry.get(userId) === connection) {
+    registry.delete(userId);
+  }
+}
+
 const SPAWN_STATE: PlayerState = {
   sequence: 0,
   position: [0, 2.7, 7],
@@ -95,6 +115,7 @@ export function attachWebSocketServer(
     maxPayload: 16 * 1024,
   });
   const connections = new Map<WebSocket, Connection>();
+  const accountConnections = new Map<string, WebSocket>();
   const rooms = new Map<string, Set<WebSocket>>();
   const roomChatHistory = new Map<string, RoomChatMessage[]>();
   const alive = new WeakMap<WebSocket, boolean>();
@@ -109,6 +130,25 @@ export function attachWebSocketServer(
         send(socket, message);
       }
     }
+  };
+
+  const removeConnection = (socket: WebSocket, connection: Connection) => {
+    if (!connections.delete(socket)) return;
+    releaseAccountConnection(
+      accountConnections,
+      connection.profile.id,
+      socket,
+    );
+    const room = rooms.get(connection.gameId);
+    room?.delete(socket);
+    if (room?.size === 0) {
+      rooms.delete(connection.gameId);
+      roomChatHistory.delete(connection.gameId);
+    }
+    broadcast(connection.gameId, {
+      type: "player_left",
+      playerId: connection.id,
+    });
   };
 
   const handleUpgrade = async (
@@ -182,6 +222,19 @@ export function attachWebSocketServer(
       if (!connection) {
         socket.close(1011, "Connection state missing.");
         return;
+      }
+
+      const previousSocket = claimAccountConnection(
+        accountConnections,
+        connection.profile.id,
+        socket,
+      );
+      if (previousSocket && previousSocket !== socket) {
+        const previousConnection = connections.get(previousSocket);
+        if (previousConnection) {
+          removeConnection(previousSocket, previousConnection);
+        }
+        previousSocket.close(4001, "This account joined from another client.");
       }
 
       const room = rooms.get(connection.gameId) ?? new Set<WebSocket>();
@@ -309,16 +362,7 @@ export function attachWebSocketServer(
       });
 
       socket.on("close", () => {
-        connections.delete(socket);
-        room.delete(socket);
-        if (room.size === 0) {
-          rooms.delete(connection.gameId);
-          roomChatHistory.delete(connection.gameId);
-        }
-        broadcast(connection.gameId, {
-          type: "player_left",
-          playerId: connection.id,
-        });
+        removeConnection(socket, connection);
       });
     },
   );

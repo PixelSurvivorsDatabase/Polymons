@@ -18,7 +18,9 @@ export default function PlayerApp() {
   const [ready, setReady] = useState(false);
   const [launch, setLaunch] = useState<PlayerLaunch | null>(null);
   const [error, setError] = useState("");
-  const [starting, setStarting] = useState(false);
+  const [games, setGames] = useState<PlayerGameSummary[]>([]);
+  const [gamesLoading, setGamesLoading] = useState(true);
+  const [startingGameId, setStartingGameId] = useState<string | null>(null);
 
   useEffect(() => {
     void Promise.all([
@@ -42,14 +44,30 @@ export default function PlayerApp() {
     };
   }, []);
 
-  async function playBaseplate() {
-    setStarting(true);
+  useEffect(() => {
+    if (!auth || launch) return;
+    setGamesLoading(true);
+    void window.polymons
+      .listGames()
+      .then((result) => setGames(result.games))
+      .catch((loadError: unknown) => {
+        setError(
+          loadError instanceof Error
+            ? loadError.message
+            : "Could not load games.",
+        );
+      })
+      .finally(() => setGamesLoading(false));
+  }, [auth, launch]);
+
+  async function playGame(gameId: string) {
+    setStartingGameId(gameId);
     setError("");
     try {
-      const result = await window.polymons.play("baseplate");
+      const result = await window.polymons.play(gameId);
       setLaunch({
         mode: "online",
-        game: "baseplate",
+        game: result.playSession.game.id,
         websocketUrl: result.playSession.websocketUrl,
       });
     } catch (playError) {
@@ -57,7 +75,7 @@ export default function PlayerApp() {
         playError instanceof Error ? playError.message : "Could not start.",
       );
     } finally {
-      setStarting(false);
+      setStartingGameId(null);
     }
   }
 
@@ -105,25 +123,48 @@ export default function PlayerApp() {
           <span>Games</span>
           <h1>Pick something to play.</h1>
         </div>
-        <article className="player-game-card">
-          <div className="player-game-art">
-            <strong>B</strong>
+        {error && <div className="player-error">{error}</div>}
+        {gamesLoading ? (
+          <div className="player-library-state">Loading games...</div>
+        ) : games.length === 0 ? (
+          <div className="player-library-state">No games are published yet.</div>
+        ) : (
+          <div className="player-game-grid">
+            {games.map((game) => (
+              <article className="player-game-card" key={game.id}>
+                <div
+                  className="player-game-art"
+                  style={
+                    game.thumbnailUrl
+                      ? {
+                          backgroundImage: `url("${game.thumbnailUrl}")`,
+                          backgroundSize: "cover",
+                        }
+                      : undefined
+                  }
+                >
+                  <strong>{game.title.slice(0, 1).toUpperCase()}</strong>
+                </div>
+                <div>
+                  <span>{game.genre}</span>
+                  <h2>{game.title}</h2>
+                  <p>{game.description || `Created by ${game.creator}.`}</p>
+                  <div className="player-game-meta">
+                    {game.activePlayers} playing
+                  </div>
+                  <button
+                    className="player-play"
+                    onClick={() => void playGame(game.id)}
+                    disabled={startingGameId !== null}
+                  >
+                    <Play size={18} fill="currentColor" />
+                    {startingGameId === game.id ? "Connecting..." : "Play"}
+                  </button>
+                </div>
+              </article>
+            ))}
           </div>
-          <div>
-            <span>Sandbox</span>
-            <h2>Baseplate</h2>
-            <p>A clean open world for movement, physics, and building.</p>
-            {error && <div className="player-error">{error}</div>}
-            <button
-              className="player-play"
-              onClick={() => void playBaseplate()}
-              disabled={starting}
-            >
-              <Play size={18} fill="currentColor" />
-              {starting ? "Connecting..." : "Play"}
-            </button>
-          </div>
-        </article>
+        )}
       </section>
     </main>
   );
@@ -160,17 +201,33 @@ function OnlinePlayerGame({
     chatError,
     sendState,
     sendChat,
-  } = useMultiplayer(launch.websocketUrl);
+  } = useMultiplayer(launch.websocketUrl, launch.game);
   const [runtime, setRuntime] = useState<PolyRuntimeResult | null>(null);
+  const [gameLoading, setGameLoading] = useState(true);
+  const [gameError, setGameError] = useState("");
   useEffect(() => {
+    setGameLoading(true);
+    setGameError("");
     void window.polymons
       .getGame(launch.game)
-      .then((result) =>
-        setRuntime(
-          result.game.manifest ? runPolyProject(result.game.manifest) : null,
-        ),
-      )
-      .catch(() => setRuntime(null));
+      .then((result) => {
+        if (result.game.manifest) {
+          setRuntime(runPolyProject(result.game.manifest));
+        } else if (result.game.slug === "baseplate") {
+          setRuntime(null);
+        } else {
+          throw new Error("This game does not have a published world.");
+        }
+      })
+      .catch((loadError: unknown) => {
+        setRuntime(null);
+        setGameError(
+          loadError instanceof Error
+            ? loadError.message
+            : "Could not load this game.",
+        );
+      })
+      .finally(() => setGameLoading(false));
   }, [launch.game]);
 
   return (
@@ -184,9 +241,14 @@ function OnlinePlayerGame({
         <button onClick={onLeave}>Leave game</button>
       </header>
       <section className="player-game">
-        <Suspense
-          fallback={<div className="player-loading">Loading Baseplate...</div>}
-        >
+        {gameLoading ? (
+          <div className="player-loading">Loading game...</div>
+        ) : gameError ? (
+          <div className="player-loading">{gameError}</div>
+        ) : (
+          <Suspense
+            fallback={<div className="player-loading">Loading game...</div>}
+          >
           <BaseplateGame
             remotePlayers={remotePlayers}
             onPlayerState={sendState}
@@ -216,7 +278,8 @@ function OnlinePlayerGame({
               window.polymons.sendFriendRequest(username)
             }
           />
-        </Suspense>
+          </Suspense>
+        )}
       </section>
     </main>
   );
