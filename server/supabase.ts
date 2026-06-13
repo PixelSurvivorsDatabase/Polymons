@@ -101,7 +101,9 @@ export function publicSession(session: Session) {
   return {
     accessToken: session.access_token,
     refreshToken: session.refresh_token,
-    expiresAt: session.expires_at,
+    expiresAt:
+      session.expires_at ??
+      Math.floor(Date.now() / 1000) + session.expires_in,
     expiresIn: session.expires_in,
     tokenType: session.token_type,
   };

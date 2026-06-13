@@ -12,6 +12,7 @@ import {
 import {
   type AuthResponse,
   login,
+  PolymonsApiError,
   type PolymonsSession,
   type PolymonsUser,
   refreshSession,
@@ -60,25 +61,48 @@ function writeStoredAuth(next: StoredAuth | null) {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [auth, setAuth] = useState<StoredAuth | null>(() => readStoredAuth());
+  const authRef = useRef(auth);
+  const refreshInFlight = useRef<Promise<PolymonsSession | null> | null>(null);
   const [ready, setReady] = useState(false);
   const [authMode, setAuthMode] = useState<"login" | "signup" | null>(null);
 
   const saveAuth = useCallback((next: AuthResponse | null) => {
+    authRef.current = next;
     setAuth(next);
     writeStoredAuth(next);
   }, []);
 
   const refresh = useCallback(async () => {
-    if (!auth?.session.refreshToken) return null;
-    try {
-      const next = await refreshSession(auth.session.refreshToken);
-      saveAuth(next);
-      return next.session;
-    } catch {
-      saveAuth(null);
-      return null;
-    }
-  }, [auth?.session.refreshToken, saveAuth]);
+    if (refreshInFlight.current) return refreshInFlight.current;
+    const refreshToken = authRef.current?.session.refreshToken;
+    if (!refreshToken) return null;
+
+    const request = refreshSession(refreshToken)
+      .then((next) => {
+        if (authRef.current?.session.refreshToken === refreshToken) {
+          saveAuth(next);
+          return next.session;
+        }
+        return authRef.current?.session ?? null;
+      })
+      .catch((error: unknown) => {
+        if (
+          error instanceof PolymonsApiError &&
+          error.status === 401 &&
+          authRef.current?.session.refreshToken === refreshToken
+        ) {
+          saveAuth(null);
+        }
+        return null;
+      })
+      .finally(() => {
+        if (refreshInFlight.current === request) {
+          refreshInFlight.current = null;
+        }
+      });
+    refreshInFlight.current = request;
+    return request;
+  }, [saveAuth]);
 
   useEffect(() => {
     if (!auth) {
@@ -108,6 +132,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setAuth((current) => {
           if (!current) return current;
           const next = { ...current, user };
+          authRef.current = next;
           writeStoredAuth(next);
           return next;
         }),

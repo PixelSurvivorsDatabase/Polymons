@@ -50,6 +50,16 @@ type ApiOptions = {
   accessToken?: string;
 };
 
+export class PolymonsApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number | null,
+  ) {
+    super(message);
+    this.name = "PolymonsApiError";
+  }
+}
+
 export type PlatformGame = {
   id: string;
   slug: string;
@@ -114,12 +124,14 @@ async function apiRequest<T>(
     });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error(
+      throw new PolymonsApiError(
         "The server took too long to respond. Check your connection and try again.",
+        null,
       );
     }
-    throw new Error(
+    throw new PolymonsApiError(
       "Could not reach the Polymons server. Check your connection and try again.",
+      null,
     );
   } finally {
     window.clearTimeout(timeout);
@@ -141,7 +153,7 @@ async function apiRequest<T>(
         : response.status >= 500
           ? "The Polymons server is temporarily unavailable. Try again shortly."
           : "Polymons could not complete the request.";
-    throw new Error(result?.error ?? fallback);
+    throw new PolymonsApiError(result?.error ?? fallback, response.status);
   }
 
   return result as T;

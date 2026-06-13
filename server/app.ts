@@ -141,6 +141,14 @@ export function createApp(
     legacyHeaders: false,
   });
 
+  const refreshLimiter = rateLimit({
+    windowMs: 5 * 60_000,
+    limit: 120,
+    skipSuccessfulRequests: true,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+  });
+
   app.get("/", (_request, response) => {
     response.json({
       name: "Polymons Server",
@@ -233,7 +241,7 @@ export function createApp(
     });
   });
 
-  app.post("/v1/accounts/refresh", loginLimiter, async (request, response) => {
+  app.post("/v1/accounts/refresh", refreshLimiter, async (request, response) => {
     const input = parseBody(refreshSchema, request.body);
     const auth = createAuthClient(config);
     const { data, error } = await auth.auth.refreshSession({
