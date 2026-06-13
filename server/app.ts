@@ -126,9 +126,17 @@ export function createApp(
     }),
   );
 
-  const accountLimiter = rateLimit({
+  const signUpLimiter = rateLimit({
     windowMs: 15 * 60_000,
-    limit: 20,
+    limit: 10,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+  });
+
+  const loginLimiter = rateLimit({
+    windowMs: 5 * 60_000,
+    limit: 60,
+    skipSuccessfulRequests: true,
     standardHeaders: "draft-8",
     legacyHeaders: false,
   });
@@ -145,7 +153,7 @@ export function createApp(
     response.json({ status: "ok" });
   });
 
-  app.post("/v1/accounts/signup", accountLimiter, async (request, response) => {
+  app.post("/v1/accounts/signup", signUpLimiter, async (request, response) => {
     const input = parseBody(signUpSchema, request.body);
     if (isReservedUsername(input.username)) {
       throw new HttpError(409, "That username is unavailable.");
@@ -202,7 +210,7 @@ export function createApp(
     });
   });
 
-  app.post("/v1/accounts/login", accountLimiter, async (request, response) => {
+  app.post("/v1/accounts/login", loginLimiter, async (request, response) => {
     const input = parseBody(loginSchema, request.body);
     if (isReservedUsername(input.username)) {
       throw new HttpError(401, "Invalid username or password.");
@@ -225,7 +233,7 @@ export function createApp(
     });
   });
 
-  app.post("/v1/accounts/refresh", accountLimiter, async (request, response) => {
+  app.post("/v1/accounts/refresh", loginLimiter, async (request, response) => {
     const input = parseBody(refreshSchema, request.body);
     const auth = createAuthClient(config);
     const { data, error } = await auth.auth.refreshSession({
@@ -550,7 +558,7 @@ export function createApp(
 
   app.post(
     "/v1/player-account-links/redeem",
-    accountLimiter,
+    loginLimiter,
     async (request, response) => {
       const input = parseBody(playerAccountLinkSchema, request.body);
       const now = new Date().toISOString();
