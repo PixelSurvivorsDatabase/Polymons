@@ -97,22 +97,51 @@ async function apiRequest<T>(
   path: string,
   options: ApiOptions = {},
 ): Promise<T> {
-  const response = await fetch(`${POLYMONS_API_URL}${path}`, {
-    method: options.method ?? "GET",
-    headers: {
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...(options.accessToken
-        ? { Authorization: `Bearer ${options.accessToken}` }
-        : {}),
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 30_000);
+  let response: Response;
+  try {
+    response = await fetch(`${POLYMONS_API_URL}${path}`, {
+      method: options.method ?? "GET",
+      headers: {
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...(options.accessToken
+          ? { Authorization: `Bearer ${options.accessToken}` }
+          : {}),
+      },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(
+        "The server took too long to respond. Check your connection and try again.",
+      );
+    }
+    throw new Error(
+      "Could not reach the Polymons server. Check your connection and try again.",
+    );
+  } finally {
+    window.clearTimeout(timeout);
+  }
 
-  const result = (await response.json().catch(() => null)) as
-    | { error?: string }
-    | null;
+  const responseText = await response.text();
+  let result: { error?: string } | null = null;
+  try {
+    result = responseText
+      ? (JSON.parse(responseText) as { error?: string })
+      : null;
+  } catch {
+    result = null;
+  }
   if (!response.ok) {
-    throw new Error(result?.error ?? "Polymons could not complete the request.");
+    const fallback =
+      response.status === 429
+        ? "Too many attempts. Wait a few minutes, then try again."
+        : response.status >= 500
+          ? "The Polymons server is temporarily unavailable. Try again shortly."
+          : "Polymons could not complete the request.";
+    throw new Error(result?.error ?? fallback);
   }
 
   return result as T;

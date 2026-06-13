@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -45,6 +46,18 @@ function readStoredAuth(): StoredAuth | null {
   }
 }
 
+function writeStoredAuth(next: StoredAuth | null) {
+  try {
+    if (next) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    } else {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+  } catch {
+    // Some private and in-app mobile browsers disable persistent storage.
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [auth, setAuth] = useState<StoredAuth | null>(() => readStoredAuth());
   const [ready, setReady] = useState(false);
@@ -52,11 +65,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const saveAuth = useCallback((next: AuthResponse | null) => {
     setAuth(next);
-    if (next) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-    } else {
-      localStorage.removeItem(STORAGE_KEY);
-    }
+    writeStoredAuth(next);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -99,7 +108,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setAuth((current) => {
           if (!current) return current;
           const next = { ...current, user };
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+          writeStoredAuth(next);
           return next;
         }),
     }),
@@ -138,6 +147,11 @@ function AuthDialog({
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const overlay = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    overlay.current?.scrollTo({ top: 0 });
+  }, [mode]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -161,7 +175,7 @@ function AuthDialog({
   }
 
   return (
-    <div className="auth-overlay" role="presentation">
+    <div ref={overlay} className="auth-overlay" role="presentation">
       <button
         className="auth-backdrop"
         type="button"
@@ -183,13 +197,22 @@ function AuthDialog({
           <label>
             Username
             <input
+              aria-describedby="auth-username-help"
               value={username}
               onChange={(event) => setUsername(event.target.value)}
               autoComplete="username"
+              autoCapitalize="none"
+              autoCorrect="off"
+              inputMode="text"
               minLength={3}
               maxLength={20}
+              pattern="[A-Za-z0-9_]+"
+              spellCheck={false}
               required
             />
+            <small id="auth-username-help">
+              3-20 letters, numbers, or underscores.
+            </small>
           </label>
           {mode === "signup" && (
             <label>
@@ -212,10 +235,13 @@ function AuthDialog({
               autoComplete={
                 mode === "signup" ? "new-password" : "current-password"
               }
-              minLength={8}
+              minLength={mode === "signup" ? 8 : 1}
               maxLength={128}
               required
             />
+            {mode === "signup" && (
+              <small>At least 8 characters with a letter and a number.</small>
+            )}
           </label>
           {error && <div className="auth-error">{error}</div>}
           <button className="primary-button auth-submit" disabled={submitting}>

@@ -1231,9 +1231,14 @@ h3,
   position: fixed;
   inset: 0;
   z-index: 100;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 20px;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .auth-backdrop {
@@ -1254,6 +1259,7 @@ h3,
     radial-gradient(circle at 90% 0, rgba(139, 92, 246, 0.2), transparent 35%),
     #15131d;
   padding: 34px;
+  margin: auto 0;
   box-shadow: 0 30px 100px rgba(0, 0, 0, 0.5);
 }
 
@@ -1700,6 +1706,13 @@ h3,
   padding: 12px 14px;
   font-size: 11px;
   font-weight: 800;
+}
+
+.auth-dialog label small {
+  color: #8f8999;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.4;
 }
 
 .mobile-joystick {
@@ -2610,6 +2623,25 @@ h3,
 }
 
 @media (max-width: 680px) {
+  .auth-overlay {
+    min-height: 100dvh;
+    padding:
+      max(12px, env(safe-area-inset-top))
+      max(12px, env(safe-area-inset-right))
+      max(12px, env(safe-area-inset-bottom))
+      max(12px, env(safe-area-inset-left));
+  }
+
+  .auth-dialog {
+    width: 100%;
+    border-radius: 17px;
+    padding: 27px 20px 22px;
+  }
+
+  .auth-dialog input {
+    font-size: 16px;
+  }
+
   .wardrobe-preview-panel {
     display: block;
   }
