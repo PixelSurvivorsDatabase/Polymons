@@ -9,11 +9,12 @@
   "main": "player-dist/main/main.js",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "npm run web:build && npm run server:build",
+    "web:build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "server:build": "tsc -p tsconfig.server.json",
-    "server:start": "npm run server:build && npm run server:serve",
+    "server:start": "npm run server:serve",
     "server:serve": "node server-dist/index.js",
     "server:dev": "tsx watch server/index.ts",
     "server:test": "tsx --test server/server.test.ts",
@@ -74,7 +75,7 @@
     "vite": "^6.0.5"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.0.0 <23.0.0"
   },
   "build": {
     "appId": "com.polymons.player",
