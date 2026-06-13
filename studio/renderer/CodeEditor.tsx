@@ -267,6 +267,7 @@ export default function CodeEditor({
             "Friction",
             "Restitution",
             "Mass",
+            "Velocity",
             "Visible",
             "Text",
             "TextColor",
@@ -291,6 +292,12 @@ export default function CodeEditor({
             "InvokeClient",
             "OnServerEvent",
             "OnServerInvoke",
+            "OnClientEvent",
+            "InputBegan",
+            "InputEnded",
+            "KeyCode",
+            "TweenService",
+            "TweenInfo",
             "Touched",
             "TouchEnded",
             ...projectRef.current.leaderstats.map((stat) => stat.name),
@@ -371,6 +378,21 @@ export default function CodeEditor({
             : isCpp
               ? "${1:remote}.OnServerInvoke = [&](auto player, auto ${2:value}) {\n\t${3:return nullptr;}\n};"
               : "${1:remote}.OnServerInvoke = (player, ${2:value}) => {\n\t${3:return null;}\n};";
+          const onClientEventText = isLuau
+            ? "${1:remote}.OnClientEvent:Connect(function(${2:value})\n\t${3:-- client code}\nend)"
+            : isCpp
+              ? "${1:remote}.OnClientEvent.Connect([&](auto ${2:value}) {\n\t${3:// client code}\n});"
+              : "${1:remote}.OnClientEvent += (${2:value}) => {\n\t${3:// client code}\n};";
+          const inputBeganText = isLuau
+            ? "UserInputService.InputBegan:Connect(function(input)\n\tif input.KeyCode == Enum.KeyCode.${1:E} then\n\t\t${2:-- code}\n\tend\nend)"
+            : isCpp
+              ? "UserInputService.InputBegan.Connect([&](auto input) {\n\tif (input.KeyCode == KeyCode::${1:E}) {\n\t\t${2:// code}\n\t}\n});"
+              : "UserInputService.InputBegan += (input) => {\n\tif (input.KeyCode == KeyCode.${1:E}) {\n\t\t${2:// code}\n\t}\n};";
+          const tweenText = isLuau
+            ? "local tween = TweenService:Create(${1:part}, TweenInfo.new(${2:1}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Position = Vector3.new(${3:0}, ${4:5}, ${5:0}) })\ntween:Play()"
+            : isCpp
+              ? "auto tween = TweenService::Create(${1:part}, TweenInfo(${2:1}, EasingStyle::Quad, EasingDirection::Out), { Position = Vector3(${3:0}, ${4:5}, ${5:0}) });\ntween.Play();"
+              : "var tween = TweenService.Create(${1:part}, new TweenInfo(${2:1}, EasingStyle.Quad, EasingDirection.Out), new { Position = new Vector3(${3:0}, ${4:5}, ${5:0}) });\ntween.Play();";
           return {
             suggestions: [
               ...names.map((name) => ({
@@ -469,6 +491,33 @@ export default function CodeEditor({
                 insertTextRules:
                   monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
                 detail: "Return a value to InvokeServer from a server Script",
+                range,
+              },
+              {
+                label: "OnClientEvent callback",
+                kind: monaco.languages.CompletionItemKind.Event,
+                insertText: onClientEventText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: "Receive FireClient or FireAllClients in a LocalScript",
+                range,
+              },
+              {
+                label: "InputBegan KeyCode",
+                kind: monaco.languages.CompletionItemKind.Event,
+                insertText: inputBeganText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: "Run LocalScript code when a keyboard key is pressed",
+                range,
+              },
+              {
+                label: "TweenService Create",
+                kind: monaco.languages.CompletionItemKind.Snippet,
+                insertText: tweenText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: "Tween a Part's transform or appearance",
                 range,
               },
               {

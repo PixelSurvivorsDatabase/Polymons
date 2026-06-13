@@ -12,6 +12,7 @@ import logo from "../../assets/polymons-logo.png";
 import { useMultiplayer } from "../../src/game/multiplayer";
 import {
   activatePolyGui,
+  activatePolyInput,
   activatePolyTouched,
   activatePolyTool,
   executePolyCommand,
@@ -23,6 +24,29 @@ import {
 const BaseplateGame = lazy(
   () => import("../../src/game/BaseplateGame"),
 );
+
+function mergeRuntimeResults(
+  current: PolyRuntimeResult,
+  activated: PolyRuntimeResult,
+): PolyRuntimeResult {
+  return {
+    ...activated,
+    diagnostics: [...current.diagnostics, ...activated.diagnostics],
+    output: [...current.output, ...activated.output],
+    animationRequests: [
+      ...new Set([
+        ...current.animationRequests,
+        ...activated.animationRequests,
+      ]),
+    ],
+    animationVersion:
+      current.animationVersion +
+      (activated.animationRequests.length > 0 ? 1 : 0),
+    tweenRequests: [...current.tweenRequests, ...activated.tweenRequests],
+    tweenVersion:
+      current.tweenVersion + (activated.tweenRequests.length > 0 ? 1 : 0),
+  };
+}
 
 export default function PlayerApp() {
   const [auth, setAuth] = useState<PlayerAuth | null>(null);
@@ -370,6 +394,8 @@ function OnlinePlayerGame({
             animations={runtime?.project.animations}
             animationRequests={runtime?.animationRequests}
             animationVersion={runtime?.animationVersion}
+            tweenRequests={runtime?.tweenRequests}
+            tweenVersion={runtime?.tweenVersion}
             guiObjects={runtime?.project.gui}
             playerSettings={runtime?.project.playerSettings}
             leaderstats={runtime?.project.leaderstats}
@@ -382,46 +408,14 @@ function OnlinePlayerGame({
               setRuntime((current) => {
                 if (!current) return current;
                 const activated = activatePolyGui(current.project, guiObjectId);
-                return {
-                  ...activated,
-                  diagnostics: [
-                    ...current.diagnostics,
-                    ...activated.diagnostics,
-                  ],
-                  output: [...current.output, ...activated.output],
-                  animationRequests: [
-                    ...new Set([
-                      ...current.animationRequests,
-                      ...activated.animationRequests,
-                    ]),
-                  ],
-                  animationVersion:
-                    current.animationVersion +
-                    (activated.animationRequests.length > 0 ? 1 : 0),
-                };
+                return mergeRuntimeResults(current, activated);
               });
             }}
             onToolActivated={(toolObjectId) => {
               setRuntime((current) => {
                 if (!current) return current;
                 const activated = activatePolyTool(current.project, toolObjectId);
-                return {
-                  ...activated,
-                  diagnostics: [
-                    ...current.diagnostics,
-                    ...activated.diagnostics,
-                  ],
-                  output: [...current.output, ...activated.output],
-                  animationRequests: [
-                    ...new Set([
-                      ...current.animationRequests,
-                      ...activated.animationRequests,
-                    ]),
-                  ],
-                  animationVersion:
-                    current.animationVersion +
-                    (activated.animationRequests.length > 0 ? 1 : 0),
-                };
+                return mergeRuntimeResults(current, activated);
               });
             }}
             onWorldTouched={(worldObjectId) => {
@@ -431,24 +425,18 @@ function OnlinePlayerGame({
                   current.project,
                   worldObjectId,
                 );
-                return {
-                  ...activated,
-                  diagnostics: [
-                    ...current.diagnostics,
-                    ...activated.diagnostics,
-                  ],
-                  output: [...current.output, ...activated.output],
-                  animationRequests: [
-                    ...new Set([
-                      ...current.animationRequests,
-                      ...activated.animationRequests,
-                    ]),
-                  ],
-                  animationVersion:
-                    current.animationVersion +
-                    (activated.animationRequests.length > 0 ? 1 : 0),
-                };
+                return mergeRuntimeResults(current, activated);
               });
+            }}
+            onKeyInput={(keyCode, event) => {
+              setRuntime((current) =>
+                current
+                  ? mergeRuntimeResults(
+                      current,
+                      activatePolyInput(current.project, keyCode, event),
+                    )
+                  : current,
+              );
             }}
             onFriendRequest={(username) =>
               window.polymons.sendFriendRequest(username)
@@ -532,6 +520,8 @@ function StudioPlayerGame({
               animations={runtime.project.animations}
               animationRequests={runtime.animationRequests}
               animationVersion={runtime.animationVersion}
+              tweenRequests={runtime.tweenRequests}
+              tweenVersion={runtime.tweenVersion}
               guiObjects={runtime.project.gui}
               playerSettings={runtime.project.playerSettings}
               leaderstats={runtime.project.leaderstats}
@@ -544,23 +534,7 @@ function StudioPlayerGame({
                     current.project,
                     guiObjectId,
                   );
-                  return {
-                    ...activated,
-                    diagnostics: [
-                      ...current.diagnostics,
-                      ...activated.diagnostics,
-                    ],
-                    output: [...current.output, ...activated.output],
-                    animationRequests: [
-                      ...new Set([
-                        ...current.animationRequests,
-                        ...activated.animationRequests,
-                      ]),
-                    ],
-                    animationVersion:
-                      current.animationVersion +
-                      (activated.animationRequests.length > 0 ? 1 : 0),
-                  };
+                  return mergeRuntimeResults(current, activated);
                 });
               }}
               onToolActivated={(toolObjectId) => {
@@ -570,23 +544,7 @@ function StudioPlayerGame({
                     current.project,
                     toolObjectId,
                   );
-                  return {
-                    ...activated,
-                    diagnostics: [
-                      ...current.diagnostics,
-                      ...activated.diagnostics,
-                    ],
-                    output: [...current.output, ...activated.output],
-                    animationRequests: [
-                      ...new Set([
-                        ...current.animationRequests,
-                        ...activated.animationRequests,
-                      ]),
-                    ],
-                    animationVersion:
-                      current.animationVersion +
-                      (activated.animationRequests.length > 0 ? 1 : 0),
-                  };
+                  return mergeRuntimeResults(current, activated);
                 });
               }}
               onWorldTouched={(worldObjectId) => {
@@ -596,23 +554,7 @@ function StudioPlayerGame({
                     current.project,
                     worldObjectId,
                   );
-                  return {
-                    ...activated,
-                    diagnostics: [
-                      ...current.diagnostics,
-                      ...activated.diagnostics,
-                    ],
-                    output: [...current.output, ...activated.output],
-                    animationRequests: [
-                      ...new Set([
-                        ...current.animationRequests,
-                        ...activated.animationRequests,
-                      ]),
-                    ],
-                    animationVersion:
-                      current.animationVersion +
-                      (activated.animationRequests.length > 0 ? 1 : 0),
-                  };
+                  return mergeRuntimeResults(current, activated);
                 });
               }}
               onWorldTouchEnded={(worldObjectId) => {
@@ -623,24 +565,18 @@ function StudioPlayerGame({
                     worldObjectId,
                     "TouchEnded",
                   );
-                  return {
-                    ...activated,
-                    diagnostics: [
-                      ...current.diagnostics,
-                      ...activated.diagnostics,
-                    ],
-                    output: [...current.output, ...activated.output],
-                    animationRequests: [
-                      ...new Set([
-                        ...current.animationRequests,
-                        ...activated.animationRequests,
-                      ]),
-                    ],
-                    animationVersion:
-                      current.animationVersion +
-                      (activated.animationRequests.length > 0 ? 1 : 0),
-                  };
+                  return mergeRuntimeResults(current, activated);
                 });
+              }}
+              onKeyInput={(keyCode, event) => {
+                setRuntime((current) =>
+                  current
+                    ? mergeRuntimeResults(
+                        current,
+                        activatePolyInput(current.project, keyCode, event),
+                      )
+                    : current,
+                );
               }}
             />
             <aside className={`playtest-console ${terminalOpen ? "open" : ""}`}>

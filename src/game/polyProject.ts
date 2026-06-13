@@ -30,6 +30,7 @@ export type PolyWorldObject = {
   friction?: number;
   restitution?: number;
   mass?: number;
+  velocity?: [number, number, number];
   parentId?: string | null;
   modelId: string | null;
   attributes: Record<string, PolyStoredValue>;
@@ -169,6 +170,30 @@ export type PolyRuntimeResult = {
   }>;
   animationRequests: string[];
   animationVersion: number;
+  tweenRequests: PolyTweenRequest[];
+  tweenVersion: number;
+};
+
+export type PolyTweenRequest = {
+  id: string;
+  objectId: string;
+  duration: number;
+  easingStyle: "Linear" | "Quad" | "Cubic";
+  easingDirection: "In" | "Out" | "InOut";
+  from: {
+    position: [number, number, number];
+    rotation: [number, number, number];
+    scale: [number, number, number];
+    transparency: number;
+    color: string;
+  };
+  to: {
+    position: [number, number, number];
+    rotation: [number, number, number];
+    scale: [number, number, number];
+    transparency: number;
+    color: string;
+  };
 };
 
 type Reference =
@@ -193,6 +218,7 @@ const WORLD_PROPERTIES = new Set([
   "Friction",
   "Restitution",
   "Mass",
+  "Velocity",
 ]);
 const GUI_PROPERTIES = new Set([
   "Name",
@@ -251,6 +277,7 @@ export function normalizePolyProject(project: PolyProject): PolyProject {
     friction: object.friction ?? 0.82,
     restitution: object.restitution ?? 0.03,
     mass: object.mass ?? 1,
+    velocity: object.velocity ?? [0, 0, 0],
     parentId: object.parentId ?? null,
     modelId: object.modelId ?? null,
     attributes: object.attributes ?? {},
@@ -446,6 +473,7 @@ function findDirectReference(
 type ScriptEventHandler = {
   event: "MouseButton1Click" | "Activated" | "Touched" | "TouchEnded";
   target: string;
+  parameters: string[];
   prelude: string;
   body: string;
   line: number;
@@ -454,12 +482,25 @@ type ScriptEventHandler = {
   endIndex: number;
 };
 
-type RemoteServerHandler = {
+type RemoteHandler = {
+  side: "server" | "client";
   kind: "event" | "function";
   target: string;
   parameters: string[];
   prelude: string;
   body: string;
+  line: number;
+  closed: boolean;
+  startIndex: number;
+  endIndex: number;
+};
+
+type InputScriptHandler = {
+  event: "InputBegan" | "InputEnded";
+  parameters: string[];
+  prelude: string;
+  body: string;
+  keyCode: string | null;
   line: number;
   closed: boolean;
   startIndex: number;
@@ -475,12 +516,55 @@ function parameterNames(source: string): string[] {
     .filter(Boolean);
 }
 
-function remoteServerHandlers(script: PolyScript): RemoteServerHandler[] {
+function callbackEndIndex(
+  lines: string[],
+  startIndex: number,
+  syntax: "luau" | "brace",
+  endPattern: RegExp,
+): { endIndex: number; closed: boolean } {
+  if (syntax === "luau") {
+    let nestedBlocks = 0;
+    for (let index = startIndex + 1; index < lines.length; index += 1) {
+      const line = lines[index].trim();
+      if (
+        /^(?:local\s+)?function\b/.test(line) ||
+        /^if\b.*\bthen\s*$/.test(line) ||
+        /^(?:for|while)\b.*\bdo\s*$/.test(line) ||
+        /^repeat\b/.test(line)
+      ) {
+        nestedBlocks += 1;
+      }
+      if (/^end\b/.test(line) || /^until\b/.test(line)) {
+        if (nestedBlocks > 0) {
+          nestedBlocks -= 1;
+          continue;
+        }
+      }
+      if (nestedBlocks === 0 && endPattern.test(lines[index])) {
+        return { endIndex: index, closed: true };
+      }
+    }
+    return { endIndex: lines.length - 1, closed: false };
+  }
+
+  let depth = 0;
+  for (let index = startIndex; index < lines.length; index += 1) {
+    depth += (lines[index].match(/\{/g) ?? []).length;
+    depth -= (lines[index].match(/\}/g) ?? []).length;
+    if (index > startIndex && depth <= 0 && endPattern.test(lines[index])) {
+      return { endIndex: index, closed: true };
+    }
+  }
+  return { endIndex: lines.length - 1, closed: false };
+}
+
+function remoteHandlers(script: PolyScript): RemoteHandler[] {
   const lines = script.source.split("\n");
-  const handlers: RemoteServerHandler[] = [];
+  const handlers: RemoteHandler[] = [];
   const target = String.raw`([A-Za-z_]\w*|ReplicatedStorage\.[A-Za-z_]\w*)`;
   const patterns = [
     {
+      side: "server" as const,
       kind: "event" as const,
       start: new RegExp(
         String.raw`^\s*${target}\.OnServerEvent\s*:\s*Connect\s*\(\s*function\s*\(([^)]*)\)\s*$`,
@@ -488,6 +572,7 @@ function remoteServerHandlers(script: PolyScript): RemoteServerHandler[] {
       end: /^\s*end\s*\)\s*;?\s*$/,
     },
     {
+      side: "server" as const,
       kind: "event" as const,
       start: new RegExp(
         String.raw`^\s*${target}\.OnServerEvent\s*\+=\s*\(([^)]*)\)\s*=>\s*\{\s*$`,
@@ -495,6 +580,7 @@ function remoteServerHandlers(script: PolyScript): RemoteServerHandler[] {
       end: /^\s*}\s*;?\s*$/,
     },
     {
+      side: "server" as const,
       kind: "event" as const,
       start: new RegExp(
         String.raw`^\s*${target}\.OnServerEvent\.Connect\s*\(\s*\[[^\]]*\]\s*\(([^)]*)\)\s*\{\s*$`,
@@ -502,6 +588,7 @@ function remoteServerHandlers(script: PolyScript): RemoteServerHandler[] {
       end: /^\s*}\s*\)\s*;?\s*$/,
     },
     {
+      side: "server" as const,
       kind: "function" as const,
       start: new RegExp(
         String.raw`^\s*${target}\.OnServerInvoke\s*=\s*function\s*\(([^)]*)\)\s*$`,
@@ -509,6 +596,7 @@ function remoteServerHandlers(script: PolyScript): RemoteServerHandler[] {
       end: /^\s*end\s*;?\s*$/,
     },
     {
+      side: "server" as const,
       kind: "function" as const,
       start: new RegExp(
         String.raw`^\s*${target}\.OnServerInvoke\s*=\s*\(([^)]*)\)\s*=>\s*\{\s*$`,
@@ -516,11 +604,36 @@ function remoteServerHandlers(script: PolyScript): RemoteServerHandler[] {
       end: /^\s*}\s*;?\s*$/,
     },
     {
+      side: "server" as const,
       kind: "function" as const,
       start: new RegExp(
         String.raw`^\s*${target}\.OnServerInvoke\s*=\s*\[[^\]]*\]\s*\(([^)]*)\)\s*\{\s*$`,
       ),
       end: /^\s*}\s*;?\s*$/,
+    },
+    {
+      side: "client" as const,
+      kind: "event" as const,
+      start: new RegExp(
+        String.raw`^\s*${target}\.OnClientEvent\s*:\s*Connect\s*\(\s*function\s*\(([^)]*)\)\s*$`,
+      ),
+      end: /^\s*end\s*\)\s*;?\s*$/,
+    },
+    {
+      side: "client" as const,
+      kind: "event" as const,
+      start: new RegExp(
+        String.raw`^\s*${target}\.OnClientEvent\s*\+=\s*\(([^)]*)\)\s*=>\s*\{\s*$`,
+      ),
+      end: /^\s*}\s*;?\s*$/,
+    },
+    {
+      side: "client" as const,
+      kind: "event" as const,
+      start: new RegExp(
+        String.raw`^\s*${target}\.OnClientEvent\.Connect\s*\(\s*\[[^\]]*\]\s*\(([^)]*)\)\s*\{\s*$`,
+      ),
+      end: /^\s*}\s*\)\s*;?\s*$/,
     },
   ];
 
@@ -528,6 +641,7 @@ function remoteServerHandlers(script: PolyScript): RemoteServerHandler[] {
     let matched:
       | {
           kind: "event" | "function";
+          side: "server" | "client";
           match: RegExpMatchArray;
           end: RegExp;
         }
@@ -535,27 +649,97 @@ function remoteServerHandlers(script: PolyScript): RemoteServerHandler[] {
     for (const pattern of patterns) {
       const match = lines[index].match(pattern.start);
       if (match) {
-        matched = { kind: pattern.kind, match, end: pattern.end };
+        matched = {
+          side: pattern.side,
+          kind: pattern.kind,
+          match,
+          end: pattern.end,
+        };
         break;
       }
     }
     if (!matched) continue;
 
-    let endIndex = lines.length - 1;
-    let closed = false;
-    for (let candidate = index + 1; candidate < lines.length; candidate += 1) {
-      if (matched.end.test(lines[candidate])) {
-        endIndex = candidate;
-        closed = true;
-        break;
-      }
-    }
+    const { endIndex, closed } = callbackEndIndex(
+      lines,
+      index,
+      matched.end.source.includes("end") ? "luau" : "brace",
+      matched.end,
+    );
     handlers.push({
+      side: matched.side,
       kind: matched.kind,
       target: matched.match[1],
       parameters: parameterNames(matched.match[2]),
       prelude: lines.slice(0, index).join("\n"),
       body: lines.slice(index + 1, closed ? endIndex : lines.length).join("\n"),
+      line: index + 1,
+      closed,
+      startIndex: index,
+      endIndex,
+    });
+    index = endIndex;
+  }
+  return handlers;
+}
+
+function remoteServerHandlers(script: PolyScript): RemoteHandler[] {
+  return remoteHandlers(script).filter((handler) => handler.side === "server");
+}
+
+function remoteClientHandlers(script: PolyScript): RemoteHandler[] {
+  return remoteHandlers(script).filter((handler) => handler.side === "client");
+}
+
+function inputScriptHandlers(script: PolyScript): InputScriptHandler[] {
+  const lines = script.source.split("\n");
+  const handlers: InputScriptHandler[] = [];
+  const patterns = [
+    {
+      start:
+        /^\s*(?:UserInputService|Input)\.(InputBegan|InputEnded)\s*:\s*Connect\s*\(\s*function\s*\(([^)]*)\)\s*$/,
+      end: /^\s*end\s*\)\s*;?\s*$/,
+    },
+    {
+      start:
+        /^\s*(?:UserInputService|Input)\.(InputBegan|InputEnded)\s*\+=\s*\(([^)]*)\)\s*=>\s*\{\s*$/,
+      end: /^\s*}\s*;?\s*$/,
+    },
+    {
+      start:
+        /^\s*(?:UserInputService|Input)\.(InputBegan|InputEnded)\.Connect\s*\(\s*\[[^\]]*\]\s*\(([^)]*)\)\s*\{\s*$/,
+      end: /^\s*}\s*\)\s*;?\s*$/,
+    },
+  ];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    let match: RegExpMatchArray | null = null;
+    let endPattern = patterns[0].end;
+    for (const pattern of patterns) {
+      match = lines[index].match(pattern.start);
+      if (match) {
+        endPattern = pattern.end;
+        break;
+      }
+    }
+    if (!match) continue;
+    const { endIndex, closed } = callbackEndIndex(
+      lines,
+      index,
+      endPattern.source.includes("end") ? "luau" : "brace",
+      endPattern,
+    );
+    const body = lines.slice(index + 1, closed ? endIndex : lines.length).join("\n");
+    const keyCode =
+      body.match(
+        /(?:Enum\.KeyCode\.|Key\.Enum\.|KeyCode\.|KeyCode::)([A-Za-z0-9_]+)/,
+      )?.[1] ?? null;
+    handlers.push({
+      event: match[1] as InputScriptHandler["event"],
+      parameters: parameterNames(match[2] ?? ""),
+      prelude: lines.slice(0, index).join("\n"),
+      body,
+      keyCode,
       line: index + 1,
       closed,
       startIndex: index,
@@ -573,13 +757,13 @@ function scriptEventHandlers(script: PolyScript): ScriptEventHandler[] {
     String.raw`((?:script|Script)\.Parent|[A-Za-z_]\w*|(?:Workspace|workspace)\.[A-Za-z_]\w*)`;
   const startPatterns = [
     new RegExp(
-      String.raw`^\s*${target}\.(MouseButton1Click|Activated|Touched|TouchEnded)\s*:\s*Connect\s*\(\s*function\s*\([^)]*\)\s*$`,
+      String.raw`^\s*${target}\.(MouseButton1Click|Activated|Touched|TouchEnded)\s*:\s*Connect\s*\(\s*function\s*\(([^)]*)\)\s*$`,
     ),
     new RegExp(
-      String.raw`^\s*${target}\.(MouseButton1Click|Activated|Touched|TouchEnded)\s*\+=\s*\([^)]*\)\s*=>\s*\{\s*$`,
+      String.raw`^\s*${target}\.(MouseButton1Click|Activated|Touched|TouchEnded)\s*\+=\s*\(([^)]*)\)\s*=>\s*\{\s*$`,
     ),
     new RegExp(
-      String.raw`^\s*${target}\.(MouseButton1Click|Activated|Touched|TouchEnded)\.Connect\s*\(.*\{\s*$`,
+      String.raw`^\s*${target}\.(MouseButton1Click|Activated|Touched|TouchEnded)\.Connect\s*\(\s*\[[^\]]*\]\s*\(([^)]*)\)\s*\{\s*$`,
     ),
   ];
   const endPatterns = [
@@ -600,18 +784,16 @@ function scriptEventHandlers(script: PolyScript): ScriptEventHandler[] {
     }
     if (!startMatch) continue;
 
-    let endIndex = lines.length - 1;
-    let closed = false;
-    for (let candidate = index + 1; candidate < lines.length; candidate += 1) {
-      if (endPatterns[syntaxIndex].test(lines[candidate])) {
-        endIndex = candidate;
-        closed = true;
-        break;
-      }
-    }
+    const { endIndex, closed } = callbackEndIndex(
+      lines,
+      index,
+      syntaxIndex === 0 ? "luau" : "brace",
+      endPatterns[syntaxIndex],
+    );
     handlers.push({
       target: startMatch[1],
       event: startMatch[2] as ScriptEventHandler["event"],
+      parameters: parameterNames(startMatch[3] ?? ""),
       prelude: lines.slice(0, index).join("\n"),
       body: lines.slice(index + 1, closed ? endIndex : lines.length).join("\n"),
       line: index + 1,
@@ -641,7 +823,8 @@ function withoutEventHandlers(script: PolyScript): string {
   const ignored = new Set<number>();
   for (const handler of [
     ...scriptEventHandlers(script),
-    ...remoteServerHandlers(script),
+    ...remoteHandlers(script),
+    ...inputScriptHandlers(script),
   ]) {
     for (
       let index = handler.startIndex;
@@ -794,6 +977,117 @@ function resolveRawValue(
   return rawValue;
 }
 
+function referencePropertyValue(
+  project: PolyProject,
+  reference: Reference,
+  property: string,
+): PolyStoredValue | undefined {
+  if (reference.kind !== "player") return undefined;
+  const leaderstat = project.leaderstats.find((stat) => stat.name === property);
+  if (leaderstat) return leaderstat.defaultValue;
+  if (property === "Health") return project.playerSettings.health;
+  if (property === "MaxHealth") return project.playerSettings.maxHealth;
+  if (property === "WalkSpeed") return project.playerSettings.walkSpeed;
+  if (property === "JumpPower") return project.playerSettings.jumpPower;
+  if (property === "CameraFieldOfView") {
+    return project.playerSettings.cameraFieldOfView;
+  }
+  if (property === "SprintEnabled") {
+    return project.playerSettings.sprintEnabled;
+  }
+  if (property === "SprintMultiplier") {
+    return project.playerSettings.sprintMultiplier;
+  }
+  return undefined;
+}
+
+function resolveAssignmentValue(
+  rawValue: string,
+  project: PolyProject,
+  variables: Map<string, Reference>,
+  values: Map<string, PolyStoredValue>,
+  modules: Map<string, Record<string, PolyStoredValue>>,
+): string {
+  const expression = rawValue.trim().replace(/;$/, "");
+  const arithmetic = expression.match(
+    /^([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*([+\-*/])\s*(.+)$/,
+  );
+  if (arithmetic) {
+    const reference = variables.get(arithmetic[1]);
+    const left = reference
+      ? referencePropertyValue(project, reference, arithmetic[2])
+      : undefined;
+    const right = parseNumber(resolveRawValue(arithmetic[4], values, modules));
+    if (typeof left === "number" && right !== null) {
+      const result = {
+        "+": left + right,
+        "-": left - right,
+        "*": left * right,
+        "/": right === 0 ? Number.NaN : left / right,
+      }[arithmetic[3]];
+      if (Number.isFinite(result)) return String(result);
+    }
+  }
+  const propertyRead = expression.match(
+    /^([A-Za-z_]\w*)\.([A-Za-z_]\w*)$/,
+  );
+  if (propertyRead) {
+    const reference = variables.get(propertyRead[1]);
+    const value = reference
+      ? referencePropertyValue(project, reference, propertyRead[2])
+      : undefined;
+    if (value !== undefined) return rawStoredValue(value);
+  }
+  return resolveRawValue(rawValue, values, modules);
+}
+
+function resolveExpressionValue(
+  rawValue: string,
+  project: PolyProject,
+  variables: Map<string, Reference>,
+  values: Map<string, PolyStoredValue>,
+  modules: Map<string, Record<string, PolyStoredValue>>,
+): PolyStoredValue | undefined {
+  const expression = rawValue.trim().replace(/;$/, "");
+  const binary = expression.match(/^(.+?)\s*([+\-*/])\s*(.+)$/);
+  if (binary) {
+    const operand = (source: string): PolyStoredValue | undefined => {
+      const property = source.trim().match(/^([A-Za-z_]\w*)\.([A-Za-z_]\w*)$/);
+      if (property) {
+        const reference = variables.get(property[1]);
+        if (reference) {
+          const value = referencePropertyValue(project, reference, property[2]);
+          if (value !== undefined) return value;
+        }
+      }
+      return parseStoredValue(resolveRawValue(source, values, modules));
+    };
+    const left = operand(binary[1]);
+    const right = operand(binary[3]);
+    if (typeof left === "number" && typeof right === "number") {
+      const result = {
+        "+": left + right,
+        "-": left - right,
+        "*": left * right,
+        "/": right === 0 ? Number.NaN : left / right,
+      }[binary[2]];
+      return Number.isFinite(result) ? result : undefined;
+    }
+    if (binary[2] === "+" && (typeof left === "string" || typeof right === "string")) {
+      return `${left ?? ""}${right ?? ""}`;
+    }
+  }
+  const property = expression.match(/^([A-Za-z_]\w*)\.([A-Za-z_]\w*)$/);
+  if (property) {
+    const reference = variables.get(property[1]);
+    if (reference) {
+      const value = referencePropertyValue(project, reference, property[2]);
+      if (value !== undefined) return value;
+    }
+  }
+  return parseStoredValue(resolveRawValue(expression, values, modules));
+}
+
 function propertySetFor(
   reference: Reference,
   project: PolyProject,
@@ -929,6 +1223,10 @@ function assignProperty(
         return "Mass must be greater than 0 and no greater than 10000.";
       }
       object.mass = value;
+    } else if (property === "Velocity") {
+      const value = parseNumbers(rawValue, 3);
+      if (!value) return "Velocity must be Vector3.new(x, y, z).";
+      object.velocity = value as [number, number, number];
     } else {
       const value = parseNumbers(rawValue, 3);
       if (!value) return `${property} must be Vector3.new(x, y, z).`;
@@ -1025,16 +1323,20 @@ function assignProperty(
     return null;
   }
   const value = parseNumber(rawValue);
-  if (value === null || value <= 0 || value > 500) {
-    return `${property} must be a positive number no greater than 500.`;
-  }
-  if (property === "WalkSpeed") project.playerSettings.walkSpeed = value;
   if (property === "Health") {
+    if (value === null || value < 0 || value > 500) {
+      return "Health must be between 0 and 500.";
+    }
     project.playerSettings.health = Math.min(
       value,
       project.playerSettings.maxHealth,
     );
+    return null;
   }
+  if (value === null || value <= 0 || value > 500) {
+    return `${property} must be a positive number no greater than 500.`;
+  }
+  if (property === "WalkSpeed") project.playerSettings.walkSpeed = value;
   if (property === "JumpPower") project.playerSettings.jumpPower = value;
   if (property === "CameraFieldOfView") {
     if (value < 20 || value > 120) {
@@ -1169,9 +1471,10 @@ function syntaxDiagnostics(
     let kind: string | null = null;
     if (
       /^(?:local\s+)?function\b/.test(code) ||
-      /\.(?:MouseButton1Click|Activated|Touched|TouchEnded)\s*:\s*Connect\s*\(\s*function\b/.test(
+      /\.(?:MouseButton1Click|Activated|Touched|TouchEnded|OnServerEvent|OnClientEvent|InputBegan|InputEnded)\s*:\s*Connect\s*\(\s*function\b/.test(
         code,
-      )
+      ) ||
+      /\.OnServerInvoke\s*=\s*function\b/.test(code)
     ) {
       kind = "function";
     }
@@ -1212,7 +1515,9 @@ export function analyzePolyScript(
   ];
   const buttonHandlers = guiEventHandlers(script);
   const touchHandlers = touchedEventHandlers(script);
-  const remoteHandlers = remoteServerHandlers(script);
+  const serverRemoteHandlers = remoteServerHandlers(script);
+  const clientRemoteHandlers = remoteClientHandlers(script);
+  const inputHandlers = inputScriptHandlers(script);
   const guiScriptParent = project.gui.find(
     (item) => item.id === script.parent,
   );
@@ -1278,7 +1583,7 @@ export function analyzePolyScript(
       });
     }
   }
-  for (const handler of remoteHandlers) {
+  for (const handler of serverRemoteHandlers) {
     const reference = handlerTargetReference(
       handler.target,
       handler.prelude,
@@ -1332,14 +1637,83 @@ export function analyzePolyScript(
       });
     }
   }
+  for (const handler of clientRemoteHandlers) {
+    const reference = handlerTargetReference(
+      handler.target,
+      handler.prelude,
+      script,
+      project,
+    );
+    const remote =
+      reference?.kind === "remote"
+        ? project.remotes.find((item) => item.id === reference.id)
+        : null;
+    if (script.kind !== "localScript") {
+      diagnostics.push({
+        line: handler.line,
+        column: 1,
+        endColumn: 2,
+        severity: "error",
+        message: "OnClientEvent must run in a LocalScript.",
+      });
+    } else if (!remote || remote.kind !== "remoteEvent") {
+      diagnostics.push({
+        line: handler.line,
+        column: 1,
+        endColumn: 2,
+        severity: "error",
+        message: "OnClientEvent requires a RemoteEvent.",
+      });
+    }
+    if (!handler.closed) {
+      diagnostics.push({
+        line: handler.line,
+        column: 1,
+        endColumn: 2,
+        severity: "error",
+        message: "OnClientEvent is missing its closing callback delimiter.",
+      });
+    }
+  }
+  for (const handler of inputHandlers) {
+    if (script.kind !== "localScript") {
+      diagnostics.push({
+        line: handler.line,
+        column: 1,
+        endColumn: 2,
+        severity: "error",
+        message: `${handler.event} must run in a LocalScript.`,
+      });
+    }
+    if (!handler.closed) {
+      diagnostics.push({
+        line: handler.line,
+        column: 1,
+        endColumn: 2,
+        severity: "error",
+        message: `${handler.event} is missing its closing callback delimiter.`,
+      });
+    }
+  }
   const validationProject = cloneProject(project);
   const variables = new Map<string, Reference>();
   const modules = new Map<string, Record<string, PolyStoredValue>>();
   const stores = new Map<string, string>();
   const values = new Map<string, PolyStoredValue>();
+  for (const handler of [
+    ...serverRemoteHandlers,
+    ...clientRemoteHandlers,
+    ...inputHandlers,
+  ]) {
+    for (const parameter of handler.parameters) values.set(parameter, null);
+  }
   const lines = script.source.split("\n");
   const remoteHandlerBoundaries = new Set<number>();
-  for (const handler of remoteHandlers) {
+  for (const handler of [
+    ...serverRemoteHandlers,
+    ...clientRemoteHandlers,
+    ...inputHandlers,
+  ]) {
     remoteHandlerBoundaries.add(handler.startIndex);
     remoteHandlerBoundaries.add(handler.endIndex);
   }
@@ -1729,15 +2103,123 @@ function callArguments(
 }
 
 function remoteCallbackValues(
-  handler: RemoteServerHandler,
+  handler: RemoteHandler,
   argumentsList: PolyStoredValue[],
+  includePlayer = true,
 ): Map<string, PolyStoredValue> {
   const values = new Map<string, PolyStoredValue>();
-  if (handler.parameters[0]) values.set(handler.parameters[0], "LocalPlayer");
-  for (let index = 1; index < handler.parameters.length; index += 1) {
-    values.set(handler.parameters[index], argumentsList[index - 1] ?? null);
+  let argumentOffset = 0;
+  if (includePlayer && handler.parameters[0]) {
+    values.set(handler.parameters[0], "LocalPlayer");
+    argumentOffset = 1;
+  }
+  for (let index = argumentOffset; index < handler.parameters.length; index += 1) {
+    values.set(
+      handler.parameters[index],
+      argumentsList[index - argumentOffset] ?? null,
+    );
   }
   return values;
+}
+
+function requestedTweens(
+  source: string,
+  script: PolyScript,
+  project: PolyProject,
+): PolyTweenRequest[] {
+  const references = new Map<string, Reference>();
+  for (const line of source.split("\n")) {
+    const declaration = findReferenceDeclaration(line, project, script);
+    if (declaration?.reference) {
+      references.set(declaration.variable, declaration.reference);
+    }
+  }
+
+  const compact = source.replace(/\s*\n\s*/g, " ");
+  const creations = new Map<
+    string,
+    {
+      target: Reference;
+      duration: number;
+      easingStyle: PolyTweenRequest["easingStyle"];
+      easingDirection: PolyTweenRequest["easingDirection"];
+      goals: string;
+    }
+  >();
+  const createPattern =
+    /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*TweenService(?::Create|\.Create|::Create)\(\s*([A-Za-z_]\w*)\s*,\s*(?:TweenInfo(?:\.new)?|new\s+TweenInfo)\s*\(\s*(\d+(?:\.\d+)?)([^)]*)\)\s*,\s*(.+?)\)\s*;?(?=\s*[A-Za-z_]\w*(?::|\.|::)Play|\s*$)/g;
+  for (const match of compact.matchAll(createPattern)) {
+    const target = references.get(match[2]);
+    if (target?.kind !== "world") continue;
+    const style =
+      match[4].match(/EasingStyle(?:\.|::)(Linear|Quad|Cubic)/)?.[1] ??
+      "Linear";
+    const direction =
+      match[4].match(/EasingDirection(?:\.|::)(InOut|In|Out)/)?.[1] ?? "Out";
+    creations.set(match[1], {
+      target,
+      duration: Math.max(0.01, Number(match[3]) || 0.01),
+      easingStyle: style as PolyTweenRequest["easingStyle"],
+      easingDirection: direction as PolyTweenRequest["easingDirection"],
+      goals: match[5],
+    });
+  }
+
+  const requests: PolyTweenRequest[] = [];
+  for (const [variable, tween] of creations) {
+    const playPattern = new RegExp(
+      String.raw`\b${variable}(?::|\.|::)Play\s*\(\s*\)`,
+    );
+    if (!playPattern.test(compact)) continue;
+    const object = project.objects.find((item) => item.id === tween.target.id);
+    if (!object) continue;
+    const from = {
+      position: [...object.position] as [number, number, number],
+      rotation: [...object.rotation] as [number, number, number],
+      scale: [...object.scale] as [number, number, number],
+      transparency: object.transparency,
+      color: object.color,
+    };
+    const vectorGoal = (property: string) =>
+      tween.goals.match(
+        new RegExp(
+          String.raw`\b${property}\s*=\s*((?:new\s+)?Vector3(?:(?:::new|\.new))?\s*\([^)]+\))`,
+          "i",
+        ),
+      )?.[1];
+    const position = vectorGoal("Position");
+    const rotation = vectorGoal("Rotation");
+    const size = vectorGoal("Size");
+    const transparency = tween.goals.match(
+      /\bTransparency\s*=\s*(-?\d+(?:\.\d+)?)/i,
+    )?.[1];
+    const color = tween.goals.match(/\bColor\s*=\s*["'](#[0-9a-f]{6})["']/i)?.[1];
+    if (position) assignProperty(project, tween.target, "Position", position);
+    if (rotation) assignProperty(project, tween.target, "Rotation", rotation);
+    if (size) assignProperty(project, tween.target, "Size", size);
+    if (transparency) {
+      assignProperty(project, tween.target, "Transparency", transparency);
+    }
+    if (color) assignProperty(project, tween.target, "Color", JSON.stringify(color));
+    const updated = project.objects.find((item) => item.id === tween.target.id);
+    if (!updated) continue;
+    requests.push({
+      id: `${script.id}-${variable}-${Date.now()}-${requests.length}`,
+      objectId: updated.id,
+      duration: tween.duration,
+      easingStyle: tween.easingStyle,
+      easingDirection: tween.easingDirection,
+      from,
+      to: {
+        position: [...updated.position],
+        rotation: [...updated.rotation],
+        scale: [...updated.scale],
+        transparency: updated.transparency,
+        color: updated.color,
+      },
+    });
+  }
+  return requests;
 }
 
 function dispatchRemoteServerEvent(
@@ -1746,6 +2228,7 @@ function dispatchRemoteServerEvent(
   argumentsList: PolyStoredValue[],
   output: PolyRuntimeResult["output"],
   depth: number,
+  tweenRequests: PolyTweenRequest[],
 ): void {
   if (depth > 8) {
     output.push({
@@ -1773,6 +2256,8 @@ function dispatchRemoteServerEvent(
         `${handler.prelude}\n${handler.body}`,
         remoteCallbackValues(handler, argumentsList),
         depth + 1,
+        undefined,
+        tweenRequests,
       );
     }
   }
@@ -1784,6 +2269,7 @@ function dispatchRemoteServerFunction(
   argumentsList: PolyStoredValue[],
   output: PolyRuntimeResult["output"],
   depth: number,
+  tweenRequests: PolyTweenRequest[],
 ): PolyStoredValue {
   if (depth > 8) {
     output.push({
@@ -1812,11 +2298,54 @@ function dispatchRemoteServerFunction(
           `${handler.prelude}\n${handler.body}`,
           remoteCallbackValues(handler, argumentsList),
           depth + 1,
+          undefined,
+          tweenRequests,
         ) ?? null
       );
     }
   }
   return null;
+}
+
+function dispatchRemoteClientEvent(
+  project: PolyProject,
+  remoteId: string,
+  argumentsList: PolyStoredValue[],
+  output: PolyRuntimeResult["output"],
+  depth: number,
+  tweenRequests: PolyTweenRequest[],
+): void {
+  if (depth > 8) {
+    output.push({
+      level: "error",
+      message: "Remote callback depth exceeded the safe limit.",
+      scriptName: "Runtime",
+    });
+    return;
+  }
+  for (const script of project.scripts.filter((item) => item.kind === "localScript")) {
+    for (const handler of remoteClientHandlers(script).filter(
+      (candidate) => candidate.kind === "event" && candidate.closed,
+    )) {
+      const reference = handlerTargetReference(
+        handler.target,
+        handler.prelude,
+        script,
+        project,
+      );
+      if (reference?.kind !== "remote" || reference.id !== remoteId) continue;
+      executeScript(
+        script,
+        project,
+        output,
+        `${handler.prelude}\n${handler.body}`,
+        remoteCallbackValues(handler, argumentsList, false),
+        depth + 1,
+        undefined,
+        tweenRequests,
+      );
+    }
+  }
 }
 
 function executeScript(
@@ -1826,18 +2355,25 @@ function executeScript(
   sourceOverride?: string,
   initialValues?: ReadonlyMap<string, PolyStoredValue>,
   remoteDepth = 0,
+  initialReferences?: ReadonlyMap<string, Reference>,
+  tweenRequests: PolyTweenRequest[] = [],
 ): PolyStoredValue | undefined {
-  const variables = new Map<string, Reference>();
+  const variables = new Map<string, Reference>(initialReferences);
   const modules = new Map<string, Record<string, PolyStoredValue>>();
   const stores = new Map<string, string>();
   const values = new Map<string, PolyStoredValue>(initialValues);
   const sourceText = sourceOverride ?? withoutEventHandlers(script);
+  tweenRequests.push(...requestedTweens(sourceText, script, project));
   for (const source of sourceText.split("\n")) {
     const returnValue = source.match(/^\s*return\s+(.+?)\s*;?\s*$/);
     if (returnValue) {
       return (
-        parseStoredValue(
-          resolveRawValue(returnValue[1], values, modules).replace(/;$/, ""),
+        resolveExpressionValue(
+          returnValue[1],
+          project,
+          variables,
+          values,
+          modules,
         ) ?? null
       );
     }
@@ -1999,6 +2535,25 @@ function executeScript(
               argumentsList,
               output,
               remoteDepth,
+              tweenRequests,
+            );
+          } else if (remoteCall[2] === "FireAllClients") {
+            dispatchRemoteClientEvent(
+              project,
+              remote.id,
+              argumentsList,
+              output,
+              remoteDepth,
+              tweenRequests,
+            );
+          } else if (remoteCall[2] === "FireClient") {
+            dispatchRemoteClientEvent(
+              project,
+              remote.id,
+              argumentsList.slice(1),
+              output,
+              remoteDepth,
+              tweenRequests,
             );
           }
           output.push({
@@ -2033,6 +2588,7 @@ function executeScript(
                   argumentsList,
                   output,
                   remoteDepth,
+                  tweenRequests,
                 )
               : null,
           );
@@ -2066,7 +2622,13 @@ function executeScript(
       project,
       reference,
       assignment[2],
-      resolveRawValue(assignment[3], values, modules),
+      resolveAssignmentValue(
+        assignment[3],
+        project,
+        variables,
+        values,
+        modules,
+      ),
     );
     if (error) {
       output.push({ level: "error", message: error, scriptName: script.name });
@@ -2179,6 +2741,7 @@ export function activatePolyGui(
   );
   const output: PolyRuntimeResult["output"] = [];
   const animationRequests: string[] = [];
+  const tweenRequests: PolyTweenRequest[] = [];
 
   for (const script of scripts) {
     if (
@@ -2195,6 +2758,10 @@ export function activatePolyGui(
         project,
         output,
         `${handler.prelude}\n${handler.body}`,
+        undefined,
+        0,
+        undefined,
+        tweenRequests,
       );
       for (const name of requestedAnimations(handler.body, project)) {
         if (!animationRequests.includes(name)) animationRequests.push(name);
@@ -2208,6 +2775,8 @@ export function activatePolyGui(
     output,
     animationRequests,
     animationVersion: animationRequests.length > 0 ? 1 : 0,
+    tweenRequests,
+    tweenVersion: tweenRequests.length > 0 ? 1 : 0,
   };
 }
 
@@ -2239,6 +2808,7 @@ export function activatePolyTool(
   );
   const output: PolyRuntimeResult["output"] = [];
   const animationRequests: string[] = [];
+  const tweenRequests: PolyTweenRequest[] = [];
   for (const script of scripts) {
     for (const handler of guiEventHandlers(script).filter(
       (candidate) => candidate.event === "Activated",
@@ -2248,6 +2818,10 @@ export function activatePolyTool(
         project,
         output,
         `${handler.prelude}\n${handler.body}`,
+        undefined,
+        0,
+        undefined,
+        tweenRequests,
       );
       applyNearestDamage(handler.body, project, toolId, output, script.name);
       for (const name of requestedAnimations(handler.body, project)) {
@@ -2261,6 +2835,8 @@ export function activatePolyTool(
     output,
     animationRequests,
     animationVersion: animationRequests.length > 0 ? 1 : 0,
+    tweenRequests,
+    tweenVersion: tweenRequests.length > 0 ? 1 : 0,
   };
 }
 
@@ -2289,6 +2865,7 @@ export function activatePolyTouched(
   );
   const output: PolyRuntimeResult["output"] = [];
   const animationRequests: string[] = [];
+  const tweenRequests: PolyTweenRequest[] = [];
 
   for (const script of scripts) {
     if (
@@ -2308,6 +2885,17 @@ export function activatePolyTouched(
         project,
         output,
         `${handler.prelude}\n${handler.body}`,
+        undefined,
+        0,
+        handler.parameters[0]
+          ? new Map([
+              [
+                handler.parameters[0],
+                { kind: "player", id: "LocalPlayer" } as const,
+              ],
+            ])
+          : undefined,
+        tweenRequests,
       );
       for (const name of requestedAnimations(handler.body, project)) {
         if (!animationRequests.includes(name)) animationRequests.push(name);
@@ -2321,6 +2909,79 @@ export function activatePolyTouched(
     output,
     animationRequests,
     animationVersion: animationRequests.length > 0 ? 1 : 0,
+    tweenRequests,
+    tweenVersion: tweenRequests.length > 0 ? 1 : 0,
+  };
+}
+
+export function activatePolyInput(
+  input: PolyProject,
+  keyCode: string,
+  event: "InputBegan" | "InputEnded" = "InputBegan",
+): PolyRuntimeResult {
+  const project = normalizePolyProject(input);
+  const scripts = project.scripts.filter(
+    (script) =>
+      script.kind === "localScript" &&
+      inputScriptHandlers(script).some(
+        (handler) =>
+          handler.event === event &&
+          (!handler.keyCode ||
+            handler.keyCode.toLowerCase() === keyCode.toLowerCase()),
+      ),
+  );
+  const diagnostics = scripts.flatMap((script) =>
+    analyzePolyScript(script, project).map((diagnostic) => ({
+      ...diagnostic,
+      scriptId: script.id,
+      scriptName: script.name,
+    })),
+  );
+  const output: PolyRuntimeResult["output"] = [];
+  const animationRequests: string[] = [];
+  const tweenRequests: PolyTweenRequest[] = [];
+  for (const script of scripts) {
+    if (
+      diagnostics.some(
+        (diagnostic) =>
+          diagnostic.scriptId === script.id && diagnostic.severity === "error",
+      )
+    ) {
+      continue;
+    }
+    for (const handler of inputScriptHandlers(script)) {
+      if (
+        handler.event !== event ||
+        (handler.keyCode &&
+          handler.keyCode.toLowerCase() !== keyCode.toLowerCase())
+      ) {
+        continue;
+      }
+      executeScript(
+        script,
+        project,
+        output,
+        `${handler.prelude}\n${handler.body}`,
+        handler.parameters[0]
+          ? new Map([[handler.parameters[0], keyCode]])
+          : undefined,
+        0,
+        undefined,
+        tweenRequests,
+      );
+      for (const name of requestedAnimations(handler.body, project)) {
+        if (!animationRequests.includes(name)) animationRequests.push(name);
+      }
+    }
+  }
+  return {
+    project,
+    diagnostics,
+    output,
+    animationRequests,
+    animationVersion: animationRequests.length > 0 ? 1 : 0,
+    tweenRequests,
+    tweenVersion: tweenRequests.length > 0 ? 1 : 0,
   };
 }
 
@@ -2438,6 +3099,7 @@ export function runPolyProject(input: PolyProject): PolyRuntimeResult {
   );
   const output: PolyRuntimeResult["output"] = [];
   const animationRequests: string[] = [];
+  const tweenRequests: PolyTweenRequest[] = [];
 
   for (const script of project.scripts.filter((item) => item.kind === "script")) {
     if (
@@ -2446,7 +3108,16 @@ export function runPolyProject(input: PolyProject): PolyRuntimeResult {
           diagnostic.scriptId === script.id && diagnostic.severity === "error",
       )
     ) {
-      executeScript(script, project, output);
+      executeScript(
+        script,
+        project,
+        output,
+        undefined,
+        undefined,
+        0,
+        undefined,
+        tweenRequests,
+      );
       for (const name of requestedAnimations(script.source, project)) {
         if (!animationRequests.includes(name)) animationRequests.push(name);
       }
@@ -2461,7 +3132,16 @@ export function runPolyProject(input: PolyProject): PolyRuntimeResult {
           diagnostic.scriptId === script.id && diagnostic.severity === "error",
       )
     ) {
-      executeScript(script, project, output);
+      executeScript(
+        script,
+        project,
+        output,
+        undefined,
+        undefined,
+        0,
+        undefined,
+        tweenRequests,
+      );
       for (const name of requestedAnimations(script.source, project)) {
         if (!animationRequests.includes(name)) animationRequests.push(name);
       }
@@ -2474,5 +3154,7 @@ export function runPolyProject(input: PolyProject): PolyRuntimeResult {
     output,
     animationRequests,
     animationVersion: animationRequests.length > 0 ? 1 : 0,
+    tweenRequests,
+    tweenVersion: tweenRequests.length > 0 ? 1 : 0,
   };
 }

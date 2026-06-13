@@ -48,6 +48,7 @@ type StudioObject = {
   friction?: number;
   restitution?: number;
   mass?: number;
+  velocity?: [number, number, number];
   parentId?: string | null;
   modelId: string | null;
   attributes: Record<string, string | number | boolean | null>;

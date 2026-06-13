@@ -54,6 +54,7 @@ import { games as fallbackGames, type Game } from "./data";
 import { useMultiplayer } from "./game/multiplayer";
 import {
   activatePolyGui,
+  activatePolyInput,
   activatePolyTouched,
   activatePolyTool,
   runPolyProject,
@@ -756,6 +757,8 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
           animations={runtime?.project.animations}
           animationRequests={runtime?.animationRequests}
           animationVersion={runtime?.animationVersion}
+          tweenRequests={runtime?.tweenRequests}
+          tweenVersion={runtime?.tweenVersion}
           guiObjects={runtime?.project.gui}
           playerSettings={runtime?.project.playerSettings}
           leaderstats={runtime?.project.leaderstats}
@@ -781,6 +784,9 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
                 animationVersion:
                   current.animationVersion +
                   (activated.animationRequests.length > 0 ? 1 : 0),
+                tweenRequests: [...current.tweenRequests, ...activated.tweenRequests],
+                tweenVersion:
+                  current.tweenVersion + (activated.tweenRequests.length > 0 ? 1 : 0),
               };
             });
           }}
@@ -801,6 +807,9 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
                 animationVersion:
                   current.animationVersion +
                   (activated.animationRequests.length > 0 ? 1 : 0),
+                tweenRequests: [...current.tweenRequests, ...activated.tweenRequests],
+                tweenVersion:
+                  current.tweenVersion + (activated.tweenRequests.length > 0 ? 1 : 0),
               };
             });
           }}
@@ -824,6 +833,32 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
                 animationVersion:
                   current.animationVersion +
                   (activated.animationRequests.length > 0 ? 1 : 0),
+                tweenRequests: [...current.tweenRequests, ...activated.tweenRequests],
+                tweenVersion:
+                  current.tweenVersion + (activated.tweenRequests.length > 0 ? 1 : 0),
+              };
+            });
+          }}
+          onKeyInput={(keyCode, event) => {
+            setRuntime((current) => {
+              if (!current) return current;
+              const activated = activatePolyInput(current.project, keyCode, event);
+              return {
+                ...activated,
+                diagnostics: [...current.diagnostics, ...activated.diagnostics],
+                output: [...current.output, ...activated.output],
+                animationRequests: [
+                  ...new Set([
+                    ...current.animationRequests,
+                    ...activated.animationRequests,
+                  ]),
+                ],
+                animationVersion:
+                  current.animationVersion +
+                  (activated.animationRequests.length > 0 ? 1 : 0),
+                tweenRequests: [...current.tweenRequests, ...activated.tweenRequests],
+                tweenVersion:
+                  current.tweenVersion + (activated.tweenRequests.length > 0 ? 1 : 0),
               };
             });
           }}

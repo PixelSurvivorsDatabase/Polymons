@@ -648,6 +648,7 @@ export default function StudioEditor({
       friction: 0.82,
       restitution: 0.03,
       mass: 1,
+      velocity: [0, 0, 0],
       parentId: parentObject?.id ?? null,
       modelId: targetModelId,
       attributes: {},
@@ -708,6 +709,7 @@ export default function StudioEditor({
       friction: 0.82,
       restitution: 0.03,
       mass: 1,
+      velocity: [0, 0, 0],
       parentId: name === "HumanoidRootPart" ? null : rootId,
       modelId,
       attributes: { RigPart: name },
@@ -816,6 +818,7 @@ end)
         friction: 0.6,
         restitution: 0,
         mass: 1,
+        velocity: [0, 0, 0],
         parentId: parentObject?.id ?? null,
         modelId,
         attributes: { Damage: 20, Range: 6, Cooldown: 0.45 },
@@ -850,6 +853,7 @@ end)
       friction: 0.65,
       restitution: 0,
       mass: 0.25,
+      velocity: [0, 0, 0],
       parentId: tool.id,
       modelId: tool.modelId,
       attributes: {},
@@ -3463,6 +3467,7 @@ function StudioSurfaceMaterial({
   useEffect(() => () => surfaceTexture?.dispose(), [surfaceTexture]);
   return (
     <meshStandardMaterial
+      key={`${object.material}-${object.surfaceTexture}`}
       color={object.color}
       map={surfaceTexture}
       transparent={object.transparency > 0}
@@ -3903,6 +3908,7 @@ function Properties({
             <NumberField label="Friction" value={world.friction ?? 0.82} minimum={0} maximum={2} step={0.05} onChange={(friction) => onWorldChange({ friction })} />
             <NumberField label="Bounciness" value={world.restitution ?? 0.03} minimum={0} maximum={1} step={0.05} onChange={(restitution) => onWorldChange({ restitution })} />
             <NumberField label="Mass" value={world.mass ?? 1} minimum={0.01} maximum={10000} step={0.25} onChange={(mass) => onWorldChange({ mass })} />
+            <VectorField label="Velocity" value={world.velocity ?? [0, 0, 0]} step={0.5} onChange={(velocity) => onWorldChange({ velocity })} />
           </PropertySection>
           <PropertySection title="Gameplay data">
             {world.type === "humanoidRootPart" && (

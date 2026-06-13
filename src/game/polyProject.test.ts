@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   activatePolyGui,
+  activatePolyInput,
   activatePolyTouched,
   activatePolyTool,
   analyzePolyScript,
@@ -578,16 +579,19 @@ test("supports Touched handlers in all Studio scripting languages", () => {
   const sources = {
     luau: `local block = script.Parent
 block.Touched:Connect(function(hit)
+    hit.Health = hit.Health - 25
     block.Transparency = 0.5
 end)`,
     cpp: `#include <poly/server.hpp>
 auto block = Script.Parent;
 block.Touched.Connect([&](auto hit) {
+    hit.Health = hit.Health - 25;
     block.Transparency = 0.5;
 });`,
     csharp: `using Poly;
 var block = Script.Parent;
 block.Touched += (hit) => {
+    hit.Health = hit.Health - 25;
     block.Transparency = 0.5;
 };`,
   } as const;
@@ -607,6 +611,7 @@ block.Touched += (hit) => {
     const touched = activatePolyTouched(fixture, "part");
     assert.equal(touched.diagnostics.length, 0, language);
     assert.equal(touched.project.objects[0].transparency, 0.5, language);
+    assert.equal(touched.project.playerSettings.health, 75, language);
   }
 });
 
@@ -934,4 +939,157 @@ test("lets server scripts selectively add leaderstats", () => {
   const result = runPolyProject(fixture);
 
   assert.equal(result.project.leaderstats[0].defaultValue, 15);
+});
+
+test("runs KeyCode input callbacks in Luau, C++, and C#", () => {
+  const sources = {
+    luau: `local part = Workspace:FindFirstChild("Part")
+UserInputService.InputBegan:Connect(function(input)
+  if input.KeyCode == Enum.KeyCode.E then
+    part.Color = "#22CC88"
+  end
+end)`,
+    cpp: `auto part = Workspace.Find("Part");
+UserInputService.InputBegan.Connect([&](auto input) {
+  if (input.KeyCode == KeyCode::E) {
+    part.Color = "#22CC88";
+  }
+});`,
+    csharp: `var part = Workspace.Find("Part");
+UserInputService.InputBegan += (input) => {
+  if (input.KeyCode == KeyCode.E) {
+    part.Color = "#22CC88";
+  }
+};`,
+  } as const;
+
+  for (const [language, source] of Object.entries(sources)) {
+    const fixture = project();
+    fixture.language = language as PolyProject["language"];
+    fixture.scripts = [
+      {
+        id: `input-${language}`,
+        name: "InputClient",
+        kind: "localScript",
+        parent: "StarterPlayerScripts",
+        source,
+      },
+    ];
+    const ignored = activatePolyInput(fixture, "Q");
+    assert.equal(ignored.project.objects[0].color, "#342856", language);
+    const activated = activatePolyInput(fixture, "E");
+    assert.equal(activated.diagnostics.length, 0, language);
+    assert.equal(activated.project.objects[0].color, "#22CC88", language);
+  }
+});
+
+test("dispatches FireAllClients to OnClientEvent", () => {
+  const fixture = project();
+  fixture.remotes = [
+    { id: "notice", name: "Notice", kind: "remoteEvent" },
+  ];
+  fixture.scripts = [
+    {
+      id: "notice-server",
+      name: "NoticeServer",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `local remote = ReplicatedStorage:FindFirstChild("Notice")
+remote:FireAllClients("#55AAFF")`,
+    },
+    {
+      id: "notice-client",
+      name: "NoticeClient",
+      kind: "localScript",
+      parent: "StarterPlayerScripts",
+      source: `local remote = ReplicatedStorage:FindFirstChild("Notice")
+local part = Workspace:FindFirstChild("Part")
+remote.OnClientEvent:Connect(function(color)
+  part.Color = color
+end)`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0);
+  assert.equal(result.project.objects[0].color, "#55AAFF");
+});
+
+test("returns arithmetic from OnServerInvoke", () => {
+  const fixture = project();
+  fixture.remotes = [
+    { id: "reward", name: "Reward", kind: "remoteFunction" },
+  ];
+  fixture.leaderstats = [
+    { id: "coins", name: "Coins", type: "number", defaultValue: 0 },
+  ];
+  fixture.scripts = [
+    {
+      id: "reward-server",
+      name: "RewardServer",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `local remote = ReplicatedStorage:FindFirstChild("Reward")
+remote.OnServerInvoke = function(player, amount)
+  return amount * 2
+end`,
+    },
+    {
+      id: "reward-client",
+      name: "RewardClient",
+      kind: "localScript",
+      parent: "StarterPlayerScripts",
+      source: `local remote = ReplicatedStorage:FindFirstChild("Reward")
+local player = Players.LocalPlayer
+local reward = remote:InvokeServer(25)
+player.Coins = reward`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0);
+  assert.equal(result.project.leaderstats[0].defaultValue, 50);
+});
+
+test("creates TweenService requests and applies final properties", () => {
+  const fixture = project();
+  fixture.scripts = [
+    {
+      id: "tween-script",
+      name: "TweenScript",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `local part = Workspace:FindFirstChild("Part")
+local tween = TweenService:Create(part, TweenInfo.new(1.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Position = Vector3.new(8, 4, 2), Transparency = 0.5 })
+tween:Play()`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0);
+  assert.deepEqual(result.project.objects[0].position, [8, 4, 2]);
+  assert.equal(result.project.objects[0].transparency, 0.5);
+  assert.equal(result.tweenRequests.length, 1);
+  assert.equal(result.tweenRequests[0].duration, 1.5);
+  assert.equal(result.tweenRequests[0].easingStyle, "Quad");
+});
+
+test("supports editable and scriptable Part velocity", () => {
+  const fixture = project();
+  fixture.scripts = [
+    {
+      id: "velocity-script",
+      name: "VelocityScript",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `local part = Workspace:FindFirstChild("Part")
+part.Anchored = false
+part.Velocity = Vector3.new(12, 3, -4)`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0);
+  assert.equal(result.project.objects[0].anchored, false);
+  assert.deepEqual(result.project.objects[0].velocity, [12, 3, -4]);
 });

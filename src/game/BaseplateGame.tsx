@@ -21,8 +21,11 @@ import {
 import {
   CanvasTexture,
   Color,
+  Euler,
   Group,
   MathUtils,
+  MeshStandardMaterial,
+  Quaternion,
   SRGBColorSpace,
   Vector2,
   Vector3,
@@ -40,6 +43,7 @@ import type {
   PolyGuiObject,
   PolyLeaderstat,
   PolyPlayerSettings,
+  PolyTweenRequest,
   PolyWorldObject,
 } from "./polyProject";
 import { createSurfaceTexture } from "./surfaceTextures";
@@ -101,7 +105,43 @@ function createInputState(): InputState {
   };
 }
 
-function useKeyboard(input: MutableRefObject<InputState>) {
+function keyCodeName(code: string): string {
+  if (code.startsWith("Key")) return code.slice(3);
+  if (code.startsWith("Digit")) {
+    return [
+      "Zero",
+      "One",
+      "Two",
+      "Three",
+      "Four",
+      "Five",
+      "Six",
+      "Seven",
+      "Eight",
+      "Nine",
+    ][Number(code.slice(5))] ?? code;
+  }
+  return (
+    {
+      ShiftLeft: "LeftShift",
+      ShiftRight: "RightShift",
+      ControlLeft: "LeftControl",
+      ControlRight: "RightControl",
+      AltLeft: "LeftAlt",
+      AltRight: "RightAlt",
+      ArrowUp: "Up",
+      ArrowDown: "Down",
+      ArrowLeft: "Left",
+      ArrowRight: "Right",
+      Enter: "Return",
+    }[code] ?? code
+  );
+}
+
+function useKeyboard(
+  input: MutableRefObject<InputState>,
+  onKeyInput?: (keyCode: string, event: "InputBegan" | "InputEnded") => void,
+) {
   useEffect(() => {
     const setKey = (code: string, pressed: boolean, repeat = false) => {
       switch (code) {
@@ -153,8 +193,12 @@ function useKeyboard(input: MutableRefObject<InputState>) {
         event.preventDefault();
       }
       setKey(event.code, true, event.repeat);
+      if (!event.repeat) onKeyInput?.(keyCodeName(event.code), "InputBegan");
     };
-    const onKeyUp = (event: KeyboardEvent) => setKey(event.code, false);
+    const onKeyUp = (event: KeyboardEvent) => {
+      setKey(event.code, false);
+      onKeyInput?.(keyCodeName(event.code), "InputEnded");
+    };
     const clearKeys = () => {
       input.current.forward = false;
       input.current.backward = false;
@@ -171,7 +215,7 @@ function useKeyboard(input: MutableRefObject<InputState>) {
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", clearKeys);
     };
-  }, [input]);
+  }, [input, onKeyInput]);
 }
 
 function MouseLook({
@@ -775,23 +819,46 @@ function ProjectBlock({
   object,
   animations,
   animationRequests,
+  tweenRequests,
   onTouched,
   onTouchEnded,
 }: {
   object: PolyWorldObject;
   animations: PolyAnimation[];
   animationRequests: string[];
+  tweenRequests: PolyTweenRequest[];
   onTouched?: (worldObjectId: string) => void;
   onTouchEnded?: (worldObjectId: string) => void;
 }) {
   const animated = useRef<Group>(null);
+  const scaled = useRef<Group>(null);
+  const body = useRef<RapierRigidBody>(null);
+  const meshMaterial = useRef<MeshStandardMaterial>(null);
   const animationStartedAt = useRef<number | null>(null);
+  const tweenStartedAt = useRef<number | null>(null);
   const touchingPlayerColliders = useRef(new Set<number>());
   const surfaceTexture = useMemo(
     () => createSurfaceTexture(object.surfaceTexture),
     [object.surfaceTexture],
   );
   useEffect(() => () => surfaceTexture?.dispose(), [surfaceTexture]);
+  const tween = [...tweenRequests]
+    .reverse()
+    .find((request) => request.objectId === object.id);
+  useEffect(() => {
+    tweenStartedAt.current = null;
+  }, [tween?.id]);
+  useEffect(() => {
+    if (!body.current || object.anchored) return;
+    body.current.setLinvel(
+      {
+        x: object.velocity?.[0] ?? 0,
+        y: object.velocity?.[1] ?? 0,
+        z: object.velocity?.[2] ?? 0,
+      },
+      true,
+    );
+  }, [object.anchored, object.velocity]);
   useFrame(({ clock }) => {
     if (!animated.current) return;
     animationStartedAt.current ??= clock.elapsedTime;
@@ -803,6 +870,66 @@ function ProjectBlock({
     );
     animated.current.position.set(...(pose?.position ?? [0, 0, 0]));
     animated.current.rotation.set(...(pose?.rotation ?? [0, 0, 0]));
+    if (!tween || !body.current) return;
+    tweenStartedAt.current ??= clock.elapsedTime;
+    const progress = Math.min(
+      1,
+      (clock.elapsedTime - tweenStartedAt.current) / tween.duration,
+    );
+    const curve = (value: number) =>
+      tween.easingStyle === "Linear"
+        ? value
+        : tween.easingStyle === "Quad"
+          ? value * value
+          : value * value * value;
+    const alpha =
+      tween.easingDirection === "In"
+        ? curve(progress)
+        : tween.easingDirection === "Out"
+          ? 1 - curve(1 - progress)
+          : progress < 0.5
+            ? curve(progress * 2) / 2
+            : 1 - curve((1 - progress) * 2) / 2;
+    const lerpVector = (
+      from: [number, number, number],
+      to: [number, number, number],
+    ): [number, number, number] => [
+      MathUtils.lerp(from[0], to[0], alpha),
+      MathUtils.lerp(from[1], to[1], alpha),
+      MathUtils.lerp(from[2], to[2], alpha),
+    ];
+    const position = lerpVector(tween.from.position, tween.to.position);
+    const rotation = lerpVector(tween.from.rotation, tween.to.rotation);
+    body.current.setTranslation(
+      { x: position[0], y: position[1], z: position[2] },
+      true,
+    );
+    body.current.setRotation(
+      new Quaternion().setFromEuler(
+        new Euler(rotation[0], rotation[1], rotation[2]),
+      ),
+      true,
+    );
+    if (scaled.current) {
+      const size = lerpVector(tween.from.scale, tween.to.scale);
+      scaled.current.scale.set(
+        size[0] / Math.max(0.001, tween.to.scale[0]),
+        size[1] / Math.max(0.001, tween.to.scale[1]),
+        size[2] / Math.max(0.001, tween.to.scale[2]),
+      );
+    }
+    if (meshMaterial.current) {
+      meshMaterial.current.opacity =
+        1 -
+        MathUtils.lerp(
+          tween.from.transparency,
+          tween.to.transparency,
+          alpha,
+        );
+      meshMaterial.current.color
+        .set(tween.from.color)
+        .lerp(new Color(tween.to.color), alpha);
+    }
   });
   if (object.visible === false) return null;
   const material = {
@@ -817,24 +944,28 @@ function ProjectBlock({
   }[object.material];
   const content = (
     <group ref={animated}>
-      <mesh
-        castShadow={object.castShadow && object.transparency < 0.95}
-        receiveShadow={object.transparency < 0.95}
-      >
-        <boxGeometry args={object.scale} />
-        <meshStandardMaterial
-          color={object.color}
-          map={surfaceTexture}
-          roughness={material.roughness}
-          metalness={material.metalness}
-          emissive={object.material === "neon" ? object.color : "#000000"}
-          emissiveIntensity={material.emissiveIntensity}
-          transparent={object.transparency > 0}
-          opacity={Math.max(0, Math.min(1, 1 - object.transparency))}
-          depthWrite={object.transparency <= 0.02}
-          alphaTest={object.transparency >= 1 ? 1 : 0}
-        />
-      </mesh>
+      <group ref={scaled}>
+        <mesh
+          castShadow={object.castShadow && object.transparency < 0.95}
+          receiveShadow={object.transparency < 0.95}
+        >
+          <boxGeometry args={object.scale} />
+          <meshStandardMaterial
+            ref={meshMaterial}
+            key={`${object.material}-${object.surfaceTexture}`}
+            color={object.color}
+            map={surfaceTexture}
+            roughness={material.roughness}
+            metalness={material.metalness}
+            emissive={object.material === "neon" ? object.color : "#000000"}
+            emissiveIntensity={material.emissiveIntensity}
+            transparent={object.transparency > 0 || Boolean(tween)}
+            opacity={Math.max(0, Math.min(1, 1 - object.transparency))}
+            depthWrite={object.transparency <= 0.02}
+            alphaTest={object.transparency >= 1 ? 1 : 0}
+          />
+        </mesh>
+      </group>
     </group>
   );
   const playerEntered = ({ other }: CollisionPayload) => {
@@ -852,6 +983,7 @@ function ProjectBlock({
   };
   return (
     <RigidBody
+      ref={body}
       name={object.id}
       type={object.anchored ? "fixed" : "dynamic"}
       colliders={false}
@@ -909,6 +1041,8 @@ function Scene({
   animations,
   animationRequests,
   animationVersion,
+  tweenRequests,
+  tweenVersion,
   playerSettings,
   spawn,
   onWorldTouched,
@@ -924,6 +1058,8 @@ function Scene({
   animations: PolyAnimation[];
   animationRequests: string[];
   animationVersion: number;
+  tweenRequests: PolyTweenRequest[];
+  tweenVersion: number;
   playerSettings: PolyPlayerSettings;
   spawn: { x: number; y: number; z: number };
   onWorldTouched?: (worldObjectId: string) => void;
@@ -953,10 +1089,11 @@ function Scene({
         {worldObjects ? (
           worldObjects.map((object) => (
             <ProjectBlock
-              key={`${object.id}-${animationVersion}`}
+              key={`${object.id}-${animationVersion}-${tweenVersion}`}
               object={object}
               animations={animations}
               animationRequests={animationRequests}
+              tweenRequests={tweenRequests}
               onTouched={onWorldTouched}
               onTouchEnded={onWorldTouchEnded}
             />
@@ -1271,6 +1408,8 @@ export default function BaseplateGame({
   animations = [],
   animationRequests = [],
   animationVersion = 0,
+  tweenRequests = [],
+  tweenVersion = 0,
   guiObjects = [],
   playerSettings = {
     health: 100,
@@ -1292,6 +1431,7 @@ export default function BaseplateGame({
   onToolActivated,
   onWorldTouched,
   onWorldTouchEnded,
+  onKeyInput,
 }: {
   remotePlayers?: RemotePlayer[];
   onPlayerState?: (state: Omit<PlayerTransform, "sequence">) => void;
@@ -1299,6 +1439,8 @@ export default function BaseplateGame({
   animations?: PolyAnimation[];
   animationRequests?: string[];
   animationVersion?: number;
+  tweenRequests?: PolyTweenRequest[];
+  tweenVersion?: number;
   guiObjects?: PolyGuiObject[];
   playerSettings?: PolyPlayerSettings;
   leaderstats?: PolyLeaderstat[];
@@ -1316,6 +1458,10 @@ export default function BaseplateGame({
   onToolActivated?: (toolObjectId: string) => void;
   onWorldTouched?: (worldObjectId: string) => void;
   onWorldTouchEnded?: (worldObjectId: string) => void;
+  onKeyInput?: (
+    keyCode: string,
+    event: "InputBegan" | "InputEnded",
+  ) => void;
 }) {
   const spawnObject = worldObjects?.find((object) => object.type === "spawn");
   const spawn = spawnObject
@@ -1343,7 +1489,7 @@ export default function BaseplateGame({
     z: spawn.z,
     rotationY: 0,
   });
-  useKeyboard(input);
+  useKeyboard(input, onKeyInput);
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.code !== "Tab") return;
@@ -1408,6 +1554,8 @@ export default function BaseplateGame({
             animations={animations}
             animationRequests={animationRequests}
             animationVersion={animationVersion}
+            tweenRequests={tweenRequests}
+            tweenVersion={tweenVersion}
             playerSettings={playerSettings}
             spawn={spawn}
             onWorldTouched={onWorldTouched}
