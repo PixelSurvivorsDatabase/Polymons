@@ -31,6 +31,7 @@ type AuthContextValue = {
   showAuth: (mode?: "login" | "signup") => void;
   logout: () => void;
   refresh: () => Promise<PolymonsSession | null>;
+  updateUser: (user: PolymonsUser) => void;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -94,6 +95,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       showAuth: (mode = "login") => setAuthMode(mode),
       logout: () => saveAuth(null),
       refresh,
+      updateUser: (user) =>
+        setAuth((current) => {
+          if (!current) return current;
+          const next = { ...current, user };
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+          return next;
+        }),
     }),
     [auth, ready, refresh, saveAuth],
   );

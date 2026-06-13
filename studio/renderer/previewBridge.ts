@@ -184,6 +184,7 @@ if (isPreview && !window.polyStudio) {
       username: "lava",
       displayName: "lava",
       avatarUrl: null,
+      equippedShirtId: "polymon-shirt",
     },
     session: {
       accessToken: "preview",

@@ -12,6 +12,7 @@ export type PublicProfile = {
   username: string;
   displayName: string;
   avatarUrl: string | null;
+  equippedShirtId: string | null;
 };
 
 function clientOptions() {
@@ -47,9 +48,10 @@ export async function loadProfile(
   client: SupabaseClient,
   userId: string,
 ): Promise<PublicProfile> {
+  await syncAvatarUnlocks(client, userId);
   const { data, error } = await client
     .from("profiles")
-    .select("id, username, display_name, avatar_url")
+    .select("id, username, display_name, avatar_url, equipped_shirt_id")
     .eq("id", userId)
     .single();
 
@@ -62,7 +64,37 @@ export async function loadProfile(
     username: data.username,
     displayName: data.display_name,
     avatarUrl: data.avatar_url,
+    equippedShirtId: data.equipped_shirt_id,
   };
+}
+
+export async function syncAvatarUnlocks(
+  client: SupabaseClient,
+  userId: string,
+): Promise<number> {
+  const [{ data: games, error: gamesError }, { error: defaultItemError }] =
+    await Promise.all([
+      client.from("games").select("visit_count").eq("owner_id", userId),
+      client.from("user_avatar_items").upsert(
+        { user_id: userId, item_id: "polymon-shirt" },
+        { onConflict: "user_id,item_id", ignoreDuplicates: true },
+      ),
+    ]);
+  if (gamesError) throw gamesError;
+  if (defaultItemError) throw defaultItemError;
+
+  const totalVisits = (games ?? []).reduce(
+    (total, game) => total + Number(game.visit_count ?? 0),
+    0,
+  );
+  if (totalVisits >= 100) {
+    const { error } = await client.from("user_avatar_items").upsert(
+      { user_id: userId, item_id: "creators-shirt" },
+      { onConflict: "user_id,item_id", ignoreDuplicates: true },
+    );
+    if (error) throw error;
+  }
+  return totalVisits;
 }
 
 export function publicSession(session: Session) {

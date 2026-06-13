@@ -307,6 +307,7 @@ function OnlinePlayerGame({
   const {
     connection,
     remotePlayers,
+    localPlayer: sessionPlayer,
     chatMessages,
     chatError,
     sendState,
@@ -373,7 +374,7 @@ function OnlinePlayerGame({
             playerSettings={runtime?.project.playerSettings}
             leaderstats={runtime?.project.leaderstats}
             projectName={runtime?.project.name}
-            localPlayer={auth?.user}
+            localPlayer={sessionPlayer ?? auth?.user}
             chatMessages={chatMessages}
             chatError={chatError}
             onSendChat={sendChat}

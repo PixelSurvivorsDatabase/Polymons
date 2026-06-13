@@ -289,6 +289,8 @@ export default function CodeEditor({
             "FireAllClients",
             "InvokeServer",
             "InvokeClient",
+            "OnServerEvent",
+            "OnServerInvoke",
             "Touched",
             "TouchEnded",
             ...projectRef.current.leaderstats.map((stat) => stat.name),
@@ -359,6 +361,16 @@ export default function CodeEditor({
               ? "${1:part}.Touched.Connect([&](auto hit) {\n\t${2:// code}\n});"
               : "${1:part}.Touched += (hit) => {\n\t${2:// code}\n};";
           const touchEndedText = touchedText.replaceAll("Touched", "TouchEnded");
+          const onServerEventText = isLuau
+            ? "${1:remote}.OnServerEvent:Connect(function(player, ${2:value})\n\t${3:-- server code}\nend)"
+            : isCpp
+              ? "${1:remote}.OnServerEvent.Connect([&](auto player, auto ${2:value}) {\n\t${3:// server code}\n});"
+              : "${1:remote}.OnServerEvent += (player, ${2:value}) => {\n\t${3:// server code}\n};";
+          const onServerInvokeText = isLuau
+            ? "${1:remote}.OnServerInvoke = function(player, ${2:value})\n\t${3:return nil}\nend"
+            : isCpp
+              ? "${1:remote}.OnServerInvoke = [&](auto player, auto ${2:value}) {\n\t${3:return nullptr;}\n};"
+              : "${1:remote}.OnServerInvoke = (player, ${2:value}) => {\n\t${3:return null;}\n};";
           return {
             suggestions: [
               ...names.map((name) => ({
@@ -439,6 +451,24 @@ export default function CodeEditor({
                 insertTextRules:
                   monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
                 detail: "Run a server Script when the avatar stops touching a Part",
+                range,
+              },
+              {
+                label: "OnServerEvent callback",
+                kind: monaco.languages.CompletionItemKind.Event,
+                insertText: onServerEventText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: "Receive FireServer calls in a server Script",
+                range,
+              },
+              {
+                label: "OnServerInvoke callback",
+                kind: monaco.languages.CompletionItemKind.Event,
+                insertText: onServerInvokeText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: "Return a value to InvokeServer from a server Script",
                 range,
               },
               {

@@ -454,6 +454,118 @@ type ScriptEventHandler = {
   endIndex: number;
 };
 
+type RemoteServerHandler = {
+  kind: "event" | "function";
+  target: string;
+  parameters: string[];
+  prelude: string;
+  body: string;
+  line: number;
+  closed: boolean;
+  startIndex: number;
+  endIndex: number;
+};
+
+function parameterNames(source: string): string[] {
+  return source
+    .split(",")
+    .map((parameter) => parameter.trim())
+    .filter(Boolean)
+    .map((parameter) => parameter.match(/([A-Za-z_]\w*)\s*$/)?.[1] ?? "")
+    .filter(Boolean);
+}
+
+function remoteServerHandlers(script: PolyScript): RemoteServerHandler[] {
+  const lines = script.source.split("\n");
+  const handlers: RemoteServerHandler[] = [];
+  const target = String.raw`([A-Za-z_]\w*|ReplicatedStorage\.[A-Za-z_]\w*)`;
+  const patterns = [
+    {
+      kind: "event" as const,
+      start: new RegExp(
+        String.raw`^\s*${target}\.OnServerEvent\s*:\s*Connect\s*\(\s*function\s*\(([^)]*)\)\s*$`,
+      ),
+      end: /^\s*end\s*\)\s*;?\s*$/,
+    },
+    {
+      kind: "event" as const,
+      start: new RegExp(
+        String.raw`^\s*${target}\.OnServerEvent\s*\+=\s*\(([^)]*)\)\s*=>\s*\{\s*$`,
+      ),
+      end: /^\s*}\s*;?\s*$/,
+    },
+    {
+      kind: "event" as const,
+      start: new RegExp(
+        String.raw`^\s*${target}\.OnServerEvent\.Connect\s*\(\s*\[[^\]]*\]\s*\(([^)]*)\)\s*\{\s*$`,
+      ),
+      end: /^\s*}\s*\)\s*;?\s*$/,
+    },
+    {
+      kind: "function" as const,
+      start: new RegExp(
+        String.raw`^\s*${target}\.OnServerInvoke\s*=\s*function\s*\(([^)]*)\)\s*$`,
+      ),
+      end: /^\s*end\s*;?\s*$/,
+    },
+    {
+      kind: "function" as const,
+      start: new RegExp(
+        String.raw`^\s*${target}\.OnServerInvoke\s*=\s*\(([^)]*)\)\s*=>\s*\{\s*$`,
+      ),
+      end: /^\s*}\s*;?\s*$/,
+    },
+    {
+      kind: "function" as const,
+      start: new RegExp(
+        String.raw`^\s*${target}\.OnServerInvoke\s*=\s*\[[^\]]*\]\s*\(([^)]*)\)\s*\{\s*$`,
+      ),
+      end: /^\s*}\s*;?\s*$/,
+    },
+  ];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    let matched:
+      | {
+          kind: "event" | "function";
+          match: RegExpMatchArray;
+          end: RegExp;
+        }
+      | undefined;
+    for (const pattern of patterns) {
+      const match = lines[index].match(pattern.start);
+      if (match) {
+        matched = { kind: pattern.kind, match, end: pattern.end };
+        break;
+      }
+    }
+    if (!matched) continue;
+
+    let endIndex = lines.length - 1;
+    let closed = false;
+    for (let candidate = index + 1; candidate < lines.length; candidate += 1) {
+      if (matched.end.test(lines[candidate])) {
+        endIndex = candidate;
+        closed = true;
+        break;
+      }
+    }
+    handlers.push({
+      kind: matched.kind,
+      target: matched.match[1],
+      parameters: parameterNames(matched.match[2]),
+      prelude: lines.slice(0, index).join("\n"),
+      body: lines.slice(index + 1, closed ? endIndex : lines.length).join("\n"),
+      line: index + 1,
+      closed,
+      startIndex: index,
+      endIndex,
+    });
+    index = endIndex;
+  }
+  return handlers;
+}
+
 function scriptEventHandlers(script: PolyScript): ScriptEventHandler[] {
   const lines = script.source.split("\n");
   const handlers: ScriptEventHandler[] = [];
@@ -527,7 +639,10 @@ function touchedEventHandlers(script: PolyScript): ScriptEventHandler[] {
 function withoutEventHandlers(script: PolyScript): string {
   const lines = script.source.split("\n");
   const ignored = new Set<number>();
-  for (const handler of scriptEventHandlers(script)) {
+  for (const handler of [
+    ...scriptEventHandlers(script),
+    ...remoteServerHandlers(script),
+  ]) {
     for (
       let index = handler.startIndex;
       index <= handler.endIndex;
@@ -539,23 +654,34 @@ function withoutEventHandlers(script: PolyScript): string {
   return lines.filter((_, index) => !ignored.has(index)).join("\n");
 }
 
+function handlerTargetReference(
+  target: string,
+  prelude: string,
+  script: PolyScript,
+  project: PolyProject,
+): Reference | null {
+  const direct = findDirectReference(target, project, script);
+  if (direct) return direct;
+  for (const source of prelude.split("\n")) {
+    const declaration = findReferenceDeclaration(source, project, script);
+    if (declaration?.variable === target && declaration.reference) {
+      return declaration.reference;
+    }
+  }
+  return null;
+}
+
 function eventTargetReference(
   handler: ScriptEventHandler,
   script: PolyScript,
   project: PolyProject,
 ): Reference | null {
-  const direct = findDirectReference(handler.target, project, script);
-  if (direct) return direct;
-  for (const source of handler.prelude.split("\n")) {
-    const declaration = findReferenceDeclaration(source, project, script);
-    if (
-      declaration?.variable === handler.target &&
-      declaration.reference
-    ) {
-      return declaration.reference;
-    }
-  }
-  return null;
+  return handlerTargetReference(
+    handler.target,
+    handler.prelude,
+    script,
+    project,
+  );
 }
 
 function parseNumbers(value: string, count: number): number[] | null {
@@ -1086,6 +1212,7 @@ export function analyzePolyScript(
   ];
   const buttonHandlers = guiEventHandlers(script);
   const touchHandlers = touchedEventHandlers(script);
+  const remoteHandlers = remoteServerHandlers(script);
   const guiScriptParent = project.gui.find(
     (item) => item.id === script.parent,
   );
@@ -1151,14 +1278,74 @@ export function analyzePolyScript(
       });
     }
   }
+  for (const handler of remoteHandlers) {
+    const reference = handlerTargetReference(
+      handler.target,
+      handler.prelude,
+      script,
+      project,
+    );
+    const remote =
+      reference?.kind === "remote"
+        ? project.remotes.find((item) => item.id === reference.id)
+        : null;
+    if (script.kind !== "script") {
+      diagnostics.push({
+        line: handler.line,
+        column: 1,
+        endColumn: 2,
+        severity: "error",
+        message: "OnServerEvent and OnServerInvoke must run in a server Script.",
+      });
+    } else if (!remote) {
+      diagnostics.push({
+        line: handler.line,
+        column: 1,
+        endColumn: 2,
+        severity: "error",
+        message: "The remote callback target could not be resolved.",
+      });
+    } else if (
+      (handler.kind === "event" && remote.kind !== "remoteEvent") ||
+      (handler.kind === "function" && remote.kind !== "remoteFunction")
+    ) {
+      diagnostics.push({
+        line: handler.line,
+        column: 1,
+        endColumn: 2,
+        severity: "error",
+        message:
+          handler.kind === "event"
+            ? "OnServerEvent requires a RemoteEvent."
+            : "OnServerInvoke requires a RemoteFunction.",
+      });
+    }
+    if (!handler.closed) {
+      diagnostics.push({
+        line: handler.line,
+        column: 1,
+        endColumn: 2,
+        severity: "error",
+        message: `${
+          handler.kind === "event" ? "OnServerEvent" : "OnServerInvoke"
+        } is missing its closing callback delimiter.`,
+      });
+    }
+  }
   const validationProject = cloneProject(project);
   const variables = new Map<string, Reference>();
   const modules = new Map<string, Record<string, PolyStoredValue>>();
   const stores = new Map<string, string>();
   const values = new Map<string, PolyStoredValue>();
   const lines = script.source.split("\n");
+  const remoteHandlerBoundaries = new Set<number>();
+  for (const handler of remoteHandlers) {
+    remoteHandlerBoundaries.add(handler.startIndex);
+    remoteHandlerBoundaries.add(handler.endIndex);
+  }
 
   lines.forEach((source, index) => {
+    if (remoteHandlerBoundaries.has(index)) return;
     const line = index + 1;
     const trimmed = source.trim();
     if (!trimmed || trimmed.startsWith("--") || trimmed.startsWith("//")) return;
@@ -1411,7 +1598,12 @@ export function analyzePolyScript(
             `${assignment[2]} is not a supported property for this object.`,
           ),
         );
-      } else {
+      } else if (
+        !(
+          values.has(assignment[3].trim().replace(/;$/, "")) &&
+          values.get(assignment[3].trim().replace(/;$/, "")) === null
+        )
+      ) {
         const valueError = assignProperty(
           validationProject,
           reference,
@@ -1495,18 +1687,160 @@ function outputCall(source: string): { level: "info" | "warning"; text: string }
   };
 }
 
+function callArguments(
+  source: string,
+  values: Map<string, PolyStoredValue>,
+  modules: Map<string, Record<string, PolyStoredValue>>,
+): PolyStoredValue[] {
+  const argumentsList: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  let escaped = false;
+  let depth = 0;
+  for (const character of source) {
+    if (quote) {
+      current += character;
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      current += character;
+    } else if (character === "(") {
+      depth += 1;
+      current += character;
+    } else if (character === ")") {
+      depth = Math.max(0, depth - 1);
+      current += character;
+    } else if (character === "," && depth === 0) {
+      argumentsList.push(current.trim());
+      current = "";
+    } else {
+      current += character;
+    }
+  }
+  if (current.trim()) argumentsList.push(current.trim());
+  return argumentsList.map((argument) => {
+    const resolved = resolveRawValue(argument, values, modules);
+    return parseStoredValue(resolved) ?? null;
+  });
+}
+
+function remoteCallbackValues(
+  handler: RemoteServerHandler,
+  argumentsList: PolyStoredValue[],
+): Map<string, PolyStoredValue> {
+  const values = new Map<string, PolyStoredValue>();
+  if (handler.parameters[0]) values.set(handler.parameters[0], "LocalPlayer");
+  for (let index = 1; index < handler.parameters.length; index += 1) {
+    values.set(handler.parameters[index], argumentsList[index - 1] ?? null);
+  }
+  return values;
+}
+
+function dispatchRemoteServerEvent(
+  project: PolyProject,
+  remoteId: string,
+  argumentsList: PolyStoredValue[],
+  output: PolyRuntimeResult["output"],
+  depth: number,
+): void {
+  if (depth > 8) {
+    output.push({
+      level: "error",
+      message: "Remote callback depth exceeded the safe limit.",
+      scriptName: "Runtime",
+    });
+    return;
+  }
+  for (const script of project.scripts.filter((item) => item.kind === "script")) {
+    for (const handler of remoteServerHandlers(script).filter(
+      (candidate) => candidate.kind === "event" && candidate.closed,
+    )) {
+      const reference = handlerTargetReference(
+        handler.target,
+        handler.prelude,
+        script,
+        project,
+      );
+      if (reference?.kind !== "remote" || reference.id !== remoteId) continue;
+      executeScript(
+        script,
+        project,
+        output,
+        `${handler.prelude}\n${handler.body}`,
+        remoteCallbackValues(handler, argumentsList),
+        depth + 1,
+      );
+    }
+  }
+}
+
+function dispatchRemoteServerFunction(
+  project: PolyProject,
+  remoteId: string,
+  argumentsList: PolyStoredValue[],
+  output: PolyRuntimeResult["output"],
+  depth: number,
+): PolyStoredValue {
+  if (depth > 8) {
+    output.push({
+      level: "error",
+      message: "Remote callback depth exceeded the safe limit.",
+      scriptName: "Runtime",
+    });
+    return null;
+  }
+  for (const script of project.scripts.filter((item) => item.kind === "script")) {
+    for (const handler of remoteServerHandlers(script).filter(
+      (candidate) => candidate.kind === "function" && candidate.closed,
+    )) {
+      const reference = handlerTargetReference(
+        handler.target,
+        handler.prelude,
+        script,
+        project,
+      );
+      if (reference?.kind !== "remote" || reference.id !== remoteId) continue;
+      return (
+        executeScript(
+          script,
+          project,
+          output,
+          `${handler.prelude}\n${handler.body}`,
+          remoteCallbackValues(handler, argumentsList),
+          depth + 1,
+        ) ?? null
+      );
+    }
+  }
+  return null;
+}
+
 function executeScript(
   script: PolyScript,
   project: PolyProject,
   output: PolyRuntimeResult["output"],
   sourceOverride?: string,
-): void {
+  initialValues?: ReadonlyMap<string, PolyStoredValue>,
+  remoteDepth = 0,
+): PolyStoredValue | undefined {
   const variables = new Map<string, Reference>();
   const modules = new Map<string, Record<string, PolyStoredValue>>();
   const stores = new Map<string, string>();
-  const values = new Map<string, PolyStoredValue>();
+  const values = new Map<string, PolyStoredValue>(initialValues);
   const sourceText = sourceOverride ?? withoutEventHandlers(script);
   for (const source of sourceText.split("\n")) {
+    const returnValue = source.match(/^\s*return\s+(.+?)\s*;?\s*$/);
+    if (returnValue) {
+      return (
+        parseStoredValue(
+          resolveRawValue(returnValue[1], values, modules).replace(/;$/, ""),
+        ) ?? null
+      );
+    }
     const moduleDeclaration = findModuleDeclaration(source, project);
     if (moduleDeclaration?.module) {
       modules.set(
@@ -1653,6 +1987,20 @@ function executeScript(
         const remote = project.remotes.find((item) => item.id === reference.id);
         const error = remoteCallError(project, reference, remoteCall[2], script);
         if (remote && !error) {
+          const argumentsList = callArguments(
+            remoteCall[3],
+            values,
+            modules,
+          );
+          if (remoteCall[2] === "FireServer") {
+            dispatchRemoteServerEvent(
+              project,
+              remote.id,
+              argumentsList,
+              output,
+              remoteDepth,
+            );
+          }
           output.push({
             level: "info",
             message: `${remote.name}.${remoteCall[2]}(${remoteCall[3]})`,
@@ -1671,7 +2019,23 @@ function executeScript(
         const remote = project.remotes.find((item) => item.id === reference.id);
         const error = remoteCallError(project, reference, remoteInvoke[3], script);
         if (remote && !error) {
-          values.set(remoteInvoke[1], null);
+          const argumentsList = callArguments(
+            remoteInvoke[4],
+            values,
+            modules,
+          );
+          values.set(
+            remoteInvoke[1],
+            remoteInvoke[3] === "InvokeServer"
+              ? dispatchRemoteServerFunction(
+                  project,
+                  remote.id,
+                  argumentsList,
+                  output,
+                  remoteDepth,
+                )
+              : null,
+          );
           output.push({
             level: "info",
             message: `${remote.name}.${remoteInvoke[3]}(${remoteInvoke[4]})`,

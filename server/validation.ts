@@ -51,6 +51,12 @@ export const playerAccountLinkSchema = z.object({
   ticket: z.string().min(40).max(256),
 });
 
+export const equipAvatarItemSchema = z.object({
+  shirtId: z
+    .enum(["polymon-shirt", "beta-tester-shirt", "creators-shirt"])
+    .nullable(),
+});
+
 export const clientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("ping"),

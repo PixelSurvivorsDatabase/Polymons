@@ -3476,7 +3476,9 @@ function StudioSurfaceMaterial({
             ? 0.35
             : object.material === "wood"
               ? 0.9
-              : 0.7
+              : object.surfaceTexture === "none"
+                ? 0.38
+                : 0.7
       }
       metalness={object.material === "metal" ? 0.82 : 0}
       emissive={selected ? "#2B174D" : "#000000"}

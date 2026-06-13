@@ -11,6 +11,7 @@ export type PolymonsUser = {
   username: string;
   displayName: string;
   avatarUrl: string | null;
+  equippedShirtId: import("./game/avatarCatalog").ShirtId | null;
 };
 
 export type PolymonsSession = {
@@ -84,6 +85,12 @@ export type Friendship = {
   incoming: boolean;
   user: PolymonsUser | null;
   gameId: string | null;
+};
+
+export type Wardrobe = {
+  equippedShirtId: import("./game/avatarCatalog").ShirtId | null;
+  totalCreatorVisits: number;
+  items: import("./game/avatarCatalog").AvatarCatalogItem[];
 };
 
 async function apiRequest<T>(
@@ -194,6 +201,36 @@ export function acceptFriendRequest(
   return apiRequest(`/v1/friends/${encodeURIComponent(friendshipId)}/accept`, {
     method: "POST",
     accessToken,
+  });
+}
+
+export function getWardrobe(
+  accessToken: string,
+): Promise<Wardrobe> {
+  return apiRequest("/v1/avatar/wardrobe", { accessToken });
+}
+
+export function claimAvatarItem(
+  itemId: string,
+  accessToken: string,
+): Promise<{ itemId: string; owned: true }> {
+  return apiRequest(`/v1/avatar/items/${encodeURIComponent(itemId)}/claim`, {
+    method: "POST",
+    accessToken,
+  });
+}
+
+export function equipShirt(
+  shirtId: import("./game/avatarCatalog").ShirtId | null,
+  accessToken: string,
+): Promise<{
+  equippedShirtId: import("./game/avatarCatalog").ShirtId | null;
+  user: PolymonsUser;
+}> {
+  return apiRequest("/v1/avatar/equip", {
+    method: "POST",
+    accessToken,
+    body: { shirtId },
   });
 }
 

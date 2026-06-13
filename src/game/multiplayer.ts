@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { isShirtId, type ShirtId } from "./avatarCatalog";
 
 export type PlayerTransform = {
   sequence: number;
@@ -11,6 +12,7 @@ export type RemotePlayer = {
   userId: string;
   username: string;
   displayName: string;
+  equippedShirtId: ShirtId | null;
   state: PlayerTransform;
 };
 
@@ -69,6 +71,8 @@ function isPlayer(value: unknown): value is ServerPlayer {
     typeof player.userId === "string" &&
     typeof player.username === "string" &&
     typeof player.displayName === "string" &&
+    (player.equippedShirtId === null ||
+      isShirtId(player.equippedShirtId)) &&
     (player.state === undefined || isTransform(player.state))
   );
 }
@@ -162,6 +166,7 @@ export function useMultiplayer(
   const sequence = useRef(0);
   const [connection, setConnection] = useState("Connecting");
   const [remotePlayers, setRemotePlayers] = useState<RemotePlayer[]>([]);
+  const [localPlayer, setLocalPlayer] = useState<ServerPlayer | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatError, setChatError] = useState("");
 
@@ -171,6 +176,7 @@ export function useMultiplayer(
     sequence.current = 0;
     setConnection("Connecting");
     setRemotePlayers([]);
+    setLocalPlayer(null);
     setChatMessages([]);
     setChatError("");
 
@@ -192,6 +198,7 @@ export function useMultiplayer(
           return;
         }
         setRemotePlayers(message.players.map(withState));
+        setLocalPlayer(message.player);
         setChatMessages(message.chatMessages);
         return;
       }
@@ -290,6 +297,7 @@ export function useMultiplayer(
   return {
     connection,
     remotePlayers,
+    localPlayer,
     chatMessages,
     chatError,
     sendState,

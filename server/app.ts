@@ -24,11 +24,13 @@ import {
   createAuthClient,
   loadProfile,
   publicSession,
+  syncAvatarUnlocks,
 } from "./supabase.js";
 import { isLoginDisabled } from "./official-account.js";
 import type { PresenceSnapshot } from "./websocket.js";
 import {
   friendRequestSchema,
+  equipAvatarItemSchema,
   loginSchema,
   playerAccountLinkSchema,
   playSessionSchema,
@@ -244,6 +246,96 @@ export function createApp(
     response.json({ user: await loadProfile(admin, user.id) });
   });
 
+  app.get("/v1/avatar/wardrobe", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const totalCreatorVisits = await syncAvatarUnlocks(admin, user.id);
+    const [
+      { data: profile, error: profileError },
+      { data: items, error: itemsError },
+      { data: inventory, error: inventoryError },
+    ] = await Promise.all([
+      admin
+        .from("profiles")
+        .select("equipped_shirt_id")
+        .eq("id", user.id)
+        .single(),
+      admin
+        .from("avatar_items")
+        .select(
+          "id, name, description, unlock_type, unlock_threshold, sort_order",
+        )
+        .order("sort_order"),
+      admin
+        .from("user_avatar_items")
+        .select("item_id")
+        .eq("user_id", user.id),
+    ]);
+    if (profileError) throw profileError;
+    if (itemsError) throw itemsError;
+    if (inventoryError) throw inventoryError;
+
+    const owned = new Set((inventory ?? []).map((item) => item.item_id));
+    response.json({
+      equippedShirtId: profile.equipped_shirt_id,
+      totalCreatorVisits,
+      items: (items ?? []).map((item) => ({
+        id: item.id,
+        name: item.name,
+        description: item.description,
+        unlockType: item.unlock_type,
+        unlockThreshold: item.unlock_threshold,
+        owned: owned.has(item.id),
+        equipped: profile.equipped_shirt_id === item.id,
+      })),
+    });
+  });
+
+  app.post("/v1/avatar/items/:itemId/claim", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const itemId = request.params.itemId;
+    const { data: item, error: itemError } = await admin
+      .from("avatar_items")
+      .select("id, unlock_type")
+      .eq("id", itemId)
+      .maybeSingle();
+    if (itemError) throw itemError;
+    if (!item) throw new HttpError(404, "Avatar item not found.");
+    if (item.unlock_type !== "free") {
+      throw new HttpError(403, "This item must be unlocked.");
+    }
+    const { error } = await admin.from("user_avatar_items").upsert(
+      { user_id: user.id, item_id: item.id },
+      { onConflict: "user_id,item_id", ignoreDuplicates: true },
+    );
+    if (error) throw error;
+    response.status(201).json({ itemId: item.id, owned: true });
+  });
+
+  app.post("/v1/avatar/equip", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const input = parseBody(equipAvatarItemSchema, request.body);
+    if (input.shirtId) {
+      await syncAvatarUnlocks(admin, user.id);
+      const { data: owned, error: ownedError } = await admin
+        .from("user_avatar_items")
+        .select("item_id")
+        .eq("user_id", user.id)
+        .eq("item_id", input.shirtId)
+        .maybeSingle();
+      if (ownedError) throw ownedError;
+      if (!owned) throw new HttpError(403, "You do not own this shirt.");
+    }
+    const { error } = await admin
+      .from("profiles")
+      .update({ equipped_shirt_id: input.shirtId })
+      .eq("id", user.id);
+    if (error) throw error;
+    response.json({
+      equippedShirtId: input.shirtId,
+      user: await loadProfile(admin, user.id),
+    });
+  });
+
   app.get("/v1/admin/accounts", async (request, response) => {
     await ownerUser(request, admin);
     const page = integerQuery(request.query.page, 1, 1, 10_000);
@@ -257,7 +349,7 @@ export function createApp(
       userIds.length
         ? admin
             .from("profiles")
-            .select("id, username, display_name, avatar_url, created_at")
+            .select("id, username, display_name, avatar_url, equipped_shirt_id, created_at")
             .in("id", userIds)
         : Promise.resolve({ data: [], error: null }),
       admin.from("games").select("id, owner_id, visit_count"),
@@ -318,6 +410,7 @@ export function createApp(
           username: profile?.username ?? "unknown",
           displayName: profile?.display_name ?? "Unknown player",
           avatarUrl: profile?.avatar_url ?? null,
+          equippedShirtId: profile?.equipped_shirt_id ?? null,
           joinedAt: profile?.created_at ?? authUser.created_at,
           lastSignInAt: authUser.last_sign_in_at ?? null,
           role: isOwnerAccount(authUser) ? "owner" : "player",
@@ -543,13 +636,13 @@ export function createApp(
     const [usernames, displayNames] = await Promise.all([
       admin
         .from("profiles")
-        .select("id, username, display_name, avatar_url, created_at")
+        .select("id, username, display_name, avatar_url, equipped_shirt_id, created_at")
         .ilike("username", pattern)
         .order("username")
         .limit(12),
       admin
         .from("profiles")
-        .select("id, username, display_name, avatar_url, created_at")
+        .select("id, username, display_name, avatar_url, equipped_shirt_id, created_at")
         .ilike("display_name", pattern)
         .order("username")
         .limit(12),
@@ -564,6 +657,7 @@ export function createApp(
           username: player.username,
           displayName: player.display_name,
           avatarUrl: player.avatar_url,
+          equippedShirtId: player.equipped_shirt_id,
           joinedAt: player.created_at,
         },
       ]),
@@ -578,7 +672,7 @@ export function createApp(
     }
     const { data: player, error: playerError } = await admin
       .from("profiles")
-      .select("id, username, display_name, avatar_url, created_at")
+      .select("id, username, display_name, avatar_url, equipped_shirt_id, created_at")
       .eq("username", username)
       .maybeSingle();
     if (playerError) throw playerError;
@@ -622,6 +716,7 @@ export function createApp(
         username: player.username,
         displayName: player.display_name,
         avatarUrl: player.avatar_url,
+        equippedShirtId: player.equipped_shirt_id,
         joinedAt: player.created_at,
       },
       stats: {
@@ -732,7 +827,7 @@ export function createApp(
     const { data: profiles } = profileIds.length
       ? await admin
           .from("profiles")
-          .select("id, username, display_name, avatar_url")
+          .select("id, username, display_name, avatar_url, equipped_shirt_id")
           .in("id", profileIds)
       : { data: [] };
     const profileById = new Map(
@@ -764,6 +859,7 @@ export function createApp(
                 username: profile.username,
                 displayName: profile.display_name,
                 avatarUrl: profile.avatar_url,
+                equippedShirtId: profile.equipped_shirt_id,
               }
             : null,
           gameId: online ? gameSlugById.get(online.gameId) ?? null : null,

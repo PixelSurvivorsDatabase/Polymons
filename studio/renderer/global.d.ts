@@ -5,6 +5,11 @@ type StudioUser = {
   username: string;
   displayName: string;
   avatarUrl: string | null;
+  equippedShirtId:
+    | "polymon-shirt"
+    | "beta-tester-shirt"
+    | "creators-shirt"
+    | null;
 };
 
 type StudioAuth = {

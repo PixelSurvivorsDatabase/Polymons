@@ -350,6 +350,142 @@ var inventory = remote.InvokeServer("lava");`,
   );
 });
 
+test("dispatches FireServer to OnServerEvent and edits leaderstats", () => {
+  const fixture = project();
+  fixture.remotes = [
+    {
+      id: "coins-event",
+      name: "GiveCoins",
+      kind: "remoteEvent",
+    },
+  ];
+  fixture.leaderstats = [
+    { id: "coins", name: "Coins", type: "number", defaultValue: 0 },
+  ];
+  fixture.scripts = [
+    {
+      id: "coins-server",
+      name: "CoinsServer",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `local remote = ReplicatedStorage:FindFirstChild("GiveCoins")
+remote.OnServerEvent:Connect(function(player, amount)
+  Leaderstats:Add(player, "Coins", amount)
+end)`,
+    },
+    {
+      id: "coins-client",
+      name: "CoinsButton",
+      kind: "localScript",
+      parent: "play-button",
+      source: `local remote = ReplicatedStorage:FindFirstChild("GiveCoins")
+script.Parent.Activated:Connect(function()
+  remote:FireServer(10)
+end)`,
+    },
+  ];
+  fixture.gui.push({
+    ...fixture.gui[1],
+    id: "play-button",
+    name: "GiveCoinsButton",
+    type: "textButton",
+    parentId: "screen",
+  });
+
+  const started = runPolyProject(fixture);
+  const clicked = activatePolyGui(started.project, "play-button");
+
+  assert.equal(started.project.leaderstats[0].defaultValue, 0);
+  assert.equal(clicked.project.leaderstats[0].defaultValue, 10);
+  assert.equal(clicked.diagnostics.length, 0);
+});
+
+test("returns OnServerInvoke values to C# LocalScripts", () => {
+  const fixture = project();
+  fixture.language = "csharp";
+  fixture.remotes = [
+    {
+      id: "reward-function",
+      name: "GetReward",
+      kind: "remoteFunction",
+    },
+  ];
+  fixture.leaderstats = [
+    { id: "coins", name: "Coins", type: "number", defaultValue: 0 },
+  ];
+  fixture.scripts = [
+    {
+      id: "reward-server",
+      name: "RewardServer",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `var remote = ReplicatedStorage.Find("GetReward");
+remote.OnServerInvoke = (player, amount) => {
+  return amount;
+};`,
+    },
+    {
+      id: "reward-client",
+      name: "RewardClient",
+      kind: "localScript",
+      parent: "StarterPlayerScripts",
+      source: `var remote = ReplicatedStorage.Find("GetReward");
+var player = Players.LocalPlayer;
+var reward = remote.InvokeServer(35);
+player.Coins = reward;`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+
+  assert.equal(
+    result.diagnostics.length,
+    0,
+    JSON.stringify(result.diagnostics, null, 2),
+  );
+  assert.equal(result.project.leaderstats[0].defaultValue, 35);
+});
+
+test("supports C++ OnServerEvent callbacks", () => {
+  const fixture = project();
+  fixture.language = "cpp";
+  fixture.remotes = [
+    {
+      id: "coins-event",
+      name: "GiveCoins",
+      kind: "remoteEvent",
+    },
+  ];
+  fixture.leaderstats = [
+    { id: "coins", name: "Coins", type: "number", defaultValue: 1 },
+  ];
+  fixture.scripts = [
+    {
+      id: "coins-server",
+      name: "CoinsServer",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `auto remote = ReplicatedStorage.Find("GiveCoins");
+remote.OnServerEvent.Connect([&](auto player, auto amount) {
+  Leaderstats::Add(player, "Coins", amount);
+});`,
+    },
+    {
+      id: "coins-client",
+      name: "CoinsClient",
+      kind: "localScript",
+      parent: "StarterPlayerScripts",
+      source: `auto remote = ReplicatedStorage.Find("GiveCoins");
+remote.FireServer(4);`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+
+  assert.equal(result.diagnostics.length, 0);
+  assert.equal(result.project.leaderstats[0].defaultValue, 5);
+});
+
 test("runs TextButton LocalScripts only when the button is activated", () => {
   const fixture = project();
   fixture.gui.push({
@@ -617,6 +753,7 @@ test("requires an immutable game room id in multiplayer welcomes", () => {
     userId: "player-1",
     username: "lava",
     displayName: "Lava",
+    equippedShirtId: "polymon-shirt",
   };
   const valid = parseServerMessage(
     JSON.stringify({

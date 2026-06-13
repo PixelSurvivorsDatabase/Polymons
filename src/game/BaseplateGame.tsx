@@ -19,12 +19,16 @@ import {
   useState,
 } from "react";
 import {
+  CanvasTexture,
   Color,
   Group,
   MathUtils,
+  SRGBColorSpace,
   Vector2,
   Vector3,
 } from "three";
+import { ShirtMaterials } from "./AvatarPreview";
+import type { ShirtId } from "./avatarCatalog";
 import { chatUsernameColor } from "./chat";
 import type {
   ChatMessage,
@@ -267,10 +271,16 @@ function BlockAvatar({
   moving,
   grounded,
   facing,
+  player,
 }: {
   moving: MutableRefObject<number>;
   grounded: MutableRefObject<boolean>;
   facing: MutableRefObject<number>;
+  player?: {
+    username: string;
+    displayName: string;
+    equippedShirtId?: ShirtId | null;
+  };
 }) {
   const root = useRef<Group>(null);
   const leftArm = useRef<Group>(null);
@@ -353,13 +363,29 @@ function BlockAvatar({
         </mesh>
       </group>
 
-      <BlockPart size={[2.2, 2, 1.2]} position={[0, 0.5, 0]} color="#7650d8" />
+      {player && (
+        <PlayerNameTag
+          username={player.username}
+          displayName={player.displayName}
+        />
+      )}
+
+      <mesh position={[0, 0.5, 0]} castShadow receiveShadow>
+        <boxGeometry args={[2.2, 2, 1.2]} />
+        <ShirtMaterials shirtId={player?.equippedShirtId ?? null} />
+      </mesh>
 
       <group ref={leftArm} position={[-1.6, 1.5, 0]}>
-        <BlockPart size={[1, 2.1, 1.05]} position={[0, -1.05, 0]} color="#e7bd91" />
+        <mesh position={[0, -1.05, 0]} castShadow receiveShadow>
+          <boxGeometry args={[1, 2.1, 1.05]} />
+          <ShirtMaterials shirtId={player?.equippedShirtId ?? null} sleeve />
+        </mesh>
       </group>
       <group ref={rightArm} position={[1.6, 1.5, 0]}>
-        <BlockPart size={[1, 2.1, 1.05]} position={[0, -1.05, 0]} color="#e7bd91" />
+        <mesh position={[0, -1.05, 0]} castShadow receiveShadow>
+          <boxGeometry args={[1, 2.1, 1.05]} />
+          <ShirtMaterials shirtId={player?.equippedShirtId ?? null} sleeve />
+        </mesh>
       </group>
 
       <group ref={leftLeg} position={[-0.58, -0.5, 0]}>
@@ -369,6 +395,51 @@ function BlockAvatar({
         <BlockPart size={[1.1, 2, 1.1]} position={[0, -1, 0]} color="#313542" />
       </group>
     </group>
+  );
+}
+
+function PlayerNameTag({
+  username,
+  displayName,
+}: {
+  username: string;
+  displayName: string;
+}) {
+  const texture = useMemo(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 768;
+    canvas.height = 160;
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+    context.textAlign = "center";
+    context.lineJoin = "round";
+    context.strokeStyle = "rgba(0,0,0,0.9)";
+    context.fillStyle = "#ffffff";
+    context.font = "700 52px system-ui";
+    context.lineWidth = 12;
+    context.strokeText(displayName, 384, 65);
+    context.fillText(displayName, 384, 65);
+    context.fillStyle = "rgba(255,255,255,0.82)";
+    context.font = "600 30px system-ui";
+    context.lineWidth = 9;
+    context.strokeText(`@${username}`, 384, 116);
+    context.fillText(`@${username}`, 384, 116);
+    const next = new CanvasTexture(canvas);
+    next.colorSpace = SRGBColorSpace;
+    next.needsUpdate = true;
+    return next;
+  }, [displayName, username]);
+  useEffect(() => () => texture?.dispose(), [texture]);
+  if (!texture) return null;
+  return (
+    <sprite position={[0, 4.25, 0]} scale={[3.9, 0.82, 1]} renderOrder={50}>
+      <spriteMaterial
+        map={texture}
+        transparent
+        depthTest={false}
+        depthWrite={false}
+      />
+    </sprite>
   );
 }
 
@@ -409,7 +480,12 @@ function RemoteBlockAvatar({ player }: { player: RemotePlayer }) {
       name={`remote-player-${player.username}`}
       position={player.state.position}
     >
-      <BlockAvatar moving={moving} grounded={grounded} facing={facing} />
+      <BlockAvatar
+        moving={moving}
+        grounded={grounded}
+        facing={facing}
+        player={player}
+      />
     </group>
   );
 }
@@ -420,12 +496,18 @@ function PlayerController({
   onPlayerState,
   spawn,
   playerSettings,
+  localPlayer,
 }: {
   input: MutableRefObject<InputState>;
   onTelemetry: (telemetry: Telemetry) => void;
   onPlayerState?: (state: Omit<PlayerTransform, "sequence">) => void;
   spawn: { x: number; y: number; z: number };
   playerSettings: PolyPlayerSettings;
+  localPlayer?: {
+    username: string;
+    displayName: string;
+    equippedShirtId?: ShirtId | null;
+  };
 }) {
   const body = useRef<RapierRigidBody>(null);
   const groundContacts = useRef(0);
@@ -587,7 +669,12 @@ function PlayerController({
         }}
       />
       <group name="Humanoid">
-        <BlockAvatar moving={moving} grounded={grounded} facing={facing} />
+        <BlockAvatar
+          moving={moving}
+          grounded={grounded}
+          facing={facing}
+          player={localPlayer}
+        />
       </group>
     </RigidBody>
   );
@@ -719,7 +806,11 @@ function ProjectBlock({
   });
   if (object.visible === false) return null;
   const material = {
-    plastic: { roughness: 0.72, metalness: 0, emissiveIntensity: 0 },
+    plastic: {
+      roughness: object.surfaceTexture === "none" ? 0.38 : 0.72,
+      metalness: 0,
+      emissiveIntensity: 0,
+    },
     metal: { roughness: 0.28, metalness: 0.82, emissiveIntensity: 0 },
     wood: { roughness: 0.94, metalness: 0, emissiveIntensity: 0 },
     neon: { roughness: 0.35, metalness: 0.05, emissiveIntensity: 0.65 },
@@ -822,6 +913,7 @@ function Scene({
   spawn,
   onWorldTouched,
   onWorldTouchEnded,
+  localPlayer,
 }: {
   input: MutableRefObject<InputState>;
   onTelemetry: (telemetry: Telemetry) => void;
@@ -836,6 +928,11 @@ function Scene({
   spawn: { x: number; y: number; z: number };
   onWorldTouched?: (worldObjectId: string) => void;
   onWorldTouchEnded?: (worldObjectId: string) => void;
+  localPlayer?: {
+    username: string;
+    displayName: string;
+    equippedShirtId?: ShirtId | null;
+  };
 }) {
   return (
     <>
@@ -848,6 +945,7 @@ function Scene({
           onPlayerState={onPlayerState}
           spawn={spawn}
           playerSettings={playerSettings}
+          localPlayer={localPlayer}
         />
         {remotePlayers.map((player) => (
           <RemoteBlockAvatar key={player.id} player={player} />
@@ -1208,6 +1306,7 @@ export default function BaseplateGame({
   localPlayer?: {
     username: string;
     displayName: string;
+    equippedShirtId?: ShirtId | null;
   };
   onFriendRequest?: (username: string) => Promise<void>;
   chatMessages?: ChatMessage[];
@@ -1313,6 +1412,7 @@ export default function BaseplateGame({
             spawn={spawn}
             onWorldTouched={onWorldTouched}
             onWorldTouchEnded={onWorldTouchEnded}
+            localPlayer={localPlayer}
           />
         </Suspense>
       </Canvas>

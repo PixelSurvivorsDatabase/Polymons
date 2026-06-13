@@ -9,6 +9,7 @@ import {
   Menu,
   Plus,
   Search,
+  Shirt,
   UserRound,
   Users,
   X,
@@ -25,10 +26,13 @@ import {
 } from "react-router-dom";
 import {
   acceptFriendRequest,
+  claimAvatarItem,
   createPlayerAccountLink,
   createPlaySession,
+  equipShirt,
   getGame,
   getPlayerProfile,
+  getWardrobe,
   listFriends,
   listGames,
   playerAccountUrl,
@@ -42,7 +46,9 @@ import {
   type PlaySession,
   type PublicPlayer,
   type PublicPlayerProfile,
+  type Wardrobe,
 } from "./api";
+import type { ShirtId } from "./game/avatarCatalog";
 import { useAuth } from "./auth";
 import { games as fallbackGames, type Game } from "./data";
 import { useMultiplayer } from "./game/multiplayer";
@@ -55,6 +61,7 @@ import {
 } from "./game/polyProject";
 
 const BaseplateGame = lazy(() => import("./game/BaseplateGame"));
+const AvatarPreview = lazy(() => import("./game/AvatarPreview"));
 
 function displayGame(game: PlatformGame): Game {
   return {
@@ -94,6 +101,7 @@ const navItems = [
   { to: "/", label: "Home", icon: Home },
   { to: "/discover", label: "Discover", icon: Compass },
   { to: "/friends", label: "Friends", icon: Users },
+  { to: "/avatar", label: "Avatar", icon: Shirt },
   { to: "/profile", label: "Profile", icon: UserRound },
   { to: "/create", label: "Create", icon: Plus },
 ];
@@ -317,6 +325,7 @@ function Layout() {
             <Route path="/discover" element={<DiscoverPage />} />
             <Route path="/games/:gameId" element={<GamePage />} />
             <Route path="/friends" element={<FriendsPage />} />
+            <Route path="/avatar" element={<WardrobePage />} />
             <Route path="/profile" element={<ProfilePage />} />
             <Route path="/players/:username" element={<ProfilePage />} />
             <Route path="/create" element={<CreatePage />} />
@@ -714,6 +723,7 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
   const {
     connection,
     remotePlayers,
+    localPlayer: sessionPlayer,
     chatMessages,
     chatError,
     sendState,
@@ -750,7 +760,7 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
           playerSettings={runtime?.project.playerSettings}
           leaderstats={runtime?.project.leaderstats}
           projectName={runtime?.project.name}
-          localPlayer={user ?? undefined}
+          localPlayer={sessionPlayer ?? user ?? undefined}
           chatMessages={chatMessages}
           chatError={chatError}
           onSendChat={sendChat}
@@ -926,6 +936,224 @@ function FriendsPage() {
             </article>
           ))
         )}
+      </section>
+    </>
+  );
+}
+
+function WardrobePage() {
+  const { user, session, showAuth, refresh, updateUser } = useAuth();
+  const [wardrobe, setWardrobe] = useState<Wardrobe | null>(null);
+  const [selectedId, setSelectedId] = useState<ShirtId | null>(null);
+  const [view, setView] = useState<"inventory" | "catalog">("inventory");
+  const [status, setStatus] = useState("");
+  const [working, setWorking] = useState(false);
+
+  const loadWardrobe = useCallback(async () => {
+    if (!session) return;
+    setStatus("");
+    try {
+      let result;
+      try {
+        result = await getWardrobe(session.accessToken);
+      } catch {
+        const renewed = await refresh();
+        if (!renewed) throw new Error("Sign in again to open your wardrobe.");
+        result = await getWardrobe(renewed.accessToken);
+      }
+      setWardrobe(result);
+      setSelectedId((current) =>
+        current && result.items.some((item) => item.id === current)
+          ? current
+          : result.equippedShirtId ?? result.items[0]?.id ?? null,
+      );
+    } catch (error) {
+      setStatus(
+        error instanceof Error ? error.message : "Could not load your wardrobe.",
+      );
+    }
+  }, [refresh, session]);
+
+  useEffect(() => {
+    if (session) void loadWardrobe();
+  }, [loadWardrobe, session]);
+
+  if (!user || !session) {
+    return (
+      <section className="large-empty-state">
+        <Shirt size={48} />
+        <h2>Sign in to open your wardrobe.</h2>
+        <p>Collect shirts, preview your avatar, and choose what you wear.</p>
+        <button className="primary-button" onClick={() => showAuth()}>
+          Sign in
+        </button>
+      </section>
+    );
+  }
+
+  const selected =
+    wardrobe?.items.find((item) => item.id === selectedId) ?? null;
+  const visibleItems =
+    wardrobe?.items.filter((item) => view === "catalog" || item.owned) ?? [];
+  const activeSession = session;
+
+  async function withCurrentToken<T>(
+    request: (accessToken: string) => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await request(activeSession.accessToken);
+    } catch {
+      const renewed = await refresh();
+      if (!renewed) throw new Error("Sign in again to change your avatar.");
+      return request(renewed.accessToken);
+    }
+  }
+
+  async function claimSelected() {
+    if (!selected) return;
+    setWorking(true);
+    setStatus("");
+    try {
+      await withCurrentToken((accessToken) =>
+        claimAvatarItem(selected.id, accessToken),
+      );
+      await loadWardrobe();
+      setStatus(`${selected.name} was added to your inventory.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not get this shirt.");
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function equipSelected(shirtId: ShirtId | null) {
+    setWorking(true);
+    setStatus("");
+    try {
+      const result = await withCurrentToken((accessToken) =>
+        equipShirt(shirtId, accessToken),
+      );
+      updateUser(result.user);
+      await loadWardrobe();
+      setStatus(shirtId ? "Shirt equipped." : "Shirt removed.");
+    } catch (error) {
+      setStatus(
+        error instanceof Error ? error.message : "Could not change your shirt.",
+      );
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  return (
+    <>
+      <section className="page-heading wardrobe-heading">
+        <div>
+          <span className="eyebrow">Avatar</span>
+          <h1>Wardrobe</h1>
+        </div>
+        <p>Preview your block avatar and choose what you wear in every game.</p>
+      </section>
+      <section className="wardrobe-layout">
+        <div className="wardrobe-preview-panel">
+          <div className="wardrobe-preview">
+            <Suspense fallback={<span>Loading avatar...</span>}>
+              <AvatarPreview
+                shirtId={selected?.id ?? wardrobe?.equippedShirtId ?? null}
+              />
+            </Suspense>
+          </div>
+          <div className="wardrobe-preview-copy">
+            <span>Previewing</span>
+            <h2>{selected?.name ?? "No shirt"}</h2>
+            <p>{selected?.description ?? "Your default block avatar."}</p>
+            {selected?.owned ? (
+              selected.equipped ? (
+                <button
+                  className="secondary-button"
+                  disabled={working}
+                  onClick={() => void equipSelected(null)}
+                >
+                  Unequip
+                </button>
+              ) : (
+                <button
+                  className="primary-button"
+                  disabled={working}
+                  onClick={() => void equipSelected(selected.id)}
+                >
+                  Equip shirt
+                </button>
+              )
+            ) : selected?.unlockType === "free" ? (
+              <button
+                className="primary-button"
+                disabled={working}
+                onClick={() => void claimSelected()}
+              >
+                Get for free
+              </button>
+            ) : (
+              <div className="creator-unlock-progress">
+                <strong>
+                  {Math.min(
+                    wardrobe?.totalCreatorVisits ?? 0,
+                    selected?.unlockThreshold ?? 100,
+                  )}
+                  /{selected?.unlockThreshold ?? 100} visits
+                </strong>
+                <span>Earned from visits across your games.</span>
+              </div>
+            )}
+            {status && <p className="wardrobe-status">{status}</p>}
+          </div>
+        </div>
+        <div className="wardrobe-browser">
+          <div className="wardrobe-tabs">
+            <button
+              className={view === "inventory" ? "active" : ""}
+              onClick={() => setView("inventory")}
+            >
+              Inventory
+            </button>
+            <button
+              className={view === "catalog" ? "active" : ""}
+              onClick={() => setView("catalog")}
+            >
+              Shirts
+            </button>
+          </div>
+          <div className="shirt-grid">
+            {visibleItems.map((item) => (
+              <button
+                key={item.id}
+                className={`shirt-card ${selectedId === item.id ? "selected" : ""}`}
+                onClick={() => setSelectedId(item.id)}
+              >
+                <span className={`shirt-texture shirt-texture-${item.id}`}>
+                  {item.id === "polymon-shirt" && <b>P</b>}
+                  {item.id === "beta-tester-shirt" && <b>BETA</b>}
+                  {item.id === "creators-shirt" && <b>APPROVED</b>}
+                </span>
+                <span className="shirt-card-copy">
+                  <strong>{item.name}</strong>
+                  <small>
+                    {item.equipped
+                      ? "Equipped"
+                      : item.owned
+                        ? "Owned"
+                        : item.unlockType === "free"
+                          ? "Free"
+                          : "100 visits"}
+                  </small>
+                </span>
+              </button>
+            ))}
+            {visibleItems.length === 0 && (
+              <p className="muted-copy">Your shirt inventory is empty.</p>
+            )}
+          </div>
+        </div>
       </section>
     </>
   );

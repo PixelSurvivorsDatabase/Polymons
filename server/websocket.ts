@@ -29,6 +29,7 @@ type RoomPlayer = {
   userId: string;
   username: string;
   displayName: string;
+  equippedShirtId: string | null;
   state: PlayerState;
 };
 
@@ -248,6 +249,7 @@ export function attachWebSocketServer(
             userId: peerConnection.profile.id,
             username: peerConnection.profile.username,
             displayName: peerConnection.profile.displayName,
+            equippedShirtId: peerConnection.profile.equippedShirtId,
             state: peerConnection.state,
           });
         }
@@ -260,6 +262,7 @@ export function attachWebSocketServer(
         userId: connection.profile.id,
         username: connection.profile.username,
         displayName: connection.profile.displayName,
+        equippedShirtId: connection.profile.equippedShirtId,
         state: connection.state,
       };
 

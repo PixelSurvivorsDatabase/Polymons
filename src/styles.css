@@ -1980,6 +1980,206 @@ h3,
   padding: 25px 10px;
 }
 
+.wardrobe-heading {
+  align-items: end;
+}
+
+.wardrobe-layout {
+  display: grid;
+  grid-template-columns: minmax(360px, 0.9fr) minmax(460px, 1.1fr);
+  gap: 22px;
+}
+
+.wardrobe-preview-panel,
+.wardrobe-browser {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: rgba(21, 19, 29, 0.92);
+}
+
+.wardrobe-preview {
+  position: relative;
+  height: 480px;
+  background:
+    radial-gradient(circle at 50% 40%, rgba(130, 76, 244, 0.25), transparent 43%),
+    linear-gradient(145deg, #111019, #08080d);
+}
+
+.wardrobe-preview::after {
+  position: absolute;
+  inset: auto 12% 9% 12%;
+  height: 2px;
+  border-radius: 50%;
+  background: rgba(151, 105, 255, 0.34);
+  box-shadow: 0 0 35px 16px rgba(111, 64, 220, 0.17);
+  content: "";
+  pointer-events: none;
+}
+
+.wardrobe-preview-copy {
+  padding: 24px;
+}
+
+.wardrobe-preview-copy > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.wardrobe-preview-copy h2 {
+  margin: 7px 0 8px;
+}
+
+.wardrobe-preview-copy p {
+  color: var(--muted);
+}
+
+.wardrobe-preview-copy button {
+  width: 100%;
+}
+
+.wardrobe-status {
+  margin: 12px 0 0;
+  font-size: 13px;
+}
+
+.creator-unlock-progress {
+  display: grid;
+  gap: 5px;
+  border: 1px solid rgba(139, 92, 246, 0.26);
+  border-radius: 12px;
+  background: rgba(118, 72, 218, 0.09);
+  padding: 13px 15px;
+}
+
+.creator-unlock-progress span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.wardrobe-tabs {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--line);
+  padding: 16px 18px;
+}
+
+.wardrobe-tabs button {
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-weight: 700;
+  padding: 10px 16px;
+}
+
+.wardrobe-tabs button.active {
+  background: rgba(139, 92, 246, 0.16);
+  color: #fff;
+}
+
+.shirt-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  padding: 18px;
+}
+
+.shirt-card {
+  display: grid;
+  gap: 11px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #111019;
+  color: inherit;
+  cursor: pointer;
+  padding: 10px;
+  text-align: left;
+  transition:
+    border-color 150ms ease,
+    transform 150ms ease,
+    background 150ms ease;
+}
+
+.shirt-card:hover {
+  transform: translateY(-2px);
+}
+
+.shirt-card.selected {
+  border-color: rgba(168, 126, 255, 0.72);
+  background: rgba(118, 72, 218, 0.11);
+}
+
+.shirt-texture {
+  position: relative;
+  display: grid;
+  min-height: 168px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 11px;
+  background: #17131e;
+}
+
+.shirt-texture::after {
+  position: absolute;
+  inset: -30%;
+  background: repeating-linear-gradient(
+    155deg,
+    transparent 0 38px,
+    rgba(255, 255, 255, 0.09) 40px 54px
+  );
+  content: "";
+  transform: rotate(-5deg);
+}
+
+.shirt-texture-polymon-shirt {
+  background: linear-gradient(135deg, #05050a, #321269 58%, #0b0910);
+}
+
+.shirt-texture-beta-tester-shirt {
+  background: linear-gradient(135deg, #18b96f, #e32d43 50%, #8227e8);
+}
+
+.shirt-texture-creators-shirt {
+  background: linear-gradient(135deg, #070810, #281053 45%, #6232e4 72%, #126ae0);
+}
+
+.shirt-texture b {
+  z-index: 1;
+  max-width: 82%;
+  border: 2px solid rgba(255, 255, 255, 0.65);
+  border-radius: 9px;
+  background: rgba(5, 4, 11, 0.7);
+  color: #fff;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  font-size: 14px;
+  letter-spacing: 0.06em;
+  padding: 8px 11px;
+}
+
+.shirt-texture-polymon-shirt b {
+  border: 0;
+  background: linear-gradient(145deg, #9a52ff, #e84fbd 52%, #3471ee);
+  background-clip: text;
+  font-size: 54px;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.shirt-card-copy {
+  display: grid;
+  gap: 3px;
+  padding: 0 3px 3px;
+}
+
+.shirt-card-copy small {
+  color: var(--muted);
+}
+
 .profile-stats strong,
 .profile-stats span {
   display: block;
@@ -2122,6 +2322,19 @@ h3,
 }
 
 @media (max-width: 1180px) {
+  .wardrobe-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .wardrobe-preview-panel {
+    display: grid;
+    grid-template-columns: minmax(360px, 1fr) minmax(280px, 0.7fr);
+  }
+
+  .wardrobe-preview {
+    height: 430px;
+  }
+
   .game-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -2234,6 +2447,18 @@ h3,
 }
 
 @media (max-width: 680px) {
+  .wardrobe-preview-panel {
+    display: block;
+  }
+
+  .wardrobe-preview {
+    height: 390px;
+  }
+
+  .shirt-grid {
+    grid-template-columns: 1fr;
+  }
+
   .topbar {
     height: 64px;
     gap: 9px;
