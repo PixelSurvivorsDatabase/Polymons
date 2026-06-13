@@ -14,6 +14,7 @@ import {
   activatePolyGui,
   activatePolyTouched,
   activatePolyTool,
+  executePolyCommand,
   type PolyProject,
   type PolyRuntimeResult,
   runPolyProject,
@@ -489,6 +490,11 @@ function StudioPlayerGame({
     [project],
   );
   const [runtime, setRuntime] = useState<PolyRuntimeResult | null>(null);
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [terminalTab, setTerminalTab] = useState<"output" | "command" | "data">(
+    "output",
+  );
+  const [command, setCommand] = useState("");
 
   useEffect(() => {
     setRuntime(initialRuntime);
@@ -608,22 +614,127 @@ function StudioPlayerGame({
                   };
                 });
               }}
+              onWorldTouchEnded={(worldObjectId) => {
+                setRuntime((current) => {
+                  if (!current) return current;
+                  const activated = activatePolyTouched(
+                    current.project,
+                    worldObjectId,
+                    "TouchEnded",
+                  );
+                  return {
+                    ...activated,
+                    diagnostics: [
+                      ...current.diagnostics,
+                      ...activated.diagnostics,
+                    ],
+                    output: [...current.output, ...activated.output],
+                    animationRequests: [
+                      ...new Set([
+                        ...current.animationRequests,
+                        ...activated.animationRequests,
+                      ]),
+                    ],
+                    animationVersion:
+                      current.animationVersion +
+                      (activated.animationRequests.length > 0 ? 1 : 0),
+                  };
+                });
+              }}
             />
-            {(runtime.output.length > 0 || runtime.diagnostics.length > 0) && (
-              <aside className="player-output">
-                <strong>Output</strong>
-                {runtime.diagnostics.map((diagnostic, index) => (
-                  <span className="output-error" key={`diagnostic-${index}`}>
-                    {diagnostic.scriptName}:{diagnostic.line} {diagnostic.message}
-                  </span>
-                ))}
-                {runtime.output.map((entry, index) => (
-                  <span className={`output-${entry.level}`} key={`output-${index}`}>
-                    [{entry.scriptName}] {entry.message}
-                  </span>
-                ))}
-              </aside>
-            )}
+            <aside className={`playtest-console ${terminalOpen ? "open" : ""}`}>
+              <header>
+                <button
+                  className={terminalTab === "output" ? "active" : ""}
+                  onClick={() => setTerminalTab("output")}
+                >
+                  Output
+                </button>
+                <button
+                  className={terminalTab === "command" ? "active" : ""}
+                  onClick={() => setTerminalTab("command")}
+                >
+                  Command
+                </button>
+                <button
+                  className={terminalTab === "data" ? "active" : ""}
+                  onClick={() => setTerminalTab("data")}
+                >
+                  Data
+                </button>
+                <button
+                  className="console-toggle"
+                  onClick={() => setTerminalOpen((open) => !open)}
+                >
+                  {terminalOpen ? "Collapse" : "Open console"}
+                </button>
+              </header>
+              {terminalOpen && terminalTab === "output" && (
+                <div className="console-scroll">
+                  {runtime.diagnostics.map((diagnostic, index) => (
+                    <span className="output-error" key={`diagnostic-${index}`}>
+                      {diagnostic.scriptName}:{diagnostic.line} {diagnostic.message}
+                    </span>
+                  ))}
+                  {runtime.output.map((entry, index) => (
+                    <span
+                      className={`output-${entry.level}`}
+                      key={`output-${index}`}
+                    >
+                      [{entry.scriptName}] {entry.message}
+                    </span>
+                  ))}
+                  {runtime.output.length === 0 &&
+                    runtime.diagnostics.length === 0 && (
+                      <span>No output yet.</span>
+                    )}
+                </div>
+              )}
+              {terminalOpen && terminalTab === "command" && (
+                <form
+                  className="console-command"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (!command.trim()) return;
+                    setRuntime((current) =>
+                      current ? executePolyCommand(current, command) : current,
+                    );
+                    setCommand("");
+                  }}
+                >
+                  <div className="console-scroll command-help">
+                    <span>Try `help`, `leaderstats set local Coins 10`, or `data set PlayerData Level 2`.</span>
+                  </div>
+                  <label>
+                    <b>&gt;</b>
+                    <input
+                      value={command}
+                      onChange={(event) => setCommand(event.target.value)}
+                      placeholder="Enter a Studio playtest command"
+                      autoFocus
+                    />
+                  </label>
+                </form>
+              )}
+              {terminalOpen && terminalTab === "data" && (
+                <div className="console-data console-scroll">
+                  <section>
+                    <strong>Leaderstats</strong>
+                    {runtime.project.leaderstats.map((stat) => (
+                      <span key={stat.id}>
+                        {stat.name}: {String(stat.defaultValue)}
+                      </span>
+                    ))}
+                  </section>
+                  <section>
+                    <strong>DataStores</strong>
+                    <pre>
+                      {JSON.stringify(runtime.project.dataStores, null, 2)}
+                    </pre>
+                  </section>
+                </div>
+              )}
+            </aside>
           </Suspense>
         ) : (
           <div className="player-loading">Loading Studio project...</div>

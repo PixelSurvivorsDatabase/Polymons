@@ -74,7 +74,15 @@ type StudioScript = {
 type StudioGuiObject = {
   id: string;
   name: string;
-  type: "screenGui" | "frame" | "textLabel" | "textButton";
+  type:
+    | "screenGui"
+    | "frame"
+    | "textLabel"
+    | "textButton"
+    | "textBox"
+    | "imageLabel"
+    | "imageButton"
+    | "scrollingFrame";
   parentId: string | null;
   position: [number, number];
   size: [number, number];
@@ -87,6 +95,12 @@ type StudioGuiObject = {
   textSize: number;
   borderRadius: number;
   zIndex: number;
+  anchorPoint: [number, number];
+  clipDescendants: boolean;
+  locked: boolean;
+  imageUrl: string;
+  placeholder: string;
+  canvasSize: [number, number];
 };
 
 type StudioAnimation = {
@@ -126,6 +140,8 @@ type StudioProject = {
     jumpPower: number;
     cameraFieldOfView: number;
     maxHealth: number;
+    sprintEnabled: boolean;
+    sprintMultiplier: number;
   };
   leaderstats: Array<{
     id: string;

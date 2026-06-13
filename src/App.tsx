@@ -942,6 +942,8 @@ function ProfilePage() {
   const [syncing, setSyncing] = useState(false);
   const [syncAttempted, setSyncAttempted] = useState(false);
   const [syncError, setSyncError] = useState("");
+  const [friendStatus, setFriendStatus] = useState("");
+  const [sendingFriendRequest, setSendingFriendRequest] = useState(false);
   useEffect(() => {
     if (!requestedUsername) return;
     setProfile(null);
@@ -1023,6 +1025,43 @@ function ProfilePage() {
           </button>
           <button className="secondary-button" onClick={logout}>Sign out</button>
         </div>}
+        {!ownProfile && (
+          <div className="profile-actions">
+            <button
+              className="primary-button"
+              disabled={sendingFriendRequest || friendStatus === "Request sent"}
+              onClick={async () => {
+                if (!session) {
+                  showAuth();
+                  return;
+                }
+                setSendingFriendRequest(true);
+                setFriendStatus("");
+                try {
+                  await sendFriendRequest(profile.player.username, session.accessToken);
+                  setFriendStatus("Request sent");
+                } catch (error) {
+                  setFriendStatus(
+                    error instanceof Error
+                      ? error.message
+                      : "Could not send friend request.",
+                  );
+                } finally {
+                  setSendingFriendRequest(false);
+                }
+              }}
+            >
+              {sendingFriendRequest
+                ? "Sending..."
+                : friendStatus === "Request sent"
+                  ? "Request sent"
+                  : "Add Friend"}
+            </button>
+            {friendStatus && friendStatus !== "Request sent" && (
+              <span className="friend-status">{friendStatus}</span>
+            )}
+          </div>
+        )}
       </section>
       {playerOptions && (
         <PlayerOptionsDialog

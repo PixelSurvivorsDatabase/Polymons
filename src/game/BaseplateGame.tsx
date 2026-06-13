@@ -470,7 +470,10 @@ function PlayerController({
 
     const velocity = rigidBody.linvel();
     const walkSpeed = Math.max(1, playerSettings.walkSpeed / 3);
-    const targetSpeed = input.current.sprint ? walkSpeed * 1.5 : walkSpeed;
+    const targetSpeed =
+      input.current.sprint && playerSettings.sprintEnabled
+        ? walkSpeed * playerSettings.sprintMultiplier
+        : walkSpeed;
     const acceleration = grounded.current ? 15 : 4.5;
     const smoothing = 1 - Math.exp(-acceleration * delta);
     const targetX = movement.x * targetSpeed;
@@ -686,11 +689,13 @@ function ProjectBlock({
   animations,
   animationRequests,
   onTouched,
+  onTouchEnded,
 }: {
   object: PolyWorldObject;
   animations: PolyAnimation[];
   animationRequests: string[];
   onTouched?: (worldObjectId: string) => void;
+  onTouchEnded?: (worldObjectId: string) => void;
 }) {
   const animated = useRef<Group>(null);
   const animationStartedAt = useRef<number | null>(null);
@@ -721,7 +726,10 @@ function ProjectBlock({
   }[object.material];
   const content = (
     <group ref={animated}>
-      <mesh castShadow={object.castShadow} receiveShadow>
+      <mesh
+        castShadow={object.castShadow && object.transparency < 0.95}
+        receiveShadow={object.transparency < 0.95}
+      >
         <boxGeometry args={object.scale} />
         <meshStandardMaterial
           color={object.color}
@@ -731,7 +739,9 @@ function ProjectBlock({
           emissive={object.material === "neon" ? object.color : "#000000"}
           emissiveIntensity={material.emissiveIntensity}
           transparent={object.transparency > 0}
-          opacity={1 - object.transparency}
+          opacity={Math.max(0, Math.min(1, 1 - object.transparency))}
+          depthWrite={object.transparency <= 0.02}
+          alphaTest={object.transparency >= 1 ? 1 : 0}
         />
       </mesh>
     </group>
@@ -747,6 +757,7 @@ function ProjectBlock({
   const playerExited = ({ other }: CollisionPayload) => {
     if (other.rigidBodyObject?.name !== "HumanoidRootPart") return;
     touchingPlayerColliders.current.delete(other.collider.handle);
+    if (touchingPlayerColliders.current.size === 0) onTouchEnded?.(object.id);
   };
   return (
     <RigidBody
@@ -810,6 +821,7 @@ function Scene({
   playerSettings,
   spawn,
   onWorldTouched,
+  onWorldTouchEnded,
 }: {
   input: MutableRefObject<InputState>;
   onTelemetry: (telemetry: Telemetry) => void;
@@ -823,6 +835,7 @@ function Scene({
   playerSettings: PolyPlayerSettings;
   spawn: { x: number; y: number; z: number };
   onWorldTouched?: (worldObjectId: string) => void;
+  onWorldTouchEnded?: (worldObjectId: string) => void;
 }) {
   return (
     <>
@@ -847,6 +860,7 @@ function Scene({
               animations={animations}
               animationRequests={animationRequests}
               onTouched={onWorldTouched}
+              onTouchEnded={onWorldTouchEnded}
             />
           ))
         ) : (
@@ -1052,20 +1066,26 @@ function GuiNode({
     );
   }
   const style = {
-    left: `${object.position[0] * 100}%`,
-    top: `${object.position[1] * 100}%`,
+    left: `${(object.position[0] - object.anchorPoint[0] * object.size[0]) * 100}%`,
+    top: `${(object.position[1] - object.anchorPoint[1] * object.size[1]) * 100}%`,
     width: `${object.size[0] * 100}%`,
     height: `${object.size[1] * 100}%`,
     color: object.textColor,
     backgroundColor: object.backgroundColor,
-    opacity: 1 - object.backgroundTransparency,
+    opacity: Math.max(0, Math.min(1, 1 - object.backgroundTransparency)),
     transform: `rotate(${object.rotation}deg)`,
     fontSize: `${object.textSize}px`,
     borderRadius: `${object.borderRadius}px`,
     zIndex: object.zIndex,
+    overflow:
+      object.type === "scrollingFrame"
+        ? "auto"
+        : object.clipDescendants
+          ? "hidden"
+          : "visible",
   };
   const className = `poly-gui-object poly-gui-${object.type}`;
-  if (object.type === "textButton") {
+  if (object.type === "textButton" || object.type === "imageButton") {
     return (
       <button
         className={className}
@@ -1075,7 +1095,11 @@ function GuiNode({
           onActivate?.(object.id);
         }}
       >
-        {object.text}
+        {object.type === "imageButton" && object.imageUrl ? (
+          <img src={object.imageUrl} alt="" draggable={false} />
+        ) : (
+          object.text
+        )}
         {children.map((child) => (
           <GuiNode
             key={child.id}
@@ -1087,9 +1111,25 @@ function GuiNode({
       </button>
     );
   }
+  if (object.type === "textBox") {
+    return (
+      <input
+        className={className}
+        style={style}
+        defaultValue={object.text}
+        placeholder={object.placeholder}
+        onFocus={() => {
+          if (document.pointerLockElement) void document.exitPointerLock();
+        }}
+      />
+    );
+  }
   return (
     <div className={className} style={style}>
       {object.type === "textLabel" ? object.text : null}
+      {object.type === "imageLabel" && object.imageUrl ? (
+        <img src={object.imageUrl} alt="" draggable={false} />
+      ) : null}
       {children.map((child) => (
         <GuiNode
           key={child.id}
@@ -1140,6 +1180,8 @@ export default function BaseplateGame({
     jumpPower: 10.5,
     cameraFieldOfView: 52,
     maxHealth: 100,
+    sprintEnabled: true,
+    sprintMultiplier: 1.5,
   },
   leaderstats = [],
   projectName = "Baseplate",
@@ -1151,6 +1193,7 @@ export default function BaseplateGame({
   onGuiActivated,
   onToolActivated,
   onWorldTouched,
+  onWorldTouchEnded,
 }: {
   remotePlayers?: RemotePlayer[];
   onPlayerState?: (state: Omit<PlayerTransform, "sequence">) => void;
@@ -1173,6 +1216,7 @@ export default function BaseplateGame({
   onGuiActivated?: (guiObjectId: string) => void;
   onToolActivated?: (toolObjectId: string) => void;
   onWorldTouched?: (worldObjectId: string) => void;
+  onWorldTouchEnded?: (worldObjectId: string) => void;
 }) {
   const spawnObject = worldObjects?.find((object) => object.type === "spawn");
   const spawn = spawnObject
@@ -1268,6 +1312,7 @@ export default function BaseplateGame({
             playerSettings={playerSettings}
             spawn={spawn}
             onWorldTouched={onWorldTouched}
+            onWorldTouchEnded={onWorldTouchEnded}
           />
         </Suspense>
       </Canvas>

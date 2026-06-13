@@ -203,6 +203,10 @@ function guiDefault(
     frame: "Frame",
     textLabel: "TextLabel",
     textButton: "TextButton",
+    textBox: "TextBox",
+    imageLabel: "ImageLabel",
+    imageButton: "ImageButton",
+    scrollingFrame: "ScrollingFrame",
   };
   return {
     id: crypto.randomUUID(),
@@ -214,13 +218,18 @@ function guiDefault(
     parentId,
     position: type === "screenGui" ? [0, 0] : [0.08, 0.08],
     size: type === "screenGui" ? [1, 1] : [0.3, 0.14],
-    backgroundColor: type === "textButton" ? "#6F49BB" : "#17131F",
+    backgroundColor:
+      type === "textButton" || type === "imageButton"
+        ? "#6F49BB"
+        : "#17131F",
     backgroundTransparency: type === "screenGui" ? 1 : 0.08,
     text:
       type === "textLabel"
         ? "Text"
         : type === "textButton"
           ? "Button"
+          : type === "textBox"
+            ? ""
           : "",
     textColor: "#FFFFFF",
     visible: true,
@@ -228,6 +237,12 @@ function guiDefault(
     textSize: 16,
     borderRadius: 7,
     zIndex: 1,
+    anchorPoint: [0, 0],
+    clipDescendants: true,
+    locked: false,
+    imageUrl: "",
+    placeholder: type === "textBox" ? "Type here..." : "",
+    canvasSize: [1, 1],
   };
 }
 
@@ -351,6 +366,9 @@ export default function StudioEditor({
   const [publishDialog, setPublishDialog] = useState(false);
   const [openMenu, setOpenMenu] = useState<"file" | "project" | null>(null);
   const [message, setMessage] = useState("Ready");
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showHealth, setShowHealth] = useState(false);
+  const [commandPalette, setCommandPalette] = useState(false);
   const [diagnostics, setDiagnostics] = useState<
     Record<string, PolyDiagnostic[]>
   >({});
@@ -361,6 +379,7 @@ export default function StudioEditor({
     objects: StudioObject[];
     center: [number, number, number];
   } | null>(null);
+  const clipboard = useRef<StudioObject[]>([]);
 
   const selectedWorld =
     selection?.type === "world"
@@ -387,6 +406,38 @@ export default function StudioEditor({
         .filter((object) => object.modelId === selectedModel.id)
         .map((object) => object.id)
     : selectedPartIds;
+  const healthIssues = useMemo(() => {
+    const issues: string[] = [];
+    const objectIds = new Set(project.objects.map((object) => object.id));
+    const guiIds = new Set(project.gui.map((object) => object.id));
+    const names = new Set<string>();
+    for (const object of project.objects) {
+      if (names.has(object.name)) issues.push(`Duplicate Workspace name: ${object.name}`);
+      names.add(object.name);
+      if (object.parentId && !objectIds.has(object.parentId)) {
+        issues.push(`${object.name} has a missing parent.`);
+      }
+      if (object.modelId && !project.models.some((model) => model.id === object.modelId)) {
+        issues.push(`${object.name} points to a missing Model.`);
+      }
+    }
+    for (const gui of project.gui) {
+      if (gui.parentId && !guiIds.has(gui.parentId)) {
+        issues.push(`${gui.name} has a missing GUI parent.`);
+      }
+    }
+    for (const script of project.scripts) {
+      for (const diagnostic of analyzePolyScript(
+        script as import("../../src/game/polyProject").PolyScript,
+        project as PolyProject,
+      )) {
+        if (diagnostic.severity === "error") {
+          issues.push(`${script.name}:${diagnostic.line} ${diagnostic.message}`);
+        }
+      }
+    }
+    return issues;
+  }, [project]);
 
   const save = useCallback(async (): Promise<StudioProject | null> => {
     setSaving(true);
@@ -404,6 +455,24 @@ export default function StudioEditor({
       setSaving(false);
     }
   }, [project]);
+
+  useEffect(() => {
+    if (!dirty || saving || playing || publishing) return;
+    const timer = window.setTimeout(() => {
+      void save();
+    }, 2500);
+    return () => window.clearTimeout(timer);
+  }, [dirty, playing, publishing, save, saving]);
+
+  useEffect(() => {
+    const warnBeforeClose = (event: BeforeUnloadEvent) => {
+      if (!dirty) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeClose);
+    return () => window.removeEventListener("beforeunload", warnBeforeClose);
+  }, [dirty]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -438,6 +507,38 @@ export default function StudioEditor({
       ) {
         event.preventDefault();
         duplicateSelected();
+      } else if (
+        !editing &&
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "g"
+      ) {
+        event.preventDefault();
+        if (event.shiftKey) ungroupModel();
+        else createModel();
+      } else if (
+        !editing &&
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "c"
+      ) {
+        event.preventDefault();
+        copySelected();
+      } else if (
+        !editing &&
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "v"
+      ) {
+        event.preventDefault();
+        pasteClipboard();
+      } else if (
+        (event.ctrlKey || event.metaKey) &&
+        event.shiftKey &&
+        event.key.toLowerCase() === "p"
+      ) {
+        event.preventDefault();
+        setCommandPalette(true);
+      } else if (!editing && event.key === "F2") {
+        event.preventDefault();
+        document.querySelector<HTMLInputElement>(".project-title input")?.focus();
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -1005,6 +1106,51 @@ end)
     setMessage("Duplicated selection");
   }
 
+  function copySelected() {
+    clipboard.current = structuredClone(
+      project.objects.filter((object) => activeWorldIds.includes(object.id)),
+    );
+    setMessage(
+      clipboard.current.length === 1
+        ? "Copied 1 object"
+        : `Copied ${clipboard.current.length} objects`,
+    );
+  }
+
+  function pasteClipboard() {
+    if (clipboard.current.length === 0) return;
+    const offset = Math.max(0.1, gridSnap);
+    const idMap = new Map<string, string>();
+    for (const object of clipboard.current) idMap.set(object.id, crypto.randomUUID());
+    const copies = clipboard.current.map((object) => ({
+      ...structuredClone(object),
+      id: idMap.get(object.id)!,
+      name: nextName(project.objects.map((item) => item.name), object.name),
+      position: [
+        object.position[0] + offset,
+        object.position[1],
+        object.position[2] + offset,
+      ] as [number, number, number],
+      parentId: object.parentId ? idMap.get(object.parentId) ?? null : null,
+      modelId: null,
+    }));
+    updateProject((current) => ({
+      ...current,
+      objects: [...current.objects, ...copies],
+    }));
+    setSelectedPartIds(copies.map((object) => object.id));
+    setSelection({ type: "world", id: copies[copies.length - 1].id });
+    setMessage(`Pasted ${copies.length} object${copies.length === 1 ? "" : "s"}`);
+  }
+
+  async function exitEditor() {
+    if (dirty) {
+      const saved = await save();
+      if (!saved) return;
+    }
+    onExit();
+  }
+
   function beginViewportTransform(center: [number, number, number]) {
     if (activeWorldIds.length === 0 || tool === "select") return;
     const ids = new Set(activeWorldIds);
@@ -1293,7 +1439,9 @@ end)
       source:
         kind === "localScript" &&
         project.gui.some(
-          (gui) => gui.id === parent && gui.type === "textButton",
+          (gui) =>
+            gui.id === parent &&
+            (gui.type === "textButton" || gui.type === "imageButton"),
         )
           ? buttonLocalScriptSource(project.language)
           : starterSource(project.language, kind),
@@ -1382,6 +1530,10 @@ end)
           icon: <LayoutPanelTop size={14} />,
           run: () => addGui("textButton", target),
         },
+        { label: "TextBox", icon: <Type size={14} />, run: () => addGui("textBox", target) },
+        { label: "ImageLabel", icon: <Square size={14} />, run: () => addGui("imageLabel", target) },
+        { label: "ImageButton", icon: <LayoutPanelTop size={14} />, run: () => addGui("imageButton", target) },
+        { label: "ScrollingFrame", icon: <LayoutPanelTop size={14} />, run: () => addGui("scrollingFrame", target) },
       );
     };
 
@@ -1630,7 +1782,7 @@ end)
   return (
     <main className="studio-editor">
       <header className="editor-titlebar">
-        <button className="editor-brand" onClick={() => void onExit()}>
+        <button className="editor-brand" onClick={() => void exitEditor()}>
           <img src={logo} alt="" />
           <span>Poly Studio</span>
         </button>
@@ -1693,7 +1845,7 @@ end)
               >
                 <FolderOpen size={14} /> Open folder
               </button>
-              <button onClick={() => void onExit()}>Back to projects</button>
+              <button onClick={() => void exitEditor()}>Back to projects</button>
             </div>
           )}
           {openMenu === "project" && (
@@ -1720,6 +1872,8 @@ end)
           <button title="Undo" disabled={undoStack.current.length === 0} onClick={undo}><Undo2 size={17} /></button>
           <button title="Redo" disabled={redoStack.current.length === 0} onClick={redo}><Redo2 size={17} /></button>
           <button title="Duplicate selection" disabled={activeWorldIds.length === 0} onClick={duplicateSelected}><Copy size={16} /></button>
+          <button title="Group selection into Model (Ctrl+G)" disabled={activeWorldIds.length < 2} onClick={createModel}><Boxes size={16} /></button>
+          <button title="Ungroup Model (Ctrl+Shift+G)" disabled={!selectedModel} onClick={ungroupModel}><Ungroup size={16} /></button>
           <button title="Snap selection to grid" disabled={activeWorldIds.length === 0} onClick={snapSelection}><Grid3X3 size={16} /></button>
         </div>
         <div className="insert-hint">
@@ -1801,6 +1955,12 @@ end)
           <Play size={16} fill="currentColor" />
           {playing ? "Opening" : "Play"}
         </button>
+        <button title="Project health" onClick={() => setShowHealth(true)}>
+          Health {healthIssues.length > 0 ? `(${healthIssues.length})` : ""}
+        </button>
+        <button title="Keyboard shortcuts" onClick={() => setShowShortcuts(true)}>
+          Shortcuts
+        </button>
       </div>
 
       <div className="editor-workspace">
@@ -1875,6 +2035,14 @@ end)
               }}
               onSelectGui={(id) =>
                 setSelection(id ? { type: "gui", id } : null)
+              }
+              onGuiChange={(id, patch) =>
+                updateProject((current) => ({
+                  ...current,
+                  gui: current.gui.map((item) =>
+                    item.id === id ? { ...item, ...patch } : item,
+                  ),
+                }))
               }
             />
           )}
@@ -2003,6 +2171,77 @@ end)
         />
       )}
 
+      {showHealth && (
+        <StudioInfoDialog title="Project health" onClose={() => setShowHealth(false)}>
+          {healthIssues.length === 0 ? (
+            <p>No broken references or script errors detected.</p>
+          ) : (
+            <div className="health-list">
+              {healthIssues.map((issue, index) => (
+                <button
+                  key={`${issue}-${index}`}
+                  onClick={() => {
+                    const script = project.scripts.find((item) =>
+                      issue.startsWith(`${item.name}:`),
+                    );
+                    if (script) {
+                      setSelection({ type: "script", id: script.id });
+                      setWorkspace("script");
+                      setShowHealth(false);
+                    }
+                  }}
+                >
+                  {issue}
+                </button>
+              ))}
+            </div>
+          )}
+        </StudioInfoDialog>
+      )}
+
+      {showShortcuts && (
+        <StudioInfoDialog title="Keyboard shortcuts" onClose={() => setShowShortcuts(false)}>
+          <div className="shortcut-grid">
+            <code>Ctrl+S</code><span>Save</span>
+            <code>Ctrl+Z / Ctrl+Y</code><span>Undo / redo</span>
+            <code>Ctrl+C / Ctrl+V</code><span>Copy / paste selection</span>
+            <code>Ctrl+D</code><span>Duplicate selection</span>
+            <code>Ctrl+G</code><span>Group as Model</span>
+            <code>Ctrl+Shift+G</code><span>Ungroup Model</span>
+            <code>Ctrl+Shift+P</code><span>Command palette</span>
+            <code>F2</code><span>Rename project</span>
+            <code>WASD / Arrows</code><span>Move / look around viewport</span>
+          </div>
+        </StudioInfoDialog>
+      )}
+
+      {commandPalette && (
+        <StudioInfoDialog title="Command palette" onClose={() => setCommandPalette(false)}>
+          <div className="command-list">
+            {[
+              ["Save project", () => void save()],
+              ["Playtest", () => void play()],
+              ["Group selection into Model", createModel],
+              ["Duplicate selection", duplicateSelected],
+              ["Open Project Health", () => setShowHealth(true)],
+              ["Switch to Scene", () => setWorkspace("scene")],
+              ["Switch to UI", () => setWorkspace("ui")],
+              ["Switch to Script", () => setWorkspace("script")],
+            ].map(([label, run]) => (
+              <button
+                key={String(label)}
+                onClick={() => {
+                  (run as () => void)();
+                  setCommandPalette(false);
+                }}
+              >
+                {String(label)}
+              </button>
+            ))}
+          </div>
+        </StudioInfoDialog>
+      )}
+
       <footer className="editor-statusbar">
         <span>{message}</span>
         <span>{languageName[project.language]}</span>
@@ -2011,6 +2250,27 @@ end)
         </button>
       </footer>
     </main>
+  );
+}
+
+function StudioInfoDialog({
+  title,
+  children,
+  onClose,
+}: {
+  title: string;
+  children: ReactNode;
+  onClose: () => void;
+}) {
+  return (
+    <div className="studio-modal-layer">
+      <button className="studio-modal-backdrop" onClick={onClose} />
+      <section className="studio-info-dialog">
+        <button className="dialog-close" onClick={onClose}>Close</button>
+        <h2>{title}</h2>
+        {children}
+      </section>
+    </div>
   );
 }
 
@@ -3082,6 +3342,7 @@ function SceneViewport({
   onTransformEnd,
   onSelectWorld,
   onSelectGui,
+  onGuiChange,
 }: {
   objects: StudioObject[];
   gui: StudioGuiObject[];
@@ -3096,6 +3357,7 @@ function SceneViewport({
   onTransformEnd: () => void;
   onSelectWorld: (id: string | null, additive?: boolean) => void;
   onSelectGui: (id: string | null) => void;
+  onGuiChange: (id: string, patch: Partial<StudioGuiObject>) => void;
 }) {
   const [transforming, setTransforming] = useState(false);
   const selectedObjects = objects.filter((object) =>
@@ -3173,6 +3435,7 @@ function SceneViewport({
           objects={gui}
           selectedId={selectedGuiId}
           onSelect={onSelectGui}
+          onChange={onGuiChange}
         />
       )}
       <div className="viewport-badge">{showGui ? "UI editor" : "Perspective"}</div>
@@ -3203,7 +3466,9 @@ function StudioSurfaceMaterial({
       color={object.color}
       map={surfaceTexture}
       transparent={object.transparency > 0}
-      opacity={1 - object.transparency}
+      opacity={Math.max(0, Math.min(1, 1 - object.transparency))}
+      depthWrite={object.transparency <= 0.02}
+      alphaTest={object.transparency >= 1 ? 1 : 0}
       roughness={
         object.material === "metal"
           ? 0.24
@@ -3329,10 +3594,12 @@ function GuiPreview({
   objects,
   selectedId,
   onSelect,
+  onChange,
 }: {
   objects: StudioGuiObject[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
+  onChange: (id: string, patch: Partial<StudioGuiObject>) => void;
 }) {
   const roots = objects.filter(
     (object) => object.type === "screenGui" && object.parentId === null,
@@ -3346,6 +3613,7 @@ function GuiPreview({
           objects={objects}
           selectedId={selectedId}
           onSelect={onSelect}
+          onChange={onChange}
         />
       ))}
       {roots.length === 0 && (
@@ -3360,11 +3628,13 @@ function GuiPreviewNode({
   objects,
   selectedId,
   onSelect,
+  onChange,
 }: {
   object: StudioGuiObject;
   objects: StudioGuiObject[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  onChange: (id: string, patch: Partial<StudioGuiObject>) => void;
 }) {
   if (!object.visible) return null;
   const children = objects.filter((item) => item.parentId === object.id);
@@ -3378,6 +3648,7 @@ function GuiPreviewNode({
             objects={objects}
             selectedId={selectedId}
             onSelect={onSelect}
+            onChange={onChange}
           />
         ))}
       </>
@@ -3387,12 +3658,12 @@ function GuiPreviewNode({
     <div
       className={`studio-gui-object studio-gui-${object.type}${selectedId === object.id ? " selected" : ""}`}
       style={{
-        left: `${object.position[0] * 100}%`,
-        top: `${object.position[1] * 100}%`,
+        left: `${(object.position[0] - object.anchorPoint[0] * object.size[0]) * 100}%`,
+        top: `${(object.position[1] - object.anchorPoint[1] * object.size[1]) * 100}%`,
         width: `${object.size[0] * 100}%`,
         height: `${object.size[1] * 100}%`,
         backgroundColor: object.backgroundColor,
-        opacity: 1 - object.backgroundTransparency,
+        opacity: Math.max(0, Math.min(1, 1 - object.backgroundTransparency)),
         color: object.textColor,
         transform: `rotate(${object.rotation}deg)`,
         fontSize: `${object.textSize}px`,
@@ -3403,8 +3674,57 @@ function GuiPreviewNode({
         event.stopPropagation();
         onSelect(object.id);
       }}
+      onPointerDown={(event) => {
+        if (object.locked || event.button !== 0) return;
+        event.stopPropagation();
+        onSelect(object.id);
+        const root = event.currentTarget.closest(".studio-gui-preview");
+        if (!(root instanceof HTMLElement)) return;
+        const bounds = root.getBoundingClientRect();
+        const startX = event.clientX;
+        const startY = event.clientY;
+        const startPosition = object.position;
+        const move = (moveEvent: PointerEvent) => {
+          onChange(object.id, {
+            position: [
+              Math.max(
+                0,
+                Math.min(
+                  1,
+                  Math.round(
+                    (startPosition[0] +
+                      (moveEvent.clientX - startX) / bounds.width) *
+                      1000,
+                  ) / 1000,
+                ),
+              ),
+              Math.max(
+                0,
+                Math.min(
+                  1,
+                  Math.round(
+                    (startPosition[1] +
+                      (moveEvent.clientY - startY) / bounds.height) *
+                      1000,
+                  ) / 1000,
+                ),
+              ),
+            ],
+          });
+        };
+        const up = () => {
+          window.removeEventListener("pointermove", move);
+          window.removeEventListener("pointerup", up);
+        };
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", up);
+      }}
     >
-      {object.type === "textLabel" || object.type === "textButton"
+      {object.imageUrl &&
+        (object.type === "imageLabel" || object.type === "imageButton") && (
+          <img src={object.imageUrl} alt="" draggable={false} />
+        )}
+      {["textLabel", "textButton", "textBox"].includes(object.type)
         ? object.text
         : null}
       {children.map((child) => (
@@ -3414,8 +3734,50 @@ function GuiPreviewNode({
           objects={objects}
           selectedId={selectedId}
           onSelect={onSelect}
+          onChange={onChange}
         />
       ))}
+      {selectedId === object.id && !object.locked && (
+        <button
+          className="gui-resize-handle"
+          aria-label="Resize GUI object"
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            const root = event.currentTarget.closest(".studio-gui-preview");
+            if (!(root instanceof HTMLElement)) return;
+            const bounds = root.getBoundingClientRect();
+            const startX = event.clientX;
+            const startY = event.clientY;
+            const startSize = object.size;
+            const move = (moveEvent: PointerEvent) => {
+              onChange(object.id, {
+                size: [
+                  Math.max(
+                    0.01,
+                    Math.min(
+                      1,
+                      startSize[0] + (moveEvent.clientX - startX) / bounds.width,
+                    ),
+                  ),
+                  Math.max(
+                    0.01,
+                    Math.min(
+                      1,
+                      startSize[1] + (moveEvent.clientY - startY) / bounds.height,
+                    ),
+                  ),
+                ],
+              });
+            };
+            const up = () => {
+              window.removeEventListener("pointermove", move);
+              window.removeEventListener("pointerup", up);
+            };
+            window.addEventListener("pointermove", move);
+            window.addEventListener("pointerup", up);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -3657,6 +4019,7 @@ function Properties({
               <PropertySection title="Layout">
                 <Vector2Field label="Position (scale)" value={gui.position} onChange={(position) => onGuiChange({ position })} />
                 <Vector2Field label="Size (scale)" value={gui.size} minimum={0.01} onChange={(size) => onGuiChange({ size })} />
+                <Vector2Field label="Anchor point" value={gui.anchorPoint} minimum={0} onChange={(anchorPoint) => onGuiChange({ anchorPoint })} />
                 <NumberField label="Rotation" value={gui.rotation} minimum={-360} maximum={360} step={1} onChange={(rotation) => onGuiChange({ rotation })} />
                 <NumberField label="ZIndex" value={gui.zIndex} minimum={0} maximum={1000} step={1} onChange={(zIndex) => onGuiChange({ zIndex })} />
               </PropertySection>
@@ -3664,17 +4027,28 @@ function Properties({
                 <ColorField label="Background" value={gui.backgroundColor} onChange={(backgroundColor) => onGuiChange({ backgroundColor })} />
                 <NumberField label="Transparency" value={gui.backgroundTransparency} minimum={0} maximum={1} step={0.05} onChange={(backgroundTransparency) => onGuiChange({ backgroundTransparency })} />
                 <NumberField label="Corner radius" value={gui.borderRadius} minimum={0} maximum={100} step={1} onChange={(borderRadius) => onGuiChange({ borderRadius })} />
-                {(gui.type === "textLabel" || gui.type === "textButton") && (
+                {["textLabel", "textButton", "textBox"].includes(gui.type) && (
                   <>
                     <TextField label="Text" value={gui.text} onChange={(text) => onGuiChange({ text })} />
                     <ColorField label="Text color" value={gui.textColor} onChange={(textColor) => onGuiChange({ textColor })} />
                     <NumberField label="Text size" value={gui.textSize} minimum={1} maximum={200} step={1} onChange={(textSize) => onGuiChange({ textSize })} />
                   </>
                 )}
+                {gui.type === "textBox" && (
+                  <TextField label="Placeholder" value={gui.placeholder} onChange={(placeholder) => onGuiChange({ placeholder })} />
+                )}
+                {(gui.type === "imageLabel" || gui.type === "imageButton") && (
+                  <TextField label="Image URL" value={gui.imageUrl} onChange={(imageUrl) => onGuiChange({ imageUrl })} />
+                )}
+                {gui.type === "scrollingFrame" && (
+                  <Vector2Field label="Canvas size" value={gui.canvasSize} minimum={0.01} onChange={(canvasSize) => onGuiChange({ canvasSize })} />
+                )}
               </PropertySection>
             </>
           )}
           <ToggleField label="Visible" value={gui.visible} onChange={(visible) => onGuiChange({ visible })} />
+          <ToggleField label="Clip descendants" value={gui.clipDescendants} onChange={(clipDescendants) => onGuiChange({ clipDescendants })} />
+          <ToggleField label="Locked" value={gui.locked} onChange={(locked) => onGuiChange({ locked })} />
           <DeleteButton onClick={onDelete} />
         </div>
       ) : script ? (
@@ -3709,6 +4083,8 @@ function Properties({
             <NumberField label="WalkSpeed" value={project.playerSettings.walkSpeed} minimum={1} maximum={500} step={1} onChange={(walkSpeed) => onPlayerChange({ walkSpeed })} />
             <NumberField label="JumpPower" value={project.playerSettings.jumpPower} minimum={1} maximum={500} step={0.5} onChange={(jumpPower) => onPlayerChange({ jumpPower })} />
             <NumberField label="MaxHealth" value={project.playerSettings.maxHealth} minimum={1} maximum={500} step={1} onChange={(maxHealth) => onPlayerChange({ maxHealth })} />
+            <ToggleField label="SprintEnabled" value={project.playerSettings.sprintEnabled} onChange={(sprintEnabled) => onPlayerChange({ sprintEnabled })} />
+            <NumberField label="SprintMultiplier" value={project.playerSettings.sprintMultiplier} minimum={1} maximum={5} step={0.1} onChange={(sprintMultiplier) => onPlayerChange({ sprintMultiplier })} />
           </PropertySection>
           <PropertySection title="Camera">
             <NumberField label="Field of view" value={project.playerSettings.cameraFieldOfView} minimum={20} maximum={120} step={1} onChange={(cameraFieldOfView) => onPlayerChange({ cameraFieldOfView })} />

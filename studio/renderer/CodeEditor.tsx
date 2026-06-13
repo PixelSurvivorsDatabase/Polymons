@@ -280,6 +280,8 @@ export default function CodeEditor({
             "CameraFieldOfView",
             "Health",
             "MaxHealth",
+            "SprintEnabled",
+            "SprintMultiplier",
             "SetAttribute",
             "GetAttribute",
             "FireServer",
@@ -288,6 +290,7 @@ export default function CodeEditor({
             "InvokeServer",
             "InvokeClient",
             "Touched",
+            "TouchEnded",
             ...projectRef.current.leaderstats.map((stat) => stat.name),
           ];
           const isLuau = projectRef.current.language === "luau";
@@ -337,6 +340,11 @@ export default function CodeEditor({
           const localPlayerText = isCpp
             ? "Players::LocalPlayer"
             : "Players.LocalPlayer";
+          const leaderstatText = isLuau
+            ? 'Leaderstats:Add(Players.LocalPlayer, "${1:Coins}", ${2:1})'
+            : isCpp
+              ? 'Leaderstats::Add(Players::LocalPlayer, "${1:Coins}", ${2:1});'
+              : 'Leaderstats.Add(Players.LocalPlayer, "${1:Coins}", ${2:1});';
           const ifText = isLuau
             ? "if ${1:condition} then\n\t${2:-- code}\nend"
             : "if (${1:condition}) {\n\t${2:// code}\n}";
@@ -350,6 +358,7 @@ export default function CodeEditor({
             : isCpp
               ? "${1:part}.Touched.Connect([&](auto hit) {\n\t${2:// code}\n});"
               : "${1:part}.Touched += (hit) => {\n\t${2:// code}\n};";
+          const touchEndedText = touchedText.replaceAll("Touched", "TouchEnded");
           return {
             suggestions: [
               ...names.map((name) => ({
@@ -424,6 +433,15 @@ export default function CodeEditor({
                 range,
               },
               {
+                label: "TouchEnded event",
+                kind: monaco.languages.CompletionItemKind.Event,
+                insertText: touchEndedText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: "Run a server Script when the avatar stops touching a Part",
+                range,
+              },
+              {
                 label: "Vector3.new",
                 kind: monaco.languages.CompletionItemKind.Constructor,
                 insertText: vectorText,
@@ -447,6 +465,15 @@ export default function CodeEditor({
                 insertTextRules:
                   monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
                 detail: "Open a persistent server data store",
+                range,
+              },
+              {
+                label: "Leaderstats.Add",
+                kind: monaco.languages.CompletionItemKind.Method,
+                insertText: leaderstatText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: "Add to one selected player's numeric leaderstat",
                 range,
               },
               {

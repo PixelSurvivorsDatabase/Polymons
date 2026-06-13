@@ -53,7 +53,15 @@ export type PolyRemote = {
 export type PolyGuiObject = {
   id: string;
   name: string;
-  type: "screenGui" | "frame" | "textLabel" | "textButton";
+  type:
+    | "screenGui"
+    | "frame"
+    | "textLabel"
+    | "textButton"
+    | "textBox"
+    | "imageLabel"
+    | "imageButton"
+    | "scrollingFrame";
   parentId: string | null;
   position: [number, number];
   size: [number, number];
@@ -66,6 +74,12 @@ export type PolyGuiObject = {
   textSize: number;
   borderRadius: number;
   zIndex: number;
+  anchorPoint: [number, number];
+  clipDescendants: boolean;
+  locked: boolean;
+  imageUrl: string;
+  placeholder: string;
+  canvasSize: [number, number];
 };
 
 export type PolyScript = {
@@ -82,6 +96,8 @@ export type PolyPlayerSettings = {
   jumpPower: number;
   cameraFieldOfView: number;
   maxHealth: number;
+  sprintEnabled: boolean;
+  sprintMultiplier: number;
 };
 
 export type PolyLeaderstat = {
@@ -191,6 +207,12 @@ const GUI_PROPERTIES = new Set([
   "TextSize",
   "BorderRadius",
   "ZIndex",
+  "AnchorPoint",
+  "ClipDescendants",
+  "Locked",
+  "Image",
+  "Placeholder",
+  "CanvasSize",
 ]);
 const PLAYER_PROPERTIES = new Set([
   "Health",
@@ -198,6 +220,8 @@ const PLAYER_PROPERTIES = new Set([
   "JumpPower",
   "CameraFieldOfView",
   "MaxHealth",
+  "SprintEnabled",
+  "SprintMultiplier",
 ]);
 
 const SERVER_SCRIPT_PARENTS = new Set(["Workspace", "ServerScriptService"]);
@@ -245,6 +269,12 @@ export function normalizePolyProject(project: PolyProject): PolyProject {
     textSize: gui.textSize ?? 16,
     borderRadius: gui.borderRadius ?? 7,
     zIndex: gui.zIndex ?? 1,
+    anchorPoint: gui.anchorPoint ?? [0, 0],
+    clipDescendants: gui.clipDescendants ?? true,
+    locked: gui.locked ?? false,
+    imageUrl: gui.imageUrl ?? "",
+    placeholder: gui.placeholder ?? "",
+    canvasSize: gui.canvasSize ?? [1, 1],
   }));
   normalized.playerSettings = {
     health:
@@ -256,6 +286,8 @@ export function normalizePolyProject(project: PolyProject): PolyProject {
     cameraFieldOfView:
       normalized.playerSettings?.cameraFieldOfView ?? 55,
     maxHealth: normalized.playerSettings?.maxHealth ?? 100,
+    sprintEnabled: normalized.playerSettings?.sprintEnabled ?? true,
+    sprintMultiplier: normalized.playerSettings?.sprintMultiplier ?? 1.5,
   };
   normalized.description ??= "";
   normalized.leaderstats = (normalized.leaderstats ?? []).map((stat) => ({
@@ -412,7 +444,7 @@ function findDirectReference(
 }
 
 type ScriptEventHandler = {
-  event: "MouseButton1Click" | "Activated" | "Touched";
+  event: "MouseButton1Click" | "Activated" | "Touched" | "TouchEnded";
   target: string;
   prelude: string;
   body: string;
@@ -429,13 +461,13 @@ function scriptEventHandlers(script: PolyScript): ScriptEventHandler[] {
     String.raw`((?:script|Script)\.Parent|[A-Za-z_]\w*|(?:Workspace|workspace)\.[A-Za-z_]\w*)`;
   const startPatterns = [
     new RegExp(
-      String.raw`^\s*${target}\.(MouseButton1Click|Activated|Touched)\s*:\s*Connect\s*\(\s*function\s*\([^)]*\)\s*$`,
+      String.raw`^\s*${target}\.(MouseButton1Click|Activated|Touched|TouchEnded)\s*:\s*Connect\s*\(\s*function\s*\([^)]*\)\s*$`,
     ),
     new RegExp(
-      String.raw`^\s*${target}\.(MouseButton1Click|Activated|Touched)\s*\+=\s*\([^)]*\)\s*=>\s*\{\s*$`,
+      String.raw`^\s*${target}\.(MouseButton1Click|Activated|Touched|TouchEnded)\s*\+=\s*\([^)]*\)\s*=>\s*\{\s*$`,
     ),
     new RegExp(
-      String.raw`^\s*${target}\.(MouseButton1Click|Activated|Touched)\.Connect\s*\(.*\{\s*$`,
+      String.raw`^\s*${target}\.(MouseButton1Click|Activated|Touched|TouchEnded)\.Connect\s*\(.*\{\s*$`,
     ),
   ];
   const endPatterns = [
@@ -482,13 +514,13 @@ function scriptEventHandlers(script: PolyScript): ScriptEventHandler[] {
 
 function guiEventHandlers(script: PolyScript): ScriptEventHandler[] {
   return scriptEventHandlers(script).filter(
-    (handler) => handler.event !== "Touched",
+    (handler) => handler.event !== "Touched" && handler.event !== "TouchEnded",
   );
 }
 
 function touchedEventHandlers(script: PolyScript): ScriptEventHandler[] {
   return scriptEventHandlers(script).filter(
-    (handler) => handler.event === "Touched",
+    (handler) => handler.event === "Touched" || handler.event === "TouchEnded",
   );
 }
 
@@ -785,7 +817,16 @@ function assignProperty(
   if (reference.kind === "gui") {
     const gui = project.gui.find((item) => item.id === reference.id);
     if (!gui) return "The referenced PlayerGui object no longer exists.";
-    if (["Name", "Text", "BackgroundColor", "TextColor"].includes(property)) {
+    if (
+      [
+        "Name",
+        "Text",
+        "BackgroundColor",
+        "TextColor",
+        "Image",
+        "Placeholder",
+      ].includes(property)
+    ) {
       const value = parseString(rawValue);
       if (value === null) return `${property} must be a string.`;
       if (
@@ -798,10 +839,18 @@ function assignProperty(
       if (property === "Text") gui.text = value;
       if (property === "BackgroundColor") gui.backgroundColor = value;
       if (property === "TextColor") gui.textColor = value;
-    } else if (property === "Visible") {
+      if (property === "Image") gui.imageUrl = value;
+      if (property === "Placeholder") gui.placeholder = value;
+    } else if (
+      property === "Visible" ||
+      property === "ClipDescendants" ||
+      property === "Locked"
+    ) {
       const value = parseBoolean(rawValue);
-      if (value === null) return "Visible must be true or false.";
-      gui.visible = value;
+      if (value === null) return `${property} must be true or false.`;
+      if (property === "Visible") gui.visible = value;
+      if (property === "ClipDescendants") gui.clipDescendants = value;
+      if (property === "Locked") gui.locked = value;
     } else if (property === "BackgroundTransparency") {
       const value = parseNumber(rawValue);
       if (value === null || value < 0 || value > 1) {
@@ -823,6 +872,8 @@ function assignProperty(
       const vector = value as [number, number];
       if (property === "Position") gui.position = vector;
       if (property === "Size") gui.size = vector;
+      if (property === "AnchorPoint") gui.anchorPoint = vector;
+      if (property === "CanvasSize") gui.canvasSize = vector;
     }
     return null;
   }
@@ -841,6 +892,12 @@ function assignProperty(
     return null;
   }
 
+  if (property === "SprintEnabled") {
+    const value = parseBoolean(rawValue);
+    if (value === null) return "SprintEnabled must be true or false.";
+    project.playerSettings.sprintEnabled = value;
+    return null;
+  }
   const value = parseNumber(rawValue);
   if (value === null || value <= 0 || value > 500) {
     return `${property} must be a positive number no greater than 500.`;
@@ -865,6 +922,12 @@ function assignProperty(
       project.playerSettings.health,
       value,
     );
+  }
+  if (property === "SprintMultiplier") {
+    if (value < 1 || value > 5) {
+      return "SprintMultiplier must be between 1 and 5.";
+    }
+    project.playerSettings.sprintMultiplier = value;
   }
   return null;
 }
@@ -980,7 +1043,7 @@ function syntaxDiagnostics(
     let kind: string | null = null;
     if (
       /^(?:local\s+)?function\b/.test(code) ||
-      /\.(?:MouseButton1Click|Activated|Touched)\s*:\s*Connect\s*\(\s*function\b/.test(
+      /\.(?:MouseButton1Click|Activated|Touched|TouchEnded)\s*:\s*Connect\s*\(\s*function\b/.test(
         code,
       )
     ) {
@@ -1035,13 +1098,18 @@ export function analyzePolyScript(
       message: "Button activation events can only run in a LocalScript.",
     });
   }
-  if (buttonHandlers.length > 0 && guiScriptParent?.type !== "textButton") {
+  if (
+    buttonHandlers.length > 0 &&
+    guiScriptParent?.type !== "textButton" &&
+    guiScriptParent?.type !== "imageButton"
+  ) {
     diagnostics.push({
       line: buttonHandlers[0].line,
       column: 1,
       endColumn: 2,
       severity: "error",
-      message: "MouseButton1Click and Activated require a TextButton parent.",
+      message:
+        "MouseButton1Click and Activated require a TextButton or ImageButton parent.",
     });
   }
   for (const handler of buttonHandlers.filter((item) => !item.closed)) {
@@ -1059,7 +1127,7 @@ export function analyzePolyScript(
       column: 1,
       endColumn: 2,
       severity: "error",
-      message: "Touched events must run in a server Script.",
+      message: "Touch events must run in a server Script.",
     });
   }
   for (const handler of touchHandlers) {
@@ -1070,7 +1138,7 @@ export function analyzePolyScript(
         column: 1,
         endColumn: 2,
         severity: "error",
-        message: "Touched requires a Workspace Part.",
+        message: "Touch events require a Workspace Part.",
       });
     }
     if (!handler.closed) {
@@ -1079,7 +1147,7 @@ export function analyzePolyScript(
         column: 1,
         endColumn: 2,
         severity: "error",
-        message: "Touched is missing its closing callback delimiter.",
+        message: `${handler.event} is missing its closing callback delimiter.`,
       });
     }
   }
@@ -1447,6 +1515,56 @@ function executeScript(
       );
       continue;
     }
+    const dataDelete = source.match(
+      /^\s*([A-Za-z_]\w*)(?::|\.)(?:RemoveAsync|Delete)\(\s*["']([^"']+)["']\s*\)\s*;?\s*$/,
+    );
+    if (dataDelete) {
+      const storeName = stores.get(dataDelete[1]);
+      if (storeName) delete project.dataStores[storeName]?.[dataDelete[2]];
+      continue;
+    }
+    const leaderstatCall = source.match(
+      /^\s*Leaderstats(?::|\.|::)(Set|Add)\(\s*[^,]+\s*,\s*["']([^"']+)["']\s*,\s*(.+?)\s*\)\s*;?\s*$/,
+    );
+    if (leaderstatCall) {
+      const stat = project.leaderstats.find(
+        (candidate) => candidate.name === leaderstatCall[2],
+      );
+      if (!stat) {
+        output.push({
+          level: "error",
+          message: `Leaderstat ${leaderstatCall[2]} does not exist.`,
+          scriptName: script.name,
+        });
+      } else if (stat.type === "number") {
+        const value = Number(
+          resolveRawValue(leaderstatCall[3], values, modules).replace(/;$/, ""),
+        );
+        if (!Number.isFinite(value)) {
+          output.push({
+            level: "error",
+            message: `${stat.name} must be set to a number.`,
+            scriptName: script.name,
+          });
+        } else {
+          stat.defaultValue =
+            leaderstatCall[1] === "Add"
+              ? Number(stat.defaultValue) + value
+              : value;
+        }
+      } else if (leaderstatCall[1] === "Add") {
+        output.push({
+          level: "error",
+          message: `${stat.name} is a string and cannot use Add.`,
+          scriptName: script.name,
+        });
+      } else {
+        stat.defaultValue =
+          parseString(resolveRawValue(leaderstatCall[3], values, modules)) ??
+          String(leaderstatCall[3]);
+      }
+      continue;
+    }
     const dataStoreDeclaration = findDataStoreDeclaration(source);
     if (dataStoreDeclaration) {
       stores.set(dataStoreDeclaration.variable, dataStoreDeclaration.storeName);
@@ -1683,7 +1801,9 @@ export function activatePolyGui(
       script.kind === "localScript" &&
       script.parent === guiObjectId &&
       project.gui.some(
-        (gui) => gui.id === guiObjectId && gui.type === "textButton",
+        (gui) =>
+          gui.id === guiObjectId &&
+          (gui.type === "textButton" || gui.type === "imageButton"),
       ),
   );
   const diagnostics = scripts.flatMap((script) =>
@@ -1783,6 +1903,7 @@ export function activatePolyTool(
 export function activatePolyTouched(
   input: PolyProject,
   worldObjectId: string,
+  event: "Touched" | "TouchEnded" = "Touched",
 ): PolyRuntimeResult {
   const project = normalizePolyProject(input);
   const scripts = project.scripts.filter(
@@ -1790,6 +1911,7 @@ export function activatePolyTouched(
       script.kind === "script" &&
       touchedEventHandlers(script).some(
         (handler) =>
+          handler.event === event &&
           eventTargetReference(handler, script, project)?.kind === "world" &&
           eventTargetReference(handler, script, project)?.id === worldObjectId,
       ),
@@ -1814,6 +1936,7 @@ export function activatePolyTouched(
       continue;
     }
     for (const handler of touchedEventHandlers(script)) {
+      if (handler.event !== event) continue;
       const reference = eventTargetReference(handler, script, project);
       if (reference?.kind !== "world" || reference.id !== worldObjectId) continue;
       executeScript(
@@ -1835,6 +1958,109 @@ export function activatePolyTouched(
     animationRequests,
     animationVersion: animationRequests.length > 0 ? 1 : 0,
   };
+}
+
+export function executePolyCommand(
+  input: PolyRuntimeResult,
+  rawCommand: string,
+): PolyRuntimeResult {
+  const command = rawCommand.trim();
+  if (!command) return input;
+
+  const project = normalizePolyProject(input.project);
+  const output = [...input.output];
+  const reply = (
+    message: string,
+    level: "info" | "warning" | "error" = "info",
+  ) => output.push({ level, message, scriptName: "Command" });
+  const tokens =
+    command.match(/"[^"]*"|'[^']*'|\S+/g)?.map((token) =>
+      token.replace(/^(['"])(.*)\1$/, "$2"),
+    ) ?? [];
+  const root = tokens[0]?.toLowerCase();
+
+  if (root === "help") {
+    reply(
+      "Commands: leaderstats set/add, data get/set/delete, player sprint, run, clear, help",
+    );
+  } else if (root === "clear") {
+    return { ...input, project, output: [] };
+  } else if (root === "leaderstats") {
+    const action = tokens[1]?.toLowerCase();
+    const statName = tokens[3];
+    const stat = project.leaderstats.find(
+      (candidate) => candidate.name.toLowerCase() === statName?.toLowerCase(),
+    );
+    if (!["set", "add"].includes(action) || !stat || tokens[4] === undefined) {
+      reply("Usage: leaderstats set|add <player> <stat> <value>", "error");
+    } else if (stat.type === "number") {
+      const value = Number(tokens[4]);
+      if (!Number.isFinite(value)) {
+        reply("Leaderstat value must be a number.", "error");
+      } else {
+        stat.defaultValue =
+          action === "add" ? Number(stat.defaultValue) + value : value;
+        reply(`${stat.name} is now ${stat.defaultValue}.`);
+      }
+    } else if (action === "add") {
+      reply("String leaderstats cannot use add.", "error");
+    } else {
+      stat.defaultValue = tokens.slice(4).join(" ");
+      reply(`${stat.name} is now ${stat.defaultValue}.`);
+    }
+  } else if (root === "data") {
+    const action = tokens[1]?.toLowerCase();
+    const storeName = tokens[2];
+    const key = tokens[3];
+    if (!storeName || !key || !["get", "set", "delete"].includes(action)) {
+      reply("Usage: data get|set|delete <store> <key> [value]", "error");
+    } else if (action === "get") {
+      reply(
+        `${storeName}.${key} = ${JSON.stringify(
+          project.dataStores[storeName]?.[key] ?? null,
+        )}`,
+      );
+    } else if (action === "delete") {
+      delete project.dataStores[storeName]?.[key];
+      reply(`Deleted ${storeName}.${key}.`);
+    } else {
+      const rawValue = tokens.slice(4).join(" ");
+      const value = parseStoredValue(rawValue);
+      if (value === undefined) {
+        reply(
+          "Data value must be a string, number, boolean, or null.",
+          "error",
+        );
+      } else {
+        project.dataStores[storeName] ??= {};
+        project.dataStores[storeName][key] = value;
+        reply(`Saved ${storeName}.${key}.`);
+      }
+    }
+  } else if (root === "player" && tokens[2]?.toLowerCase() === "sprint") {
+    const enabled = tokens[3]?.toLowerCase();
+    if (!["on", "off"].includes(enabled)) {
+      reply("Usage: player <name> sprint on|off", "error");
+    } else {
+      project.playerSettings.sprintEnabled = enabled === "on";
+      reply(`Sprinting ${enabled}.`);
+    }
+  } else if (root === "run") {
+    const name = tokens.slice(1).join(" ");
+    const script = project.scripts.find(
+      (candidate) => candidate.name.toLowerCase() === name.toLowerCase(),
+    );
+    if (!script) {
+      reply(`Script "${name}" was not found.`, "error");
+    } else {
+      executeScript(script, project, output);
+      reply(`Ran ${script.name}.`);
+    }
+  } else {
+    reply(`Unknown command: ${tokens[0]}. Type help for commands.`, "error");
+  }
+
+  return { ...input, project, output };
 }
 
 export function runPolyProject(input: PolyProject): PolyRuntimeResult {

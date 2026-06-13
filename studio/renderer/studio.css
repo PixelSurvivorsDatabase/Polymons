@@ -810,6 +810,8 @@ button { color: inherit; }
   outline: 2px solid #b78cff;
   outline-offset: 2px;
 }
+.studio-gui-object > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.gui-resize-handle { position: absolute; right: -6px; bottom: -6px; width: 13px; height: 13px; border: 2px solid #120d18; border-radius: 3px; background: #b78cff; cursor: nwse-resize; padding: 0; }
 .studio-gui-frame { align-items: stretch; justify-content: stretch; }
 .gui-empty-hint {
   position: absolute;
@@ -909,6 +911,27 @@ button { color: inherit; }
 .editor-statusbar { display: flex; align-items: center; gap: 16px; border-top: 1px solid var(--studio-line); background: #0e0d12; color: #746e7b; padding: 0 9px; font-size: 8px; }
 .editor-statusbar span:nth-child(2) { margin-left: auto; color: #8e65c2; }
 .editor-statusbar button { display: flex; align-items: center; gap: 5px; border: 0; background: transparent; color: #746e7b; cursor: pointer; font-size: 8px; }
+
+.studio-info-dialog {
+  position: relative;
+  z-index: 1;
+  width: min(620px, 100%);
+  max-height: min(680px, calc(100vh - 48px));
+  overflow: auto;
+  border: 1px solid var(--studio-line);
+  border-radius: 18px;
+  background: #101015;
+  padding: 28px;
+  box-shadow: 0 40px 120px rgba(0,0,0,.7);
+}
+.studio-info-dialog h2 { margin: 0 0 20px; }
+.studio-info-dialog > p { color: var(--studio-muted); }
+.shortcut-grid { display: grid; grid-template-columns: 170px 1fr; gap: 9px 15px; align-items: center; }
+.shortcut-grid code { border: 1px solid var(--studio-line); border-radius: 6px; background: #09090d; color: #c4a7ee; padding: 7px; }
+.shortcut-grid span { color: #aaa3b3; }
+.command-list, .health-list { display: grid; gap: 6px; }
+.command-list button, .health-list button { border: 1px solid var(--studio-line); border-radius: 8px; background: rgba(255,255,255,.025); color: #cfc8d7; cursor: pointer; padding: 10px 12px; text-align: left; }
+.command-list button:hover, .health-list button:hover { border-color: rgba(166,117,239,.35); background: rgba(111,73,187,.12); }
 
 @media (max-width: 1150px) {
   .editor-workspace { grid-template-columns: 190px minmax(0, 1fr) 240px; }

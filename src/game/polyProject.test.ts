@@ -5,6 +5,7 @@ import {
   activatePolyTouched,
   activatePolyTool,
   analyzePolyScript,
+  executePolyCommand,
   type PolyProject,
   runPolyProject,
 } from "./polyProject";
@@ -735,4 +736,65 @@ end)`,
       .Health,
     80,
   );
+});
+
+test("edits selective leaderstats and playtest data through commands", () => {
+  const fixture = project();
+  fixture.leaderstats = [
+    { id: "coins", name: "Coins", type: "number", defaultValue: 0 },
+  ];
+  const runtime = runPolyProject(fixture);
+  const withCoins = executePolyCommand(
+    runtime,
+    "leaderstats add local Coins 25",
+  );
+  const withData = executePolyCommand(
+    withCoins,
+    "data set PlayerData Level 4",
+  );
+
+  assert.equal(withData.project.leaderstats[0].defaultValue, 25);
+  assert.equal(withData.project.dataStores.PlayerData.Level, 4);
+});
+
+test("runs TouchEnded handlers independently from Touched", () => {
+  const fixture = project();
+  fixture.scripts = [
+    {
+      id: "touch-ended",
+      name: "TouchEnded",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `local part = Workspace:FindFirstChild("Part")
+part.TouchEnded:Connect(function(hit)
+  part.Color = "#00FF00"
+end)`,
+    },
+  ];
+
+  const entered = activatePolyTouched(fixture, "part");
+  const exited = activatePolyTouched(fixture, "part", "TouchEnded");
+
+  assert.equal(entered.project.objects[0].color, "#342856");
+  assert.equal(exited.project.objects[0].color, "#00FF00");
+});
+
+test("lets server scripts selectively add leaderstats", () => {
+  const fixture = project();
+  fixture.leaderstats = [
+    { id: "coins", name: "Coins", type: "number", defaultValue: 5 },
+  ];
+  fixture.scripts = [
+    {
+      id: "leaderstats",
+      name: "Rewards",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: 'Leaderstats:Add("lava", "Coins", 10)',
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+
+  assert.equal(result.project.leaderstats[0].defaultValue, 15);
 });

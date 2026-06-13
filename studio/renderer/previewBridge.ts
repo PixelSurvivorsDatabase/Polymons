@@ -157,6 +157,8 @@ function createPreviewProject(
       jumpPower: 10.5,
       cameraFieldOfView: 52,
       maxHealth: 100,
+      sprintEnabled: true,
+      sprintMultiplier: 1.5,
     },
     leaderstats: [
       {

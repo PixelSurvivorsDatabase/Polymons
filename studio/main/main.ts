@@ -100,7 +100,15 @@ type StudioScript = {
 type StudioGuiObject = {
   id: string;
   name: string;
-  type: "screenGui" | "frame" | "textLabel" | "textButton";
+  type:
+    | "screenGui"
+    | "frame"
+    | "textLabel"
+    | "textButton"
+    | "textBox"
+    | "imageLabel"
+    | "imageButton"
+    | "scrollingFrame";
   parentId: string | null;
   position: [number, number];
   size: [number, number];
@@ -113,6 +121,12 @@ type StudioGuiObject = {
   textSize: number;
   borderRadius: number;
   zIndex: number;
+  anchorPoint: [number, number];
+  clipDescendants: boolean;
+  locked: boolean;
+  imageUrl: string;
+  placeholder: string;
+  canvasSize: [number, number];
 };
 
 type StudioAnimation = {
@@ -152,6 +166,8 @@ type StudioProject = {
     jumpPower: number;
     cameraFieldOfView: number;
     maxHealth: number;
+    sprintEnabled: boolean;
+    sprintMultiplier: number;
   };
   leaderstats: Array<{
     id: string;
@@ -458,6 +474,8 @@ function migrateLegacyProject(
       jumpPower: 10.5,
       cameraFieldOfView: 52,
       maxHealth: 100,
+      sprintEnabled: true,
+      sprintMultiplier: 1.5,
     },
     leaderstats: [],
     animations: [],
@@ -498,6 +516,12 @@ function normalizeProject(project: StudioProject): StudioProject {
       textSize: gui.textSize ?? 16,
       borderRadius: gui.borderRadius ?? 7,
       zIndex: gui.zIndex ?? 1,
+      anchorPoint: gui.anchorPoint ?? [0, 0],
+      clipDescendants: gui.clipDescendants ?? true,
+      locked: gui.locked ?? false,
+      imageUrl: gui.imageUrl ?? "",
+      placeholder: gui.placeholder ?? "",
+      canvasSize: gui.canvasSize ?? [1, 1],
     })),
     playerSettings: {
       health: project.playerSettings.health ?? project.playerSettings.maxHealth ?? 100,
@@ -505,6 +529,8 @@ function normalizeProject(project: StudioProject): StudioProject {
       jumpPower: project.playerSettings.jumpPower ?? 10.5,
       cameraFieldOfView: project.playerSettings.cameraFieldOfView ?? 52,
       maxHealth: project.playerSettings.maxHealth ?? 100,
+      sprintEnabled: project.playerSettings.sprintEnabled ?? true,
+      sprintMultiplier: project.playerSettings.sprintMultiplier ?? 1.5,
     },
     description: project.description ?? "",
     leaderstats: (project.leaderstats ?? []).map((stat) => ({
@@ -703,6 +729,12 @@ function tutorialGui(): StudioGuiObject[] {
       textSize: 16,
       borderRadius: 0,
       zIndex: 1,
+      anchorPoint: [0, 0],
+      clipDescendants: true,
+      locked: false,
+      imageUrl: "",
+      placeholder: "",
+      canvasSize: [1, 1],
     },
     {
       id: randomUUID(),
@@ -720,6 +752,12 @@ function tutorialGui(): StudioGuiObject[] {
       textSize: 18,
       borderRadius: 10,
       zIndex: 2,
+      anchorPoint: [0, 0],
+      clipDescendants: true,
+      locked: false,
+      imageUrl: "",
+      placeholder: "",
+      canvasSize: [1, 1],
     },
   ];
 }
@@ -1322,6 +1360,8 @@ function pmxlProject(
       jumpPower: 10.5,
       cameraFieldOfView: 52,
       maxHealth: 100,
+      sprintEnabled: true,
+      sprintMultiplier: 1.5,
     },
     leaderstats: [],
     animations: [],
@@ -1759,6 +1799,8 @@ void app.whenReady().then(async () => {
           jumpPower: 10.5,
           cameraFieldOfView: 52,
           maxHealth: 100,
+          sprintEnabled: true,
+          sprintMultiplier: 1.5,
         },
         leaderstats: [
           {

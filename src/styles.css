@@ -1425,6 +1425,25 @@ h3,
   font: inherit;
 }
 
+.poly-gui-imageButton,
+.poly-gui-textBox {
+  pointer-events: auto;
+  cursor: pointer;
+  font: inherit;
+}
+
+.poly-gui-textBox {
+  outline: 0;
+}
+
+.poly-gui-imageLabel > img,
+.poly-gui-imageButton > img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+
 .game-chat {
   position: absolute;
   z-index: 12;
