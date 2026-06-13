@@ -15,6 +15,10 @@ const previewData: PolyAdminAccountsResponse = {
       role: "owner",
       loginDisabled: false,
       passwordStatus: "protected-hash-only",
+      equippedShirtId: "polymon-shirt",
+      inventory: [
+        { itemId: "polymon-shirt", acquiredAt: "2026-06-11T18:07:42.353Z" },
+      ],
       online: { gameId: "my-game-009cbafb", connected: true },
       stats: { friends: 4, games: 3, gameVisits: 1284 },
     },
@@ -28,6 +32,11 @@ const previewData: PolyAdminAccountsResponse = {
       role: "player",
       loginDisabled: false,
       passwordStatus: "protected-hash-only",
+      equippedShirtId: "beta-tester-shirt",
+      inventory: [
+        { itemId: "polymon-shirt", acquiredAt: "2026-06-12T01:42:12.000Z" },
+        { itemId: "beta-tester-shirt", acquiredAt: "2026-06-12T01:42:12.000Z" },
+      ],
       online: { gameId: null, connected: false },
       stats: { friends: 2, games: 1, gameVisits: 76 },
     },
@@ -41,12 +50,32 @@ const previewData: PolyAdminAccountsResponse = {
       role: "player",
       loginDisabled: false,
       passwordStatus: "protected-hash-only",
+      equippedShirtId: null,
+      inventory: [],
       online: { gameId: null, connected: false },
       stats: { friends: 1, games: 0, gameVisits: 0 },
     },
   ],
   pagination: { page: 1, perPage: 100, total: 3, lastPage: 1 },
   summary: { accounts: 3, games: 5, gameVisits: 1360, onlinePlayers: 1 },
+  avatarItems: [
+    {
+      id: "polymon-shirt",
+      name: "Polymon Shirt",
+      description: "The original black and purple Polymons shirt.",
+      itemType: "shirt",
+      unlockType: "free",
+      unlockThreshold: null,
+    },
+    {
+      id: "beta-tester-shirt",
+      name: "Beta Tester Shirt",
+      description: "A flowing green, red, and purple shirt.",
+      itemType: "shirt",
+      unlockType: "free",
+      unlockThreshold: null,
+    },
+  ],
 };
 
 window.polyAdmin = {
@@ -69,6 +98,12 @@ window.polyAdmin = {
   },
   logout: async () => undefined,
   listAccounts: async () => previewData,
+  updateInventory: async (userId, itemId, owned, equip) => ({
+    userId,
+    itemId,
+    owned,
+    equipped: owned && Boolean(equip),
+  }),
 };
 
 createRoot(document.getElementById("root")!).render(

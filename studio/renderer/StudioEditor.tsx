@@ -4096,6 +4096,8 @@ function Properties({
           </PropertySection>
           <PropertySection title="Camera">
             <NumberField label="Field of view" value={project.playerSettings.cameraFieldOfView} minimum={20} maximum={120} step={1} onChange={(cameraFieldOfView) => onPlayerChange({ cameraFieldOfView })} />
+            <NumberField label="Minimum zoom" value={project.playerSettings.cameraMinZoomDistance} minimum={1} maximum={project.playerSettings.cameraMaxZoomDistance} step={1} onChange={(cameraMinZoomDistance) => onPlayerChange({ cameraMinZoomDistance })} />
+            <NumberField label="Maximum zoom" value={project.playerSettings.cameraMaxZoomDistance} minimum={project.playerSettings.cameraMinZoomDistance} maximum={200} step={1} onChange={(cameraMaxZoomDistance) => onPlayerChange({ cameraMaxZoomDistance })} />
           </PropertySection>
           <PropertySection title="Leaderstats">
             <LeaderstatsField

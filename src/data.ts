@@ -1,5 +1,6 @@
 export type Game = {
   id: string;
+  platformId?: string;
   title: string;
   creator: string;
   creatorUsername: string;

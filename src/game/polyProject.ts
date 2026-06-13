@@ -96,6 +96,8 @@ export type PolyPlayerSettings = {
   walkSpeed: number;
   jumpPower: number;
   cameraFieldOfView: number;
+  cameraMinZoomDistance: number;
+  cameraMaxZoomDistance: number;
   maxHealth: number;
   sprintEnabled: boolean;
   sprintMultiplier: number;
@@ -245,6 +247,8 @@ const PLAYER_PROPERTIES = new Set([
   "WalkSpeed",
   "JumpPower",
   "CameraFieldOfView",
+  "CameraMinZoomDistance",
+  "CameraMaxZoomDistance",
   "MaxHealth",
   "SprintEnabled",
   "SprintMultiplier",
@@ -312,6 +316,17 @@ export function normalizePolyProject(project: PolyProject): PolyProject {
     jumpPower: normalized.playerSettings?.jumpPower ?? 10.5,
     cameraFieldOfView:
       normalized.playerSettings?.cameraFieldOfView ?? 55,
+    cameraMinZoomDistance: Math.max(
+      1,
+      Math.min(200, normalized.playerSettings?.cameraMinZoomDistance ?? 10),
+    ),
+    cameraMaxZoomDistance: Math.max(
+      Math.max(
+        1,
+        Math.min(200, normalized.playerSettings?.cameraMinZoomDistance ?? 10),
+      ),
+      Math.min(200, normalized.playerSettings?.cameraMaxZoomDistance ?? 80),
+    ),
     maxHealth: normalized.playerSettings?.maxHealth ?? 100,
     sprintEnabled: normalized.playerSettings?.sprintEnabled ?? true,
     sprintMultiplier: normalized.playerSettings?.sprintMultiplier ?? 1.5,
@@ -992,6 +1007,12 @@ function referencePropertyValue(
   if (property === "CameraFieldOfView") {
     return project.playerSettings.cameraFieldOfView;
   }
+  if (property === "CameraMinZoomDistance") {
+    return project.playerSettings.cameraMinZoomDistance;
+  }
+  if (property === "CameraMaxZoomDistance") {
+    return project.playerSettings.cameraMaxZoomDistance;
+  }
   if (property === "SprintEnabled") {
     return project.playerSettings.sprintEnabled;
   }
@@ -1343,6 +1364,27 @@ function assignProperty(
       return "CameraFieldOfView must be between 20 and 120.";
     }
     project.playerSettings.cameraFieldOfView = value;
+    return null;
+  }
+  if (property === "CameraMinZoomDistance") {
+    if (value < 1 || value > 200) {
+      return "CameraMinZoomDistance must be between 1 and 200.";
+    }
+    if (value > project.playerSettings.cameraMaxZoomDistance) {
+      return "CameraMinZoomDistance cannot exceed CameraMaxZoomDistance.";
+    }
+    project.playerSettings.cameraMinZoomDistance = value;
+    return null;
+  }
+  if (property === "CameraMaxZoomDistance") {
+    if (value < 1 || value > 200) {
+      return "CameraMaxZoomDistance must be between 1 and 200.";
+    }
+    if (value < project.playerSettings.cameraMinZoomDistance) {
+      return "CameraMaxZoomDistance cannot be below CameraMinZoomDistance.";
+    }
+    project.playerSettings.cameraMaxZoomDistance = value;
+    return null;
   }
   if (property === "MaxHealth") {
     project.playerSettings.maxHealth = value;

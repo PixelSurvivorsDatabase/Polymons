@@ -26,6 +26,11 @@ type PolyAdminAccount = {
   role: "owner" | "player";
   loginDisabled: boolean;
   passwordStatus: "protected-hash-only";
+  equippedShirtId: string | null;
+  inventory: Array<{
+    itemId: string;
+    acquiredAt: string;
+  }>;
   online: {
     gameId: string | null;
     connected: boolean;
@@ -51,6 +56,14 @@ type PolyAdminAccountsResponse = {
     gameVisits: number;
     onlinePlayers: number;
   };
+  avatarItems: Array<{
+    id: string;
+    name: string;
+    description: string;
+    itemType: string;
+    unlockType: string;
+    unlockThreshold: number | null;
+  }>;
 };
 
 interface Window {
@@ -62,5 +75,16 @@ interface Window {
       page: number,
       perPage: number,
     ) => Promise<PolyAdminAccountsResponse>;
+    updateInventory: (
+      userId: string,
+      itemId: string,
+      owned: boolean,
+      equip?: boolean,
+    ) => Promise<{
+      userId: string;
+      itemId: string;
+      owned: boolean;
+      equipped: boolean;
+    }>;
   };
 }

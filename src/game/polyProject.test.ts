@@ -107,6 +107,8 @@ label.Text = "Ready"`,
       walkSpeed: 18,
       jumpPower: 10.5,
       cameraFieldOfView: 55,
+      cameraMinZoomDistance: 10,
+      cameraMaxZoomDistance: 80,
       maxHealth: 100,
     },
     leaderstats: [],
@@ -126,6 +128,29 @@ test("applies server and local property scripts in order", () => {
   assert.deepEqual(result.output, [
     { level: "info", message: "server ready", scriptName: "Main" },
   ]);
+});
+
+test("applies LocalPlayer camera zoom limits from scripts", () => {
+  const fixture = project();
+  fixture.scripts[1].source = `local player = Players.LocalPlayer
+player.CameraMinZoomDistance = 12
+player.CameraMaxZoomDistance = 96`;
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0);
+  assert.equal(result.project.playerSettings.cameraMinZoomDistance, 12);
+  assert.equal(result.project.playerSettings.cameraMaxZoomDistance, 96);
+});
+
+test("normalizes camera zoom limits for older projects", () => {
+  const fixture = project();
+  const legacySettings = fixture.playerSettings as Partial<
+    typeof fixture.playerSettings
+  >;
+  delete legacySettings.cameraMinZoomDistance;
+  delete legacySettings.cameraMaxZoomDistance;
+  const result = runPolyProject(fixture);
+  assert.equal(result.project.playerSettings.cameraMinZoomDistance, 10);
+  assert.equal(result.project.playerSettings.cameraMaxZoomDistance, 80);
 });
 
 test("reports unknown objects and invalid property values", () => {

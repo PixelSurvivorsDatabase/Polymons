@@ -114,6 +114,19 @@ async function ownerRequest<T>(path: string): Promise<T> {
   }
 }
 
+async function ownerPost<T>(path: string, body: unknown): Promise<T> {
+  if (!auth) throw new Error("Sign in with the Polymons owner account.");
+  const request = (accessToken: string) =>
+    apiRequest<T>(path, { method: "POST", body, accessToken });
+  try {
+    return await request(auth.session.accessToken);
+  } catch (error) {
+    const renewed = await refreshAuth();
+    if (!renewed) throw error;
+    return request(renewed.session.accessToken);
+  }
+}
+
 function createWindow(): void {
   const window = new BrowserWindow({
     width: 1380,
@@ -166,6 +179,26 @@ if (!hasLock) {
           `/v1/admin/accounts?page=${page}&perPage=${perPage}`,
         );
       },
+    );
+    ipcMain.handle(
+      "accounts:inventory",
+      (
+        _event,
+        input: {
+          userId: string;
+          itemId: string;
+          owned: boolean;
+          equip?: boolean;
+        },
+      ) =>
+        ownerPost(
+          `/v1/admin/accounts/${encodeURIComponent(input.userId)}/inventory`,
+          {
+            itemId: input.itemId,
+            owned: input.owned,
+            equip: input.equip,
+          },
+        ),
     );
 
     createWindow();

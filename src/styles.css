@@ -1702,6 +1702,140 @@ h3,
   font-weight: 800;
 }
 
+.mobile-joystick {
+  position: relative;
+  width: 118px;
+  height: 118px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 50%;
+  background: rgba(17, 20, 30, 0.36);
+  box-shadow: inset 0 0 30px rgba(0, 0, 0, 0.22);
+  touch-action: none;
+  user-select: none;
+  backdrop-filter: blur(8px);
+}
+
+.mobile-joystick-knob {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 52px;
+  height: 52px;
+  margin: -26px;
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  border-radius: 50%;
+  background: rgba(112, 78, 192, 0.78);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.24);
+  pointer-events: none;
+}
+
+.mobile-game-menu {
+  position: absolute;
+  z-index: 13;
+  top: 12px;
+  right: 12px;
+  display: none;
+  gap: 6px;
+}
+
+.mobile-game-menu button {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  background: rgba(14, 16, 24, 0.72);
+  color: #fff;
+  padding: 8px 9px;
+  font-size: 9px;
+  font-weight: 800;
+  backdrop-filter: blur(10px);
+}
+
+.mobile-landscape-gate {
+  position: absolute;
+  z-index: 40;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at 50% 45%, rgba(111, 70, 185, 0.24), transparent 42%),
+    rgba(5, 5, 9, 0.96);
+  color: #fff;
+  padding: max(22px, env(safe-area-inset-top))
+    max(22px, env(safe-area-inset-right))
+    max(22px, env(safe-area-inset-bottom))
+    max(22px, env(safe-area-inset-left));
+  text-align: center;
+  touch-action: none;
+}
+
+.mobile-landscape-card {
+  display: flex;
+  width: min(390px, 100%);
+  align-items: center;
+  flex-direction: column;
+}
+
+.mobile-landscape-icon {
+  display: grid;
+  width: 64px;
+  height: 64px;
+  place-items: center;
+  margin-bottom: 15px;
+  border: 1px solid rgba(193, 150, 255, 0.45);
+  border-radius: 18px;
+  background: rgba(130, 75, 209, 0.17);
+  color: #caa1ff;
+  font-size: 38px;
+  line-height: 1;
+}
+
+.mobile-landscape-card strong {
+  font-family: "Space Grotesk", sans-serif;
+  font-size: clamp(21px, 5vw, 30px);
+}
+
+.mobile-landscape-card p {
+  max-width: 330px;
+  margin: 8px 0 18px;
+  color: #b8b2c3;
+  font-size: 13px;
+}
+
+.mobile-landscape-card button {
+  border: 0;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #6e3fb7, #8c5ed8);
+  color: #fff;
+  cursor: pointer;
+  padding: 11px 18px;
+  font-weight: 800;
+}
+
+.discover-search {
+  display: flex;
+  max-width: 620px;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--panel);
+  margin-bottom: 26px;
+  padding: 0 14px;
+}
+
+.discover-search input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  padding: 13px 0;
+}
+
+.favorite-button.active {
+  border-color: rgba(182, 113, 255, 0.55);
+  color: #c99cff;
+}
+
 .game-art-wide {
   aspect-ratio: 16 / 10.5;
   border-radius: 24px;
@@ -2015,6 +2149,35 @@ h3,
   box-shadow: 0 0 35px 16px rgba(111, 64, 220, 0.17);
   content: "";
   pointer-events: none;
+}
+
+.connection-pill.offline {
+  border-color: rgba(255, 115, 138, 0.4);
+  color: #ffb0bf;
+}
+
+.game-connection-overlay {
+  position: absolute;
+  z-index: 24;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  background: rgba(8, 9, 14, 0.72);
+  color: #fff;
+  text-align: center;
+  backdrop-filter: blur(8px);
+}
+
+.game-connection-overlay span,
+.game-connection-overlay small {
+  max-width: 360px;
+  color: #c2bdcb;
+}
+
+.game-connection-overlay small {
+  color: #ff9eb1;
 }
 
 .wardrobe-preview-copy {
@@ -2612,7 +2775,7 @@ h3,
   }
 
   .baseplate-player {
-    height: 560px;
+    height: min(680px, calc(100svh - 115px));
     min-height: 500px;
     border-radius: 16px;
   }
@@ -2623,6 +2786,74 @@ h3,
 
   .touch-controls {
     display: grid;
+  }
+
+  .mobile-game-menu {
+    display: flex;
+  }
+
+  .game-chat {
+    top: 54px;
+    left: 10px;
+    width: min(330px, calc(100% - 20px));
+  }
+
+  .game-chat-log {
+    height: 116px;
+  }
+
+  .game-hud-left {
+    top: auto !important;
+    bottom: 150px;
+    left: 10px;
+    min-width: 0;
+    max-width: 150px;
+    padding: 8px 10px;
+  }
+
+  .game-hud-left strong {
+    font-size: 12px;
+  }
+
+  .game-hud-left span {
+    font-size: 9px;
+  }
+
+  .poly-gui-object {
+    padding: 3px;
+    font-size: clamp(9px, 2.6vw, 14px);
+  }
+
+  .touch-movement {
+    bottom: max(16px, env(safe-area-inset-bottom));
+    left: max(14px, env(safe-area-inset-left));
+    display: block;
+  }
+
+  .touch-actions {
+    right: max(14px, env(safe-area-inset-right));
+    bottom: max(20px, env(safe-area-inset-bottom));
+    grid-template-columns: repeat(2, minmax(62px, auto));
+  }
+
+  .touch-actions button {
+    min-width: 62px;
+    min-height: 48px;
+    padding: 10px 12px;
+  }
+
+  .tool-hotbar {
+    bottom: 92px;
+    max-width: calc(100% - 28px);
+    overflow-x: auto;
+  }
+
+  .player-list-menu {
+    top: 52px;
+    right: 10px;
+    width: min(390px, calc(100% - 20px));
+    max-height: calc(100% - 70px);
+    overflow-y: auto;
   }
 
   .mouse-capture-hint {
@@ -2696,5 +2927,76 @@ h3,
 
   .creator-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) and (orientation: landscape) {
+  :fullscreen .baseplate-player {
+    position: fixed;
+    z-index: 1000;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    min-height: 0;
+    border: 0;
+    border-radius: 0;
+  }
+
+  :fullscreen .mobile-nav,
+  :fullscreen .topbar,
+  :fullscreen .sidebar {
+    display: none;
+  }
+
+  .game-hud-left {
+    bottom: 12px;
+    left: 145px;
+  }
+}
+
+@media (pointer: coarse) and (max-width: 1100px) {
+  .baseplate-player {
+    min-height: 0;
+    touch-action: none;
+  }
+
+  .touch-controls {
+    display: grid;
+  }
+
+  .touch-movement {
+    display: block;
+  }
+
+  .mobile-game-menu {
+    display: flex;
+  }
+
+  .mouse-capture-hint,
+  .game-hud-right {
+    display: none;
+  }
+}
+
+@media (pointer: coarse) and (max-width: 1100px) and (orientation: landscape) {
+  :fullscreen .baseplate-player,
+  :-webkit-full-screen .baseplate-player {
+    position: fixed;
+    z-index: 1000;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    min-height: 0;
+    border: 0;
+    border-radius: 0;
+  }
+
+  :fullscreen .mobile-nav,
+  :fullscreen .topbar,
+  :fullscreen .sidebar,
+  :-webkit-full-screen .mobile-nav,
+  :-webkit-full-screen .topbar,
+  :-webkit-full-screen .sidebar {
+    display: none;
   }
 }

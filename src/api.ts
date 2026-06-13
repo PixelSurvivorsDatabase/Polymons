@@ -157,12 +157,40 @@ export function createPlaySession(
   });
 }
 
-export function listGames(): Promise<{ games: PlatformGame[] }> {
-  return apiRequest("/v1/games");
+export function listGames(query = ""): Promise<{ games: PlatformGame[] }> {
+  const suffix = query.trim()
+    ? `?query=${encodeURIComponent(query.trim())}`
+    : "";
+  return apiRequest(`/v1/games${suffix}`);
 }
 
 export function getGame(gameId: string): Promise<{ game: PlatformGame }> {
   return apiRequest(`/v1/games/${encodeURIComponent(gameId)}`);
+}
+
+export type GameLibrary = {
+  favoriteGameIds: string[];
+  recentGames: Array<{
+    game_id: string;
+    last_played_at: string;
+    play_count: number;
+  }>;
+};
+
+export function getGameLibrary(accessToken: string): Promise<GameLibrary> {
+  return apiRequest("/v1/games/library", { accessToken });
+}
+
+export function setGameFavorite(
+  gameId: string,
+  favorite: boolean,
+  accessToken: string,
+): Promise<{ gameId: string; favorite: boolean }> {
+  return apiRequest(`/v1/games/${encodeURIComponent(gameId)}/favorite`, {
+    method: "POST",
+    accessToken,
+    body: { favorite },
+  });
 }
 
 export function searchPlayers(

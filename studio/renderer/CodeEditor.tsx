@@ -279,6 +279,8 @@ export default function CodeEditor({
             "WalkSpeed",
             "JumpPower",
             "CameraFieldOfView",
+            "CameraMinZoomDistance",
+            "CameraMaxZoomDistance",
             "Health",
             "MaxHealth",
             "SprintEnabled",

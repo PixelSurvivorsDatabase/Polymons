@@ -58,6 +58,7 @@ type InputState = {
   resetQueued: boolean;
   yaw: number;
   pitch: number;
+  zoomDistance: number;
 };
 
 type Telemetry = {
@@ -77,6 +78,7 @@ const right = new Vector3();
 const cameraTarget = new Vector3();
 const desiredCameraPosition = new Vector3();
 const cameraRayDirection = new Vector3();
+const CAMERA_DISTANCE_SCALE = 0.37;
 const AVATAR_SCALE = 0.8;
 const AVATAR_VISUAL_OFFSET = -0.2;
 const HEAD_PROFILE = [
@@ -102,7 +104,29 @@ function createInputState(): InputState {
     resetQueued: false,
     yaw: 0,
     pitch: 0.22,
+    zoomDistance: 20,
   };
+}
+
+function cameraZoomBounds(playerSettings: PolyPlayerSettings) {
+  const minimum = Math.max(
+    1,
+    Math.min(
+      playerSettings.cameraMinZoomDistance,
+      playerSettings.cameraMaxZoomDistance,
+    ),
+  );
+  const maximum = Math.max(
+    minimum,
+    Math.min(
+      200,
+      Math.max(
+        playerSettings.cameraMinZoomDistance,
+        playerSettings.cameraMaxZoomDistance,
+      ),
+    ),
+  );
+  return { minimum, maximum };
 }
 
 function keyCodeName(code: string): string {
@@ -221,17 +245,37 @@ function useKeyboard(
 function MouseLook({
   input,
   onPointerLock,
+  playerSettings,
 }: {
   input: MutableRefObject<InputState>;
   onPointerLock: (locked: boolean) => void;
+  playerSettings: PolyPlayerSettings;
 }) {
   const { gl } = useThree();
 
   useEffect(() => {
     const canvas = gl.domElement;
+    const touchPoints = new Map<number, { x: number; y: number }>();
     let touchPointer: number | null = null;
     let lastTouchX = 0;
     let lastTouchY = 0;
+    let pinchDistance: number | null = null;
+    const setZoom = (value: number) => {
+      const bounds = cameraZoomBounds(playerSettings);
+      input.current.zoomDistance = MathUtils.clamp(
+        value,
+        bounds.minimum,
+        bounds.maximum,
+      );
+    };
+    const currentPinchDistance = () => {
+      const points = [...touchPoints.values()];
+      if (points.length < 2) return null;
+      return Math.hypot(
+        points[0].x - points[1].x,
+        points[0].y - points[1].y,
+      );
+    };
     const onPointerDown = (event: PointerEvent) => {
       if (event.pointerType !== "touch") {
         if (document.pointerLockElement !== canvas) {
@@ -239,12 +283,31 @@ function MouseLook({
         }
         return;
       }
-      touchPointer = event.pointerId;
-      lastTouchX = event.clientX;
-      lastTouchY = event.clientY;
+      touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
       canvas.setPointerCapture(event.pointerId);
+      if (touchPoints.size === 1) {
+        touchPointer = event.pointerId;
+        lastTouchX = event.clientX;
+        lastTouchY = event.clientY;
+      } else {
+        touchPointer = null;
+        pinchDistance = currentPinchDistance();
+      }
     };
     const onPointerMove = (event: PointerEvent) => {
+      if (!touchPoints.has(event.pointerId)) return;
+      touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (touchPoints.size >= 2) {
+        const nextPinchDistance = currentPinchDistance();
+        if (pinchDistance !== null && nextPinchDistance !== null) {
+          setZoom(
+            input.current.zoomDistance +
+              (pinchDistance - nextPinchDistance) * 0.12,
+          );
+        }
+        pinchDistance = nextPinchDistance;
+        return;
+      }
       if (event.pointerId !== touchPointer) return;
       input.current.yaw -= (event.clientX - lastTouchX) * 0.006;
       input.current.pitch = MathUtils.clamp(
@@ -256,9 +319,21 @@ function MouseLook({
       lastTouchY = event.clientY;
     };
     const onPointerUp = (event: PointerEvent) => {
-      if (event.pointerId !== touchPointer) return;
-      touchPointer = null;
-      canvas.releasePointerCapture(event.pointerId);
+      touchPoints.delete(event.pointerId);
+      if (canvas.hasPointerCapture(event.pointerId)) {
+        canvas.releasePointerCapture(event.pointerId);
+      }
+      pinchDistance = null;
+      const remaining = touchPoints.entries().next().value as
+        | [number, { x: number; y: number }]
+        | undefined;
+      if (remaining) {
+        touchPointer = remaining[0];
+        lastTouchX = remaining[1].x;
+        lastTouchY = remaining[1].y;
+      } else {
+        touchPointer = null;
+      }
     };
     const onMouseMove = (event: MouseEvent) => {
       if (document.pointerLockElement !== canvas) return;
@@ -272,11 +347,17 @@ function MouseLook({
     const onLockChange = () => {
       onPointerLock(document.pointerLockElement === canvas);
     };
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const scale = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 1.2 : 0.03;
+      setZoom(input.current.zoomDistance + event.deltaY * scale);
+    };
 
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerup", onPointerUp);
     canvas.addEventListener("pointercancel", onPointerUp);
+    canvas.addEventListener("wheel", onWheel, { passive: false });
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("pointerlockchange", onLockChange);
     return () => {
@@ -284,10 +365,11 @@ function MouseLook({
       canvas.removeEventListener("pointermove", onPointerMove);
       canvas.removeEventListener("pointerup", onPointerUp);
       canvas.removeEventListener("pointercancel", onPointerUp);
+      canvas.removeEventListener("wheel", onWheel);
       document.removeEventListener("mousemove", onMouseMove);
       document.removeEventListener("pointerlockchange", onLockChange);
     };
-  }, [gl, input, onPointerLock]);
+  }, [gl, input, onPointerLock, playerSettings]);
 
   return null;
 }
@@ -637,7 +719,13 @@ function PlayerController({
     }
 
     cameraTarget.set(position.x, position.y + 0.45, position.z);
-    const distance = 7.4;
+    const zoomBounds = cameraZoomBounds(playerSettings);
+    input.current.zoomDistance = MathUtils.clamp(
+      input.current.zoomDistance,
+      zoomBounds.minimum,
+      zoomBounds.maximum,
+    );
+    const distance = input.current.zoomDistance * CAMERA_DISTANCE_SCALE;
     const horizontalDistance = Math.cos(input.current.pitch) * distance;
     desiredCameraPosition.set(
       position.x + Math.sin(input.current.yaw) * horizontalDistance,
@@ -1072,7 +1160,11 @@ function Scene({
 }) {
   return (
     <>
-      <MouseLook input={input} onPointerLock={onPointerLock} />
+      <MouseLook
+        input={input}
+        onPointerLock={onPointerLock}
+        playerSettings={playerSettings}
+      />
       <BaseplateWorld />
       <Physics gravity={[0, -24, 0]} timeStep="vary" colliders={false}>
         <PlayerController
@@ -1143,35 +1235,55 @@ function Scene({
   );
 }
 
-function TouchButton({
-  label,
-  className,
-  onDown,
-  onUp,
+function MobileJoystick({
+  onChange,
 }: {
-  label: string;
-  className?: string;
-  onDown: () => void;
-  onUp: () => void;
+  onChange: (x: number, y: number) => void;
 }) {
-  const release = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    event.currentTarget.releasePointerCapture?.(event.pointerId);
-    onUp();
+  const [knob, setKnob] = useState({ x: 0, y: 0 });
+  const update = (
+    event: ReactPointerEvent<HTMLDivElement>,
+    release = false,
+  ) => {
+    if (release) {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+      setKnob({ x: 0, y: 0 });
+      onChange(0, 0);
+      return;
+    }
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const radius = bounds.width * 0.34;
+    const rawX = event.clientX - (bounds.left + bounds.width / 2);
+    const rawY = event.clientY - (bounds.top + bounds.height / 2);
+    const distance = Math.hypot(rawX, rawY);
+    const scale = distance > radius ? radius / distance : 1;
+    const x = rawX * scale;
+    const y = rawY * scale;
+    setKnob({ x, y });
+    onChange(x / radius, y / radius);
   };
 
   return (
-    <button
-      className={className}
+    <div
+      className="mobile-joystick"
       onPointerDown={(event) => {
         event.currentTarget.setPointerCapture?.(event.pointerId);
-        onDown();
+        update(event);
       }}
-      onPointerUp={release}
-      onPointerCancel={release}
+      onPointerMove={(event) => {
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) update(event);
+      }}
+      onPointerUp={(event) => update(event, true)}
+      onPointerCancel={(event) => update(event, true)}
       onContextMenu={(event) => event.preventDefault()}
+      role="group"
+      aria-label="Movement joystick"
     >
-      {label}
-    </button>
+      <span
+        className="mobile-joystick-knob"
+        style={{ transform: `translate(${knob.x}px, ${knob.y}px)` }}
+      />
+    </div>
   );
 }
 
@@ -1416,6 +1528,8 @@ export default function BaseplateGame({
     walkSpeed: 18,
     jumpPower: 10.5,
     cameraFieldOfView: 52,
+    cameraMinZoomDistance: 10,
+    cameraMaxZoomDistance: 80,
     maxHealth: 100,
     sprintEnabled: true,
     sprintMultiplier: 1.5,
@@ -1481,6 +1595,11 @@ export default function BaseplateGame({
     local?: boolean;
   } | null>(null);
   const [friendStatus, setFriendStatus] = useState("");
+  const [mobileDevice, setMobileDevice] = useState(false);
+  const [landscape, setLandscape] = useState(false);
+  const [graphicsMode, setGraphicsMode] = useState<"low" | "high">("high");
+  const [fullscreen, setFullscreen] = useState(false);
+  const mobileGraphicsInitialized = useRef(false);
   const [telemetry, setTelemetry] = useState<Telemetry>({
     grounded: false,
     speed: 0,
@@ -1490,6 +1609,42 @@ export default function BaseplateGame({
     rotationY: 0,
   });
   useKeyboard(input, onKeyInput);
+  useEffect(() => {
+    const media = window.matchMedia("(pointer: coarse)");
+    const update = () => {
+      const mobile =
+        media.matches || Math.min(window.innerWidth, window.innerHeight) <= 820;
+      setMobileDevice(mobile);
+      setLandscape(window.innerWidth > window.innerHeight);
+      if (mobile && !mobileGraphicsInitialized.current) {
+        mobileGraphicsInitialized.current = true;
+        setGraphicsMode("low");
+      }
+    };
+    update();
+    media.addEventListener("change", update);
+    window.addEventListener("resize", update);
+    return () => {
+      media.removeEventListener("change", update);
+      window.removeEventListener("resize", update);
+    };
+  }, []);
+  useEffect(() => {
+    const update = () =>
+      setFullscreen(
+        Boolean(
+          document.fullscreenElement ||
+            (document as Document & { webkitFullscreenElement?: Element })
+              .webkitFullscreenElement,
+        ),
+      );
+    document.addEventListener("fullscreenchange", update);
+    document.addEventListener("webkitfullscreenchange", update);
+    return () => {
+      document.removeEventListener("fullscreenchange", update);
+      document.removeEventListener("webkitfullscreenchange", update);
+    };
+  }, []);
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.code !== "Tab") return;
@@ -1520,6 +1675,26 @@ export default function BaseplateGame({
   ) => {
     input.current[key] = value;
   };
+  const enterMobileFullscreen = async () => {
+    const root = document.documentElement as HTMLElement & {
+      webkitRequestFullscreen?: () => Promise<void> | void;
+    };
+    try {
+      if (!document.fullscreenElement) {
+        if (root.requestFullscreen) {
+          await root.requestFullscreen();
+        } else {
+          await root.webkitRequestFullscreen?.();
+        }
+      }
+      const orientation = screen.orientation as ScreenOrientation & {
+        lock?: (orientation: "landscape") => Promise<void>;
+      };
+      await orientation.lock?.("landscape");
+    } catch {
+      // Fullscreen and orientation locking vary by mobile browser.
+    }
+  };
 
   return (
     <section
@@ -1531,10 +1706,13 @@ export default function BaseplateGame({
       data-position={`${telemetry.x.toFixed(2)},${telemetry.y.toFixed(2)},${telemetry.z.toFixed(2)}`}
       data-remote-players={remotePlayers.length}
       data-chat-enabled={onSendChat ? "true" : undefined}
+      data-mobile={mobileDevice ? "true" : undefined}
+      data-landscape={landscape ? "true" : undefined}
+      data-graphics={graphicsMode}
     >
       <Canvas
-        shadows="basic"
-        dpr={[1, 1.75]}
+        shadows={graphicsMode === "high" ? "basic" : false}
+        dpr={graphicsMode === "high" ? [1, 1.5] : [0.65, 1]}
         camera={{
           position: [0, 5.5, 12],
           fov: playerSettings.cameraFieldOfView,
@@ -1708,34 +1886,72 @@ export default function BaseplateGame({
         <span>R Reset</span>
       </div>
 
+      {mobileDevice && (
+        <div className="mobile-game-menu">
+          <button onClick={() => setPlayerListOpen((open) => !open)}>
+            Players
+          </button>
+          <button
+            onClick={() =>
+              setGraphicsMode((current) =>
+                current === "low" ? "high" : "low",
+              )
+            }
+          >
+            Graphics: {graphicsMode}
+          </button>
+          <button
+            onClick={() => {
+              if (document.fullscreenElement) {
+                void document.exitFullscreen();
+              } else {
+                void enterMobileFullscreen();
+              }
+            }}
+          >
+            {fullscreen ? "Exit full" : "Fullscreen"}
+          </button>
+        </div>
+      )}
+
+      {mobileDevice && (!landscape || !fullscreen) && (
+        <div className="mobile-landscape-gate" role="dialog" aria-modal="true">
+          <div className="mobile-landscape-card">
+            <span className="mobile-landscape-icon" aria-hidden="true">
+              90
+            </span>
+            <strong>
+              {landscape ? "Play in fullscreen" : "Rotate to landscape"}
+            </strong>
+            <p>
+              {landscape
+                ? "Polymons mobile play is built for fullscreen landscape."
+                : "Turn your phone sideways to continue playing."}
+            </p>
+            {landscape && (
+              <button onClick={() => void enterMobileFullscreen()}>
+                Enter fullscreen
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {!pointerLocked && (
         <div className="mouse-capture-hint">
           <strong>Click the game to control the camera</strong>
-          <span>Press Escape to release the mouse</span>
+          <span>Scroll to zoom. Press Escape to release the mouse.</span>
         </div>
       )}
 
       <div className="touch-controls touch-movement" aria-label="Movement controls">
-        <TouchButton
-          label="W"
-          className="touch-forward"
-          onDown={() => setMove("forward", true)}
-          onUp={() => setMove("forward", false)}
-        />
-        <TouchButton
-          label="A"
-          onDown={() => setMove("left", true)}
-          onUp={() => setMove("left", false)}
-        />
-        <TouchButton
-          label="S"
-          onDown={() => setMove("backward", true)}
-          onUp={() => setMove("backward", false)}
-        />
-        <TouchButton
-          label="D"
-          onDown={() => setMove("right", true)}
-          onUp={() => setMove("right", false)}
+        <MobileJoystick
+          onChange={(x, y) => {
+            setMove("left", x < -0.22);
+            setMove("right", x > 0.22);
+            setMove("forward", y < -0.22);
+            setMove("backward", y > 0.22);
+          }}
         />
       </div>
       <div className="touch-controls touch-actions">
@@ -1746,6 +1962,15 @@ export default function BaseplateGame({
         >
           Jump
         </button>
+        {playerSettings.sprintEnabled && (
+          <button
+            onPointerDown={() => setMove("sprint", true)}
+            onPointerUp={() => setMove("sprint", false)}
+            onPointerCancel={() => setMove("sprint", false)}
+          >
+            Sprint
+          </button>
+        )}
         <button
           onPointerDown={() => {
             input.current.resetQueued = true;

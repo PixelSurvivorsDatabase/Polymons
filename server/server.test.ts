@@ -13,7 +13,9 @@ import {
   normalizeUsername,
 } from "./security.js";
 import {
+  adminInventorySchema,
   clientMessageSchema,
+  favoriteGameSchema,
   friendRequestSchema,
   publishGameSchema,
   signUpSchema,
@@ -149,6 +151,25 @@ test("validates Studio publishes and friend requests", () => {
   );
   assert.equal(
     friendRequestSchema.safeParse({ username: "x" }).success,
+    false,
+  );
+});
+
+test("validates favorites and owner inventory edits", () => {
+  assert.equal(favoriteGameSchema.safeParse({ favorite: true }).success, true);
+  assert.equal(
+    adminInventorySchema.safeParse({
+      itemId: "beta-tester-shirt",
+      owned: true,
+      equip: true,
+    }).success,
+    true,
+  );
+  assert.equal(
+    adminInventorySchema.safeParse({
+      itemId: "../secret",
+      owned: true,
+    }).success,
     false,
   );
 });

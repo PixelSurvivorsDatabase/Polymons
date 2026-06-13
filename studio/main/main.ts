@@ -170,6 +170,8 @@ type StudioProject = {
     walkSpeed: number;
     jumpPower: number;
     cameraFieldOfView: number;
+    cameraMinZoomDistance: number;
+    cameraMaxZoomDistance: number;
     maxHealth: number;
     sprintEnabled: boolean;
     sprintMultiplier: number;
@@ -478,6 +480,8 @@ function migrateLegacyProject(
       walkSpeed: 18,
       jumpPower: 10.5,
       cameraFieldOfView: 52,
+      cameraMinZoomDistance: 10,
+      cameraMaxZoomDistance: 80,
       maxHealth: 100,
       sprintEnabled: true,
       sprintMultiplier: 1.5,
@@ -490,6 +494,14 @@ function migrateLegacyProject(
 }
 
 function normalizeProject(project: StudioProject): StudioProject {
+  const cameraMinZoomDistance = Math.max(
+    1,
+    Math.min(200, project.playerSettings.cameraMinZoomDistance ?? 10),
+  );
+  const cameraMaxZoomDistance = Math.max(
+    cameraMinZoomDistance,
+    Math.min(200, project.playerSettings.cameraMaxZoomDistance ?? 80),
+  );
   return {
     ...project,
     objects: project.objects.map((object) => ({
@@ -533,6 +545,8 @@ function normalizeProject(project: StudioProject): StudioProject {
       walkSpeed: project.playerSettings.walkSpeed ?? 18,
       jumpPower: project.playerSettings.jumpPower ?? 10.5,
       cameraFieldOfView: project.playerSettings.cameraFieldOfView ?? 52,
+      cameraMinZoomDistance,
+      cameraMaxZoomDistance,
       maxHealth: project.playerSettings.maxHealth ?? 100,
       sprintEnabled: project.playerSettings.sprintEnabled ?? true,
       sprintMultiplier: project.playerSettings.sprintMultiplier ?? 1.5,
@@ -1186,6 +1200,13 @@ function validateProject(project: StudioProject): void {
     !Number.isFinite(project.playerSettings.walkSpeed) ||
     !Number.isFinite(project.playerSettings.jumpPower) ||
     !Number.isFinite(project.playerSettings.cameraFieldOfView) ||
+    !Number.isFinite(project.playerSettings.cameraMinZoomDistance) ||
+    !Number.isFinite(project.playerSettings.cameraMaxZoomDistance) ||
+    project.playerSettings.cameraMinZoomDistance < 1 ||
+    project.playerSettings.cameraMaxZoomDistance >
+      200 ||
+    project.playerSettings.cameraMinZoomDistance >
+      project.playerSettings.cameraMaxZoomDistance ||
     !Number.isFinite(project.playerSettings.maxHealth)
   ) {
     throw new Error("Invalid LocalPlayer settings.");
@@ -1364,6 +1385,8 @@ function pmxlProject(
       walkSpeed: 18,
       jumpPower: 10.5,
       cameraFieldOfView: 52,
+      cameraMinZoomDistance: 10,
+      cameraMaxZoomDistance: 80,
       maxHealth: 100,
       sprintEnabled: true,
       sprintMultiplier: 1.5,
@@ -1803,6 +1826,8 @@ void app.whenReady().then(async () => {
           walkSpeed: 18,
           jumpPower: 10.5,
           cameraFieldOfView: 52,
+          cameraMinZoomDistance: 10,
+          cameraMaxZoomDistance: 80,
           maxHealth: 100,
           sprintEnabled: true,
           sprintMultiplier: 1.5,

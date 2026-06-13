@@ -156,6 +156,8 @@ function createPreviewProject(
       walkSpeed: 18,
       jumpPower: 10.5,
       cameraFieldOfView: 52,
+      cameraMinZoomDistance: 10,
+      cameraMaxZoomDistance: 80,
       maxHealth: 100,
       sprintEnabled: true,
       sprintMultiplier: 1.5,

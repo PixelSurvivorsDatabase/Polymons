@@ -57,6 +57,19 @@ export const equipAvatarItemSchema = z.object({
     .nullable(),
 });
 
+export const favoriteGameSchema = z.object({
+  favorite: z.boolean(),
+});
+
+export const adminInventorySchema = z.object({
+  itemId: z
+    .string()
+    .trim()
+    .regex(/^[a-z0-9][a-z0-9-]{1,63}$/),
+  owned: z.boolean(),
+  equip: z.boolean().optional(),
+});
+
 export const clientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("ping"),

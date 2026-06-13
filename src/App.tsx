@@ -5,6 +5,7 @@ import {
   Download,
   Eye,
   Gamepad2,
+  Heart,
   Home,
   Menu,
   Plus,
@@ -30,6 +31,7 @@ import {
   createPlayerAccountLink,
   createPlaySession,
   equipShirt,
+  getGameLibrary,
   getGame,
   getPlayerProfile,
   getWardrobe,
@@ -40,6 +42,7 @@ import {
   POLYMONS_PLAYER_DOWNLOAD_URL,
   POLY_STUDIO_DOWNLOAD_URL,
   sendFriendRequest,
+  setGameFavorite,
   searchPlayers,
   type Friendship,
   type PlatformGame,
@@ -67,6 +70,7 @@ const AvatarPreview = lazy(() => import("./game/AvatarPreview"));
 function displayGame(game: PlatformGame): Game {
   return {
     id: game.slug,
+    platformId: game.id,
     title: game.title,
     creator: game.creator,
     creatorUsername: game.creatorUsername,
@@ -96,6 +100,51 @@ function useGames() {
     return () => window.clearInterval(timer);
   }, []);
   return { games, loaded };
+}
+
+function useGameLibrary(games: Game[]) {
+  const { session, refresh } = useAuth();
+  const [favoriteIds, setFavoriteIds] = useState<string[]>([]);
+  const [recentIds, setRecentIds] = useState<string[]>([]);
+
+  const load = useCallback(async () => {
+    if (!session) {
+      setFavoriteIds([]);
+      setRecentIds([]);
+      return;
+    }
+    try {
+      const library = await getGameLibrary(session.accessToken);
+      setFavoriteIds(library.favoriteGameIds);
+      setRecentIds(library.recentGames.map((item) => item.game_id));
+    } catch {
+      const renewed = await refresh();
+      if (!renewed) return;
+      const library = await getGameLibrary(renewed.accessToken);
+      setFavoriteIds(library.favoriteGameIds);
+      setRecentIds(library.recentGames.map((item) => item.game_id));
+    }
+  }, [refresh, session]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const byPlatformId = new Map(
+    games.flatMap((game) => (game.platformId ? [[game.platformId, game]] : [])),
+  );
+  return {
+    favoriteIds,
+    setFavoriteIds,
+    favoriteGames: favoriteIds.flatMap((id) => {
+      const game = byPlatformId.get(id);
+      return game ? [game] : [];
+    }),
+    recentGames: recentIds.flatMap((id) => {
+      const game = byPlatformId.get(id);
+      return game ? [game] : [];
+    }),
+  };
 }
 
 const navItems = [
@@ -403,6 +452,7 @@ function HomePage() {
   const { games } = useGames();
   const featured = games[0];
   const { user, showAuth } = useAuth();
+  const library = useGameLibrary(games);
   return (
     <>
       <section className="welcome-row">
@@ -454,6 +504,28 @@ function HomePage() {
         </div>
       </section>
 
+      {user && library.recentGames.length > 0 && (
+        <section className="content-section">
+          <SectionHeading title="Recently played" />
+          <div className="game-grid">
+            {library.recentGames.slice(0, 4).map((game) => (
+              <GameCard key={game.id} game={game} />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {user && library.favoriteGames.length > 0 && (
+        <section className="content-section">
+          <SectionHeading title="Favorites" />
+          <div className="game-grid">
+            {library.favoriteGames.slice(0, 4).map((game) => (
+              <GameCard key={game.id} game={game} />
+            ))}
+          </div>
+        </section>
+      )}
+
       <section className="content-section">
         <SectionHeading title="Games" link="/discover" />
         <div className="game-grid">
@@ -481,7 +553,27 @@ function HomePage() {
 }
 
 function DiscoverPage() {
-  const { games } = useGames();
+  const { games: allGames } = useGames();
+  const [query, setQuery] = useState("");
+  const [games, setGames] = useState(allGames);
+  const [searching, setSearching] = useState(false);
+  useEffect(() => setGames(allGames), [allGames]);
+  useEffect(() => {
+    const value = query.trim();
+    if (!value) {
+      setGames(allGames);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const timer = window.setTimeout(() => {
+      void listGames(value)
+        .then((result) => setGames(result.games.map(displayGame)))
+        .catch(() => setGames([]))
+        .finally(() => setSearching(false));
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [allGames, query]);
   return (
     <>
       <section className="page-heading">
@@ -492,12 +584,24 @@ function DiscoverPage() {
         <p>Find something to play.</p>
       </section>
       <section className="content-section discover-section">
+        <label className="discover-search">
+          <Search size={18} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search games by name, description, or genre"
+          />
+        </label>
         <SectionHeading title="All games" eyebrow={`${games.length} games`} />
         <div className="game-grid discover-grid">
           {games.map((game) => (
             <GameCard key={game.id} game={game} />
           ))}
         </div>
+        {searching && <div className="empty-state">Searching games...</div>}
+        {!searching && games.length === 0 && (
+          <div className="empty-state">No games matched that search.</div>
+        )}
       </section>
     </>
   );
@@ -508,6 +612,7 @@ function GamePage() {
   const { gameId } = useParams<{ gameId: string }>();
   const game = games.find((item) => item.id === gameId);
   const { session, showAuth, refresh } = useAuth();
+  const library = useGameLibrary(games);
   const [launching, setLaunching] = useState<"player" | "browser" | null>(null);
   const [launchError, setLaunchError] = useState("");
   const [browserSession, setBrowserSession] = useState<PlaySession | null>(null);
@@ -530,6 +635,32 @@ function GamePage() {
     );
   }
   const selectedGame = game;
+  const isFavorite = Boolean(
+    selectedGame.platformId &&
+      library.favoriteIds.includes(selectedGame.platformId),
+  );
+
+  async function toggleFavorite() {
+    if (!session) {
+      showAuth();
+      return;
+    }
+    const favorite = !isFavorite;
+    const gameReference = selectedGame.platformId ?? selectedGame.id;
+    try {
+      await setGameFavorite(gameReference, favorite, session.accessToken);
+    } catch {
+      const renewed = await refresh();
+      if (!renewed) throw new Error("Sign in again to update favorites.");
+      await setGameFavorite(gameReference, favorite, renewed.accessToken);
+    }
+    if (!selectedGame.platformId) return;
+    library.setFavoriteIds((current) =>
+      favorite
+        ? [...new Set([...current, selectedGame.platformId!])]
+        : current.filter((id) => id !== selectedGame.platformId),
+    );
+  }
 
   async function getPlaySession() {
     if (!session) {
@@ -626,6 +757,13 @@ function GamePage() {
         </div>
         <div className="game-launch-actions">
           <button
+            className={`secondary-button favorite-button ${isFavorite ? "active" : ""}`}
+            onClick={() => void toggleFavorite()}
+          >
+            <Heart size={18} fill={isFavorite ? "currentColor" : "none"} />
+            {isFavorite ? "Favorited" : "Favorite"}
+          </button>
+          <button
             className="primary-button"
             onClick={() => {
               setPlayerOptions(true);
@@ -695,9 +833,13 @@ function GamePage() {
 
 function BrowserGame({ playSession }: { playSession: PlaySession }) {
   const { user, session, refresh } = useAuth();
+  const [activeSession, setActiveSession] = useState(playSession);
   const [runtime, setRuntime] = useState<PolyRuntimeResult | null>(null);
   const [gameLoading, setGameLoading] = useState(true);
   const [gameError, setGameError] = useState("");
+  const [reconnecting, setReconnecting] = useState(false);
+  const [reconnectError, setReconnectError] = useState("");
+  useEffect(() => setActiveSession(playSession), [playSession]);
   useEffect(() => {
     setGameLoading(true);
     setGameError("");
@@ -729,11 +871,54 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
     chatError,
     sendState,
     sendChat,
-  } = useMultiplayer(playSession.websocketUrl, playSession.game.id);
+  } = useMultiplayer(activeSession.websocketUrl, activeSession.game.id);
+  const disconnected = [
+    "Disconnected",
+    "Connection failed",
+    "Wrong game session",
+  ].includes(connection);
+
+  const reconnect = useCallback(async () => {
+    if (!session || reconnecting) return;
+    setReconnecting(true);
+    setReconnectError("");
+    try {
+      let accessToken = session.accessToken;
+      if (
+        !session.expiresAt ||
+        session.expiresAt * 1000 < Date.now() + 60_000
+      ) {
+        const renewed = await refresh();
+        if (!renewed) throw new Error("Sign in again to reconnect.");
+        accessToken = renewed.accessToken;
+      }
+      const result = await createPlaySession(
+        activeSession.game.id,
+        accessToken,
+      );
+      setActiveSession(result.playSession);
+    } catch (error) {
+      setReconnectError(
+        error instanceof Error ? error.message : "Could not reconnect.",
+      );
+    } finally {
+      setReconnecting(false);
+    }
+  }, [activeSession.game.id, reconnecting, refresh, session]);
+
+  useEffect(() => {
+    const onOnline = () => {
+      if (disconnected) void reconnect();
+    };
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [disconnected, reconnect]);
 
   return (
     <div className="browser-game-wrap">
-      <span className="connection-pill">{connection}</span>
+      <span className={`connection-pill ${disconnected ? "offline" : ""}`}>
+        {reconnecting ? "Reconnecting" : connection}
+      </span>
       {gameLoading ? (
         <div className="baseplate-player baseplate-player-loading">
           Loading game...
@@ -880,6 +1065,22 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
           }
         />
         </Suspense>
+      )}
+      {disconnected && !gameLoading && !gameError && (
+        <div className="game-connection-overlay">
+          <strong>Connection lost</strong>
+          <span>
+            Your game is still loaded. Reconnect with a fresh server session.
+          </span>
+          {reconnectError && <small>{reconnectError}</small>}
+          <button
+            className="primary-button"
+            disabled={reconnecting}
+            onClick={() => void reconnect()}
+          >
+            {reconnecting ? "Reconnecting..." : "Reconnect"}
+          </button>
+        </div>
       )}
     </div>
   );

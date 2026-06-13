@@ -7,4 +7,11 @@ contextBridge.exposeInMainWorld("polyAdmin", {
   logout: () => ipcRenderer.invoke("auth:logout"),
   listAccounts: (page, perPage) =>
     ipcRenderer.invoke("accounts:list", { page, perPage }),
+  updateInventory: (userId, itemId, owned, equip) =>
+    ipcRenderer.invoke("accounts:inventory", {
+      userId,
+      itemId,
+      owned,
+      equip,
+    }),
 });

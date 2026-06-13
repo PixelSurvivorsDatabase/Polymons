@@ -29,8 +29,10 @@ import {
 import { isLoginDisabled } from "./official-account.js";
 import type { PresenceSnapshot } from "./websocket.js";
 import {
+  adminInventorySchema,
   friendRequestSchema,
   equipAvatarItemSchema,
+  favoriteGameSchema,
   loginSchema,
   playerAccountLinkSchema,
   playSessionSchema,
@@ -345,7 +347,13 @@ export function createApp(
     if (authError) throw authError;
 
     const userIds = authData.users.map((user) => user.id);
-    const [profilesResult, gamesResult, friendshipsResult] = await Promise.all([
+    const [
+      profilesResult,
+      gamesResult,
+      friendshipsResult,
+      inventoryResult,
+      avatarItemsResult,
+    ] = await Promise.all([
       userIds.length
         ? admin
             .from("profiles")
@@ -357,10 +365,22 @@ export function createApp(
         .from("friendships")
         .select("requester_id, addressee_id")
         .eq("status", "accepted"),
+      userIds.length
+        ? admin
+            .from("user_avatar_items")
+            .select("user_id, item_id, acquired_at")
+            .in("user_id", userIds)
+        : Promise.resolve({ data: [], error: null }),
+      admin
+        .from("avatar_items")
+        .select("id, name, description, item_type, unlock_type, unlock_threshold, sort_order")
+        .order("sort_order"),
     ]);
     if (profilesResult.error) throw profilesResult.error;
     if (gamesResult.error) throw gamesResult.error;
     if (friendshipsResult.error) throw friendshipsResult.error;
+    if (inventoryResult.error) throw inventoryResult.error;
+    if (avatarItemsResult.error) throw avatarItemsResult.error;
 
     const profileById = new Map(
       (profilesResult.data ?? []).map((profile) => [profile.id, profile]),
@@ -416,6 +436,12 @@ export function createApp(
           role: isOwnerAccount(authUser) ? "owner" : "player",
           loginDisabled: authUser.app_metadata?.login_disabled === true,
           passwordStatus: "protected-hash-only",
+          inventory: (inventoryResult.data ?? [])
+            .filter((item) => item.user_id === authUser.id)
+            .map((item) => ({
+              itemId: item.item_id,
+              acquiredAt: item.acquired_at,
+            })),
           online: liveByUserId.get(authUser.id) ?? {
             gameId: null,
             connected: false,
@@ -437,8 +463,70 @@ export function createApp(
         gameVisits: totalVisits,
         onlinePlayers: new Set(livePlayers.map((player) => player.userId)).size,
       },
+      avatarItems: (avatarItemsResult.data ?? []).map((item) => ({
+        id: item.id,
+        name: item.name,
+        description: item.description,
+        itemType: item.item_type,
+        unlockType: item.unlock_type,
+        unlockThreshold: item.unlock_threshold,
+      })),
     });
   });
+
+  app.post(
+    "/v1/admin/accounts/:userId/inventory",
+    async (request, response) => {
+      await ownerUser(request, admin);
+      const userId = request.params.userId;
+      if (!UUID_PATTERN.test(userId)) {
+        throw new HttpError(400, "Invalid account ID.");
+      }
+      const input = parseBody(adminInventorySchema, request.body);
+      const { data: item, error: itemError } = await admin
+        .from("avatar_items")
+        .select("id")
+        .eq("id", input.itemId)
+        .maybeSingle();
+      if (itemError) throw itemError;
+      if (!item) throw new HttpError(404, "Avatar item not found.");
+
+      if (input.owned) {
+        const { error } = await admin.from("user_avatar_items").upsert(
+          { user_id: userId, item_id: input.itemId },
+          { onConflict: "user_id,item_id", ignoreDuplicates: true },
+        );
+        if (error) throw error;
+        if (input.equip) {
+          const { error: equipError } = await admin
+            .from("profiles")
+            .update({ equipped_shirt_id: input.itemId })
+            .eq("id", userId);
+          if (equipError) throw equipError;
+        }
+      } else {
+        const { error } = await admin
+          .from("user_avatar_items")
+          .delete()
+          .eq("user_id", userId)
+          .eq("item_id", input.itemId);
+        if (error) throw error;
+        const { error: unequipError } = await admin
+          .from("profiles")
+          .update({ equipped_shirt_id: null })
+          .eq("id", userId)
+          .eq("equipped_shirt_id", input.itemId);
+        if (unequipError) throw unequipError;
+      }
+
+      response.json({
+        userId,
+        itemId: input.itemId,
+        owned: input.owned,
+        equipped: input.owned && input.equip === true,
+      });
+    },
+  );
 
   app.post("/v1/player-account-links", async (request, response) => {
     const user = await authenticatedUser(request, admin);
@@ -577,13 +665,27 @@ export function createApp(
     });
   });
 
-  app.get("/v1/games", async (_request, response) => {
-    const { data, error } = await admin
+  app.get("/v1/games", async (request, response) => {
+    const search =
+      typeof request.query.query === "string"
+        ? request.query.query.trim()
+        : "";
+    if (search.length > 64) {
+      throw new HttpError(400, "Game search is too long.");
+    }
+    let gameQuery = admin
       .from("games")
       .select(
         "id, slug, title, description, genre, thumbnail_url, owner_id, visit_count, updated_at",
       )
-      .eq("visibility", "public")
+      .eq("visibility", "public");
+    if (search) {
+      const escaped = search.replace(/[%_,]/g, "\\$&");
+      gameQuery = gameQuery.or(
+        `title.ilike.%${escaped}%,description.ilike.%${escaped}%,genre.ilike.%${escaped}%`,
+      );
+    }
+    const { data, error } = await gameQuery
       .order("updated_at", { ascending: false })
       .limit(100);
     if (error) throw error;
@@ -618,6 +720,60 @@ export function createApp(
         };
       }),
     });
+  });
+
+  app.get("/v1/games/library", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const [favoritesResult, recentResult] = await Promise.all([
+      admin
+        .from("game_favorites")
+        .select("game_id, created_at")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false })
+        .limit(100),
+      admin
+        .from("recent_games")
+        .select("game_id, last_played_at, play_count")
+        .eq("user_id", user.id)
+        .order("last_played_at", { ascending: false })
+        .limit(24),
+    ]);
+    if (favoritesResult.error) throw favoritesResult.error;
+    if (recentResult.error) throw recentResult.error;
+    response.set("Cache-Control", "private, no-store");
+    response.json({
+      favoriteGameIds: (favoritesResult.data ?? []).map((item) => item.game_id),
+      recentGames: recentResult.data ?? [],
+    });
+  });
+
+  app.post("/v1/games/:gameId/favorite", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const input = parseBody(favoriteGameSchema, request.body);
+    const gameId = request.params.gameId;
+    let query = admin
+      .from("games")
+      .select("id")
+      .eq("visibility", "public");
+    query = UUID_PATTERN.test(gameId)
+      ? query.eq("id", gameId)
+      : query.eq("slug", gameId);
+    const { data: game, error: gameError } = await query.maybeSingle();
+    if (gameError) throw gameError;
+    if (!game) throw new HttpError(404, "Game not found.");
+
+    const result = input.favorite
+      ? await admin.from("game_favorites").upsert(
+          { user_id: user.id, game_id: game.id },
+          { onConflict: "user_id,game_id", ignoreDuplicates: true },
+        )
+      : await admin
+          .from("game_favorites")
+          .delete()
+          .eq("user_id", user.id)
+          .eq("game_id", game.id);
+    if (result.error) throw result.error;
+    response.json({ gameId: game.id, favorite: input.favorite });
   });
 
   app.get("/v1/players", async (request, response) => {
@@ -964,6 +1120,18 @@ export function createApp(
     });
     if (visitError) {
       console.error("Could not increment game visits:", visitError.message);
+    }
+    const { error: recentError } = await admin.from("recent_games").upsert(
+      {
+        user_id: user.id,
+        game_id: game.id,
+        last_played_at: new Date().toISOString(),
+        play_count: 1,
+      },
+      { onConflict: "user_id,game_id" },
+    );
+    if (recentError) {
+      console.error("Could not update recent games:", recentError.message);
     }
 
     response.status(201).json({

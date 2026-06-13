@@ -9,6 +9,7 @@ import {
   RefreshCw,
   Search,
   ShieldCheck,
+  Shirt,
   UserRound,
   Users,
 } from "lucide-react";
@@ -132,6 +133,8 @@ export default function AdminApp() {
   const [page, setPage] = useState(1);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [inventoryBusy, setInventoryBusy] = useState("");
+  const [inventoryMessage, setInventoryMessage] = useState("");
 
   useEffect(() => {
     void window.polyAdmin.getAuth().then((current) => {
@@ -183,6 +186,37 @@ export default function AdminApp() {
     await window.polyAdmin.logout();
     setAuth(null);
     setData(null);
+  }
+
+  async function updateInventory(
+    itemId: string,
+    owned: boolean,
+    equip = false,
+  ) {
+    if (!selected) return;
+    setInventoryBusy(itemId);
+    setInventoryMessage("");
+    setError("");
+    try {
+      await window.polyAdmin.updateInventory(
+        selected.id,
+        itemId,
+        owned,
+        equip,
+      );
+      setInventoryMessage(
+        equip
+          ? "Item equipped."
+          : owned
+            ? "Item granted."
+            : "Item removed.",
+      );
+      await loadAccounts(page);
+    } catch (nextError) {
+      setError(readableError(nextError));
+    } finally {
+      setInventoryBusy("");
+    }
   }
 
   if (!loadedAuth) {
@@ -418,6 +452,63 @@ export default function AdminApp() {
                     </p>
                   </div>
                 </div>
+
+                <section className="inventory-editor">
+                  <div className="inventory-heading">
+                    <Shirt size={18} />
+                    <div>
+                      <strong>Avatar inventory</strong>
+                      <span>Grant, remove, or equip catalog items.</span>
+                    </div>
+                  </div>
+                  <div className="inventory-list">
+                    {(data?.avatarItems ?? []).map((item) => {
+                      const owned = selected.inventory.some(
+                        (entry) => entry.itemId === item.id,
+                      );
+                      const equipped = selected.equippedShirtId === item.id;
+                      return (
+                        <article key={item.id}>
+                          <div>
+                            <strong>{item.name}</strong>
+                            <span>{item.description}</span>
+                            {equipped && <small>Equipped</small>}
+                          </div>
+                          <div className="inventory-actions">
+                            {owned && !equipped && (
+                              <button
+                                disabled={inventoryBusy === item.id}
+                                onClick={() =>
+                                  void updateInventory(item.id, true, true)
+                                }
+                              >
+                                Equip
+                              </button>
+                            )}
+                            <button
+                              className={owned ? "danger" : ""}
+                              disabled={inventoryBusy === item.id}
+                              onClick={() =>
+                                void updateInventory(item.id, !owned)
+                              }
+                            >
+                              {inventoryBusy === item.id
+                                ? "Saving..."
+                                : owned
+                                  ? "Remove"
+                                  : "Grant"}
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                  {inventoryMessage && (
+                    <small className="inventory-message">
+                      {inventoryMessage}
+                    </small>
+                  )}
+                </section>
 
                 {selected.loginDisabled && (
                   <div className="warning-card">

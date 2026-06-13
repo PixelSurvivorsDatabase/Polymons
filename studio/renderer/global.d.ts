@@ -145,6 +145,8 @@ type StudioProject = {
     walkSpeed: number;
     jumpPower: number;
     cameraFieldOfView: number;
+    cameraMinZoomDistance: number;
+    cameraMaxZoomDistance: number;
     maxHealth: number;
     sprintEnabled: boolean;
     sprintMultiplier: number;
