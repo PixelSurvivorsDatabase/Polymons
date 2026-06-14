@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { access, open, unlink, writeFile } from "node:fs/promises";
+import { access, mkdir, open, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { app, BrowserWindow, ipcMain } from "electron";
 
@@ -66,6 +66,64 @@ function assetDigest(asset: ReleaseAsset): string | null {
 
 function runningExecutable(): string {
   return resolve(process.env.PORTABLE_EXECUTABLE_FILE ?? process.execPath);
+}
+
+function quoteWindowsArgument(value: string): string {
+  return `"${value.replaceAll('"', '\\"')}"`;
+}
+
+async function launchOutsideProcessTree(
+  scriptPath: string,
+  argumentsList: string[],
+): Promise<void> {
+  const updaterCommand = [
+    "powershell.exe",
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-WindowStyle",
+    "Hidden",
+    "-File",
+    quoteWindowsArgument(scriptPath),
+    ...argumentsList.map(quoteWindowsArgument),
+  ].join(" ");
+  const escapedCommand = updaterCommand.replaceAll("'", "''");
+  const bootstrap = [
+    `$result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '${escapedCommand}' }`,
+    "if ($result.ReturnValue -ne 0) { exit $result.ReturnValue }",
+  ].join("; ");
+  const encoded = Buffer.from(bootstrap, "utf16le").toString("base64");
+  await new Promise<void>((resolvePromise, reject) => {
+    const launcher = spawn(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-EncodedCommand",
+        encoded,
+      ],
+      { windowsHide: true },
+    );
+    let errorText = "";
+    launcher.stderr?.on("data", (chunk) => {
+      errorText += String(chunk);
+    });
+    launcher.once("error", reject);
+    launcher.once("close", (code) => {
+      if (code === 0) resolvePromise();
+      else {
+        reject(
+          new Error(
+            errorText.trim() ||
+              `Windows updater launcher exited with code ${code ?? "unknown"}.`,
+          ),
+        );
+      }
+    });
+  });
 }
 
 export function registerUpdater(config: UpdaterConfig) {
@@ -235,6 +293,9 @@ export function registerUpdater(config: UpdaterConfig) {
       app.getPath("temp"),
       `polymons-updater-${process.pid}-${Date.now()}.ps1`,
     );
+    const logDirectory = join(app.getPath("userData"), "logs");
+    await mkdir(logDirectory, { recursive: true });
+    const logPath = join(logDirectory, "updater.log");
     const script = String.raw`param(
   [int]$ProcessId,
   [string]$Source,
@@ -242,15 +303,21 @@ export function registerUpdater(config: UpdaterConfig) {
   [string]$ProductName,
   [string]$ScriptPath,
   [string]$ExpectedDigest,
-  [string]$WorkingDirectory
+  [string]$WorkingDirectory,
+  [string]$LogPath
 )
 $ErrorActionPreference = "Stop"
 $backup = "$Target.old"
 $replacement = "$Target.new"
 $installed = $false
 $lastError = $null
+function Write-UpdateLog([string]$Message) {
+  Add-Content -LiteralPath $LogPath -Value ("{0:o} {1}" -f (Get-Date), $Message) -Encoding UTF8
+}
 try {
+  Write-UpdateLog "Updater started for $Target."
   Wait-Process -Id $ProcessId -ErrorAction SilentlyContinue
+  Write-UpdateLog "Application process exited."
   Start-Sleep -Milliseconds 1000
   for ($attempt = 1; $attempt -le 120; $attempt++) {
     try {
@@ -281,9 +348,11 @@ try {
         throw "The installed executable failed verification."
       }
       $installed = $true
+      Write-UpdateLog "Update installed and verified."
       break
     } catch {
       $lastError = $_
+      Write-UpdateLog ("Attempt {0} failed: {1}" -f $attempt, $_.Exception.Message)
       if ((Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $Target)) {
         Move-Item -LiteralPath $backup -Destination $Target -Force -ErrorAction SilentlyContinue
       }
@@ -299,8 +368,10 @@ try {
 
   Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $Source -Force -ErrorAction SilentlyContinue
+  Write-UpdateLog "Restarting $ProductName."
   Start-Process -FilePath $Target -WorkingDirectory $WorkingDirectory
 } catch {
+  Write-UpdateLog ("Update failed: " + $_.Exception.Message)
   if ((Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $Target)) {
     Move-Item -LiteralPath $backup -Destination $Target -Force -ErrorAction SilentlyContinue
   }
@@ -321,33 +392,17 @@ try {
       progress: 1,
       message: "Restarting to install the update...",
     });
-    let child: ReturnType<typeof spawn>;
     try {
-      child = await new Promise<ReturnType<typeof spawn>>((resolve, reject) => {
-        const childProcess = spawn(
-          "powershell.exe",
-          [
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-WindowStyle",
-            "Hidden",
-            "-File",
-            scriptPath,
-            process.pid.toString(),
-            pending.path,
-            target,
-            config.productName,
-            scriptPath,
-            pending.digest,
-            dirname(target),
-          ],
-          { detached: true, stdio: "ignore", windowsHide: true },
-        );
-        childProcess.once("spawn", () => resolve(childProcess));
-        childProcess.once("error", reject);
-      });
+      await launchOutsideProcessTree(scriptPath, [
+        process.pid.toString(),
+        pending.path,
+        target,
+        config.productName,
+        scriptPath,
+        pending.digest,
+        dirname(target),
+        logPath,
+      ]);
     } catch (error) {
       await unlink(scriptPath).catch(() => undefined);
       return updateState({
@@ -359,8 +414,7 @@ try {
             : "Could not start the updater.",
       });
     }
-    child.unref();
-    setTimeout(() => app.exit(0), 500);
+    setTimeout(() => app.exit(0), 250);
     return state;
   };
 

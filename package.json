@@ -81,6 +81,7 @@
     "appId": "com.polymons.player",
     "productName": "Polymons Player",
     "asar": true,
+    "compression": "normal",
     "directories": {
       "output": "release"
     },
