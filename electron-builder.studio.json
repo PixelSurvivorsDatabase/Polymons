@@ -2,6 +2,7 @@
   "appId": "com.polymons.studio",
   "productName": "Poly Studio",
   "asar": true,
+  "compression": "normal",
   "extraMetadata": {
     "main": "studio-dist/main/main.js",
     "productName": "Poly Studio"

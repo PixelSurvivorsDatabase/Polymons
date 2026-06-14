@@ -1367,6 +1367,61 @@ function resolveAssignmentValue(
   return resolveRawValue(rawValue, values, modules);
 }
 
+function splitBinaryExpression(
+  expression: string,
+): [left: string, operator: "+" | "-" | "*" | "/", right: string] | null {
+  const operators: Array<{ index: number; operator: "+" | "-" | "*" | "/" }> = [];
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  let depth = 0;
+  for (let index = 0; index < expression.length; index += 1) {
+    const character = expression[index];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === "(") {
+      depth += 1;
+      continue;
+    }
+    if (character === ")") {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (depth > 0 || !["+", "-", "*", "/"].includes(character)) continue;
+    const before = expression.slice(0, index).trimEnd().at(-1);
+    if (
+      (character === "+" || character === "-") &&
+      (!before || ["+", "-", "*", "/", "("].includes(before))
+    ) {
+      continue;
+    }
+    operators.push({
+      index,
+      operator: character as "+" | "-" | "*" | "/",
+    });
+  }
+  let selected = operators.at(-1);
+  for (let index = operators.length - 1; index >= 0; index -= 1) {
+    if (operators[index].operator === "+" || operators[index].operator === "-") {
+      selected = operators[index];
+      break;
+    }
+  }
+  if (!selected) return null;
+  return [
+    expression.slice(0, selected.index).trim(),
+    selected.operator,
+    expression.slice(selected.index + 1).trim(),
+  ];
+}
+
 function resolveExpressionValue(
   rawValue: string,
   project: PolyProject,
@@ -1387,33 +1442,34 @@ function resolveExpressionValue(
     );
     return value === false || value === null || value === undefined;
   }
-  const binary = expression.match(/^(.+?)\s*([+\-*/])\s*(.+)$/);
+  const binary = splitBinaryExpression(expression);
   if (binary) {
-    const operand = (source: string): PolyStoredValue | undefined => {
-      const property = source.trim().match(/^(.+)\.([A-Za-z_]\w*)$/);
-      if (property) {
-        const reference =
-          variables.get(property[1]) ??
-          resolveReferenceExpression(property[1], project, script, variables);
-        if (reference) {
-          const value = referencePropertyValue(project, reference, property[2]);
-          if (value !== undefined) return value;
-        }
-      }
-      return parseStoredValue(resolveRawValue(source, values, modules));
-    };
-    const left = operand(binary[1]);
-    const right = operand(binary[3]);
+    const left = resolveExpressionValue(
+      binary[0],
+      project,
+      variables,
+      values,
+      modules,
+      script,
+    );
+    const right = resolveExpressionValue(
+      binary[2],
+      project,
+      variables,
+      values,
+      modules,
+      script,
+    );
     if (typeof left === "number" && typeof right === "number") {
       const result = {
         "+": left + right,
         "-": left - right,
         "*": left * right,
         "/": right === 0 ? Number.NaN : left / right,
-      }[binary[2]];
+      }[binary[1]];
       return Number.isFinite(result) ? result : undefined;
     }
-    if (binary[2] === "+" && (typeof left === "string" || typeof right === "string")) {
+    if (binary[1] === "+" && (typeof left === "string" || typeof right === "string")) {
       return `${left ?? ""}${right ?? ""}`;
     }
   }
@@ -2409,6 +2465,38 @@ export function analyzePolyScript(
         if (error) diagnostics.push(lineDiagnostic(line, source, error));
         else values.set(remoteInvoke[1], null);
       }
+      return;
+    }
+
+    const localValueDeclaration = source.match(
+      /^\s*(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*(.+?)\s*;?\s*$/,
+    );
+    if (localValueDeclaration) {
+      const value = resolveExpressionValue(
+        localValueDeclaration[2],
+        validationProject,
+        variables,
+        values,
+        modules,
+        script,
+      );
+      if (value !== undefined) values.set(localValueDeclaration[1], value);
+      return;
+    }
+
+    const valueAssignment = source.match(
+      /^\s*([A-Za-z_]\w*)\s*=\s*(.+?)\s*;?\s*$/,
+    );
+    if (valueAssignment && values.has(valueAssignment[1])) {
+      const value = resolveExpressionValue(
+        valueAssignment[2],
+        validationProject,
+        variables,
+        values,
+        modules,
+        script,
+      );
+      if (value !== undefined) values.set(valueAssignment[1], value);
       return;
     }
 

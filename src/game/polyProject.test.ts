@@ -659,6 +659,61 @@ end)`,
   assert.equal(clicked.project.gui[2].text, "Clicked");
 });
 
+test("tracks concatenated local strings assigned to GUI text", () => {
+  const fixture = project();
+  fixture.leaderstats.push({
+    id: "upgrade-price",
+    name: "UpgradePrice",
+    type: "number",
+    defaultValue: 30,
+    showOnLeaderboard: false,
+  });
+  fixture.gui.push({
+    id: "upgrade-button",
+    name: "UpgradeButton",
+    type: "textButton",
+    parentId: "screen",
+    position: [0.4, 0.4],
+    size: [0.2, 0.1],
+    backgroundColor: "#6F49BB",
+    backgroundTransparency: 0,
+    text: "Upgrade",
+    textColor: "#FFFFFF",
+    visible: true,
+    rotation: 0,
+    textSize: 16,
+    borderRadius: 7,
+    zIndex: 2,
+  });
+  fixture.remotes.push({
+    id: "upgrade-remote",
+    name: "upgrade",
+    kind: "remoteEvent",
+  });
+  const script = {
+    id: "upgrade-client",
+    name: "UpgradeClient",
+    kind: "localScript" as const,
+    parent: "upgrade-button",
+    source: `local button = script.Parent
+local player = Players.LocalPlayer
+local upgrade = ReplicatedStorage.upgrade
+local text = "Upgrade - " + player.UpgradePrice + " lava"
+button.Text = text
+
+upgrade.OnClientEvent:Connect(function(price)
+    local updatedText = "Upgrade - " + price + " lava"
+    button.Text = updatedText
+end)`,
+  };
+  fixture.scripts = [script];
+
+  assert.deepEqual(analyzePolyScript(script, fixture), []);
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0);
+  assert.equal(result.project.gui.at(-1)?.text, "Upgrade - 30 lava");
+});
+
 test("runs Part Touched scripts only when the avatar enters the part", () => {
   const fixture = project();
   fixture.scripts = [
