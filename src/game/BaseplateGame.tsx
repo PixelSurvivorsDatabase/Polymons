@@ -742,14 +742,26 @@ function ProjectSound({
   listener,
   requests,
   requestVersion,
+  audioUnlockVersion,
 }: {
   object: PolyWorldObject;
   listener: AudioListener;
   requests: PolySoundRequest[];
   requestVersion: number;
+  audioUnlockVersion: number;
 }) {
   const sound = useMemo(() => new ThreePositionalAudio(listener), [listener]);
   const [loaded, setLoaded] = useState(false);
+  const lastHandledRequestId = useRef<string | null>(null);
+  const processingRequestId = useRef<string | null>(null);
+  const autoplayStarted = useRef(false);
+  const latestRequest = useMemo(
+    () =>
+      [...requests]
+        .reverse()
+        .find((candidate) => candidate.objectId === object.id),
+    [object.id, requests],
+  );
   useEffect(() => {
     sound.position.set(...object.position);
     sound.setVolume(object.volume ?? 0.7);
@@ -761,6 +773,9 @@ function ProjectSound({
   }, [object, sound]);
   useEffect(() => {
     setLoaded(false);
+    autoplayStarted.current = false;
+    lastHandledRequestId.current = null;
+    processingRequestId.current = null;
     if (!object.soundData) return;
     let active = true;
     new AudioLoader().load(
@@ -782,28 +797,55 @@ function ProjectSound({
     };
   }, [object.soundData, sound]);
   useEffect(() => {
-    if (!loaded || !object.autoplay) return;
-    void listener.context.resume().then(() => {
-      if (!sound.isPlaying) sound.play();
-    });
-  }, [listener, loaded, object.autoplay, sound]);
+    if (!loaded || !object.autoplay || autoplayStarted.current) return;
+    void listener.context
+      .resume()
+      .then(() => {
+        if (listener.context.state !== "running") return;
+        if (!sound.isPlaying) sound.play();
+        autoplayStarted.current = true;
+      })
+      .catch(() => undefined);
+  }, [audioUnlockVersion, listener, loaded, object.autoplay, sound]);
   useEffect(() => {
     if (!loaded) return;
-    const request = [...requests]
-      .reverse()
-      .find((candidate) => candidate.objectId === object.id);
-    if (!request) return;
-    void listener.context.resume().then(() => {
-      if (request.action === "play") {
-        if (sound.isPlaying) sound.stop();
-        sound.play();
-      } else if (request.action === "pause") {
-        if (sound.isPlaying) sound.pause();
-      } else if (sound.isPlaying) {
-        sound.stop();
-      }
-    });
-  }, [listener, loaded, object.id, requestVersion, requests, sound]);
+    const request = latestRequest;
+    if (
+      !request ||
+      lastHandledRequestId.current === request.id ||
+      processingRequestId.current === request.id
+    ) {
+      return;
+    }
+    processingRequestId.current = request.id;
+    void listener.context
+      .resume()
+      .then(() => {
+        if (listener.context.state !== "running") return;
+        if (request.action === "play") {
+          if (sound.isPlaying) sound.stop();
+          sound.play();
+        } else if (request.action === "pause") {
+          if (sound.isPlaying) sound.pause();
+        } else if (sound.isPlaying) {
+          sound.stop();
+        }
+        lastHandledRequestId.current = request.id;
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (processingRequestId.current === request.id) {
+          processingRequestId.current = null;
+        }
+      });
+  }, [
+    audioUnlockVersion,
+    latestRequest,
+    listener,
+    loaded,
+    requestVersion,
+    sound,
+  ]);
   return <primitive object={sound} />;
 }
 
@@ -818,12 +860,34 @@ function ProjectSounds({
 }) {
   const { camera } = useThree();
   const listener = useMemo(() => new AudioListener(), []);
+  const [audioUnlockVersion, setAudioUnlockVersion] = useState(0);
   useEffect(() => {
     camera.add(listener);
     return () => {
       camera.remove(listener);
     };
   }, [camera, listener]);
+  useEffect(() => {
+    let active = true;
+    const unlockAudio = () => {
+      void listener.context
+        .resume()
+        .then(() => {
+          if (!active || listener.context.state !== "running") return;
+          setAudioUnlockVersion((version) => version + 1);
+          window.removeEventListener("pointerdown", unlockAudio, true);
+          window.removeEventListener("keydown", unlockAudio, true);
+        })
+        .catch(() => undefined);
+    };
+    window.addEventListener("pointerdown", unlockAudio, true);
+    window.addEventListener("keydown", unlockAudio, true);
+    return () => {
+      active = false;
+      window.removeEventListener("pointerdown", unlockAudio, true);
+      window.removeEventListener("keydown", unlockAudio, true);
+    };
+  }, [listener]);
   return objects
     .filter((object) => object.type === "sound")
     .map((object) => (
@@ -833,6 +897,7 @@ function ProjectSounds({
         listener={listener}
         requests={requests}
         requestVersion={requestVersion}
+        audioUnlockVersion={audioUnlockVersion}
       />
     ));
 }
@@ -1236,6 +1301,7 @@ function ProjectBlock({
   animations,
   animationRequests,
   tweenRequests,
+  playerContactVersion,
   onTouched,
   onTouchEnded,
 }: {
@@ -1243,6 +1309,7 @@ function ProjectBlock({
   animations: PolyAnimation[];
   animationRequests: string[];
   tweenRequests: PolyTweenRequest[];
+  playerContactVersion: number;
   onTouched?: (worldObjectId: string) => void;
   onTouchEnded?: (worldObjectId: string) => void;
 }) {
@@ -1253,6 +1320,9 @@ function ProjectBlock({
   const animationStartedAt = useRef<number | null>(null);
   const tweenStartedAt = useRef<number | null>(null);
   const touchingPlayerColliders = useRef(new Set<number>());
+  useEffect(() => {
+    touchingPlayerColliders.current.clear();
+  }, [playerContactVersion]);
   const surfaceTexture = useMemo(
     () => createSurfaceTexture(object.surfaceTexture),
     [object.surfaceTexture],
@@ -1497,6 +1567,7 @@ function Scene({
   const [death, setDeath] = useState<{
     origin: [number, number, number];
   } | null>(null);
+  const [playerContactVersion, setPlayerContactVersion] = useState(0);
   const respawnCallback = useRef(onPlayerRespawn);
   respawnCallback.current = onPlayerRespawn;
 
@@ -1513,6 +1584,7 @@ function Scene({
     (origin: [number, number, number]) => {
       if (death) return;
       setDeath({ origin });
+      setPlayerContactVersion((version) => version + 1);
       onPlayerDeath();
     },
     [death, onPlayerDeath],
@@ -1554,6 +1626,7 @@ function Scene({
               animations={animations}
               animationRequests={animationRequests}
               tweenRequests={tweenRequests}
+              playerContactVersion={playerContactVersion}
               onTouched={onWorldTouched}
               onTouchEnded={onWorldTouchEnded}
             />

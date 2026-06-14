@@ -15,6 +15,8 @@ const API_URL = "https://polymons-server.onrender.com";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
 
+app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
+
 type PlayerUser = {
   id: string;
   username: string;

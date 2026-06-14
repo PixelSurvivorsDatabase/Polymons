@@ -22,6 +22,8 @@ const API_URL = "https://polymons-server.onrender.com";
 const WEBSITE_URL = "https://pixelsurvivorsdatabase.github.io/Polymons/";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
+
 type StudioLanguage = "luau" | "cpp" | "csharp";
 
 type StudioUser = {

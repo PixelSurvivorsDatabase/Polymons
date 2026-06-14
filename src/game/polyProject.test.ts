@@ -640,6 +640,30 @@ block.Touched += (hit) => {
   }
 });
 
+test("applies Touched damage again after the player respawns", () => {
+  const fixture = project();
+  fixture.scripts = [
+    {
+      id: "kill-part",
+      name: "KillPart",
+      kind: "script",
+      parent: "part",
+      source: `local block = script.Parent
+block.Touched:Connect(function(hit)
+    hit.Health = hit.Health - 100
+end)`,
+    },
+  ];
+
+  const firstTouch = activatePolyTouched(fixture, "part");
+  assert.equal(firstTouch.project.playerSettings.health, 0);
+
+  firstTouch.project.playerSettings.health =
+    firstTouch.project.playerSettings.maxHealth;
+  const secondTouch = activatePolyTouched(firstTouch.project, "part");
+  assert.equal(secondTouch.project.playerSettings.health, 0);
+});
+
 test("supports TextButton activation callbacks in C++ and C#", () => {
   for (const language of ["cpp", "csharp"] as const) {
     const fixture = project();
@@ -1159,4 +1183,75 @@ sound:Play()`,
     result.soundRequests.map(({ objectId, action }) => ({ objectId, action })),
     [{ objectId: "sound", action: "play" }],
   );
+});
+
+test("plays Sound objects directly from their script parent in every language", () => {
+  const sources = {
+    luau: "script.Parent:Play()",
+    cpp: "Script.Parent.Play();",
+    csharp: "Script.Parent.Play();",
+  } as const;
+
+  for (const [language, source] of Object.entries(sources)) {
+    const fixture = project();
+    fixture.language = language as PolyProject["language"];
+    fixture.objects.push({
+      ...fixture.objects[0],
+      id: `sound-${language}`,
+      name: "DirectSound",
+      type: "sound",
+      soundData: "data:audio/ogg;base64,T2dnUw==",
+    });
+    fixture.scripts = [
+      {
+        id: `sound-script-${language}`,
+        name: "SoundScript",
+        kind: "script",
+        parent: `sound-${language}`,
+        source,
+      },
+    ];
+
+    const result = runPolyProject(fixture);
+    assert.equal(result.diagnostics.length, 0, language);
+    assert.deepEqual(
+      result.soundRequests.map(({ objectId, action }) => ({
+        objectId,
+        action,
+      })),
+      [{ objectId: `sound-${language}`, action: "play" }],
+      language,
+    );
+  }
+});
+
+test("creates a new Sound request for every key press", () => {
+  const fixture = project();
+  fixture.objects.push({
+    ...fixture.objects[0],
+    id: "key-sound",
+    name: "KeySound",
+    type: "sound",
+    soundData: "data:audio/ogg;base64,T2dnUw==",
+  });
+  fixture.scripts = [
+    {
+      id: "key-sound-script",
+      name: "KeySoundScript",
+      kind: "localScript",
+      parent: "StarterPlayerScripts",
+      source: `local sound = Workspace:FindFirstChild("KeySound")
+UserInputService.InputBegan:Connect(function(input)
+    if input.KeyCode == Enum.KeyCode.F then
+        sound:Play()
+    end
+end)`,
+    },
+  ];
+
+  const first = activatePolyInput(fixture, "F");
+  const second = activatePolyInput(first.project, "F");
+  assert.equal(first.soundRequests.length, 1);
+  assert.equal(second.soundRequests.length, 1);
+  assert.notEqual(first.soundRequests[0].id, second.soundRequests[0].id);
 });

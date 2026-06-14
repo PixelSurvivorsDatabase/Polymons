@@ -227,6 +227,8 @@ type Reference =
   | { kind: "player"; id: "LocalPlayer" }
   | { kind: "remote"; id: string };
 
+let soundRequestSequence = 0;
+
 const WORLD_PROPERTIES = new Set([
   "Name",
   "Position",
@@ -907,6 +909,31 @@ function handlerTargetReference(
     }
   }
   return null;
+}
+
+function resolveSoundCall(
+  source: string,
+  project: PolyProject,
+  script: PolyScript,
+  variables: ReadonlyMap<string, Reference>,
+): {
+  target: string;
+  action: PolySoundRequest["action"];
+  reference: Reference;
+} | null {
+  const match = source.match(
+    /^\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?::|\.|::)(Play|Pause|Stop)\s*\(\s*\)\s*;?\s*$/,
+  );
+  if (!match) return null;
+  const reference =
+    variables.get(match[1]) ??
+    findDirectReference(match[1], project, script);
+  if (!reference) return null;
+  return {
+    target: match[1],
+    action: match[2].toLowerCase() as PolySoundRequest["action"],
+    reference,
+  };
 }
 
 function eventTargetReference(
@@ -2016,22 +2043,25 @@ export function analyzePolyScript(
       return;
     }
 
-    const soundCall = source.match(
-      /^\s*([A-Za-z_]\w*)(?::|\.|::)(Play|Pause|Stop)\s*\(\s*\)\s*;?\s*$/,
+    const soundCall = resolveSoundCall(
+      source,
+      validationProject,
+      script,
+      variables,
     );
     if (soundCall) {
-      const reference = variables.get(soundCall[1]);
-      if (!reference) return;
       const object =
-        reference?.kind === "world"
-          ? validationProject.objects.find((item) => item.id === reference.id)
+        soundCall.reference.kind === "world"
+          ? validationProject.objects.find(
+              (item) => item.id === soundCall.reference.id,
+            )
           : null;
       if (object?.type !== "sound") {
         diagnostics.push(
           lineDiagnostic(
             line,
             source,
-            `${soundCall[1]} must reference a Sound object.`,
+            `${soundCall.target} must reference a Sound object.`,
           ),
         );
       }
@@ -2659,26 +2689,23 @@ function executeScript(
       variables.set(declaration.variable, declaration.reference);
       continue;
     }
-    const soundCall = source.match(
-      /^\s*([A-Za-z_]\w*)(?::|\.|::)(Play|Pause|Stop)\s*\(\s*\)\s*;?\s*$/,
-    );
+    const soundCall = resolveSoundCall(source, project, script, variables);
     if (soundCall) {
-      const reference = variables.get(soundCall[1]);
-      if (!reference) continue;
       const object =
-        reference?.kind === "world"
-          ? project.objects.find((item) => item.id === reference.id)
+        soundCall.reference.kind === "world"
+          ? project.objects.find((item) => item.id === soundCall.reference.id)
           : null;
       if (object?.type === "sound") {
+        soundRequestSequence += 1;
         soundRequests.push({
-          id: `${script.id}-${object.id}-${Date.now()}-${soundRequests.length}`,
+          id: `${script.id}-${object.id}-${soundRequestSequence}`,
           objectId: object.id,
-          action: soundCall[2].toLowerCase() as PolySoundRequest["action"],
+          action: soundCall.action,
         });
       } else {
         output.push({
           level: "error",
-          message: `${soundCall[1]} is not a Sound object.`,
+          message: `${soundCall.target} is not a Sound object.`,
           scriptName: script.name,
         });
       }
