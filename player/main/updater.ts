@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { open, unlink, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { access, open, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { app, BrowserWindow, ipcMain } from "electron";
 
 const RELEASE_API =
@@ -65,7 +65,7 @@ function assetDigest(asset: ReleaseAsset): string | null {
 }
 
 function runningExecutable(): string {
-  return process.env.PORTABLE_EXECUTABLE_FILE ?? process.execPath;
+  return resolve(process.env.PORTABLE_EXECUTABLE_FILE ?? process.execPath);
 }
 
 export function registerUpdater(config: UpdaterConfig) {
@@ -81,7 +81,7 @@ export function registerUpdater(config: UpdaterConfig) {
         ? "Updates are checked automatically."
         : "Updates are available in packaged Windows builds.",
   };
-  let pendingDownload: string | null = null;
+  let pendingDownload: { path: string; digest: string } | null = null;
   let checkPromise: Promise<UpdateState> | null = null;
 
   const updateState = (patch: Partial<UpdateState>) => {
@@ -141,7 +141,7 @@ export function registerUpdater(config: UpdaterConfig) {
       await unlink(destination).catch(() => undefined);
       throw new Error("The downloaded update did not pass verification.");
     }
-    pendingDownload = destination;
+    pendingDownload = { path: destination, digest };
     return updateState({
       status: "ready",
       version,
@@ -213,11 +213,24 @@ export function registerUpdater(config: UpdaterConfig) {
   };
 
   const install = async () => {
+    if (state.status === "installing") return state;
     if (!pendingDownload) {
       await check(true);
       if (!pendingDownload) return state;
     }
     const target = runningExecutable();
+    const pending = pendingDownload;
+    try {
+      await access(pending.path);
+      await access(target);
+    } catch {
+      pendingDownload = null;
+      return updateState({
+        status: "error",
+        progress: null,
+        message: "The downloaded update is no longer available. Check again.",
+      });
+    }
     const scriptPath = join(
       app.getPath("temp"),
       `polymons-updater-${process.pid}-${Date.now()}.ps1`,
@@ -227,26 +240,69 @@ export function registerUpdater(config: UpdaterConfig) {
   [string]$Source,
   [string]$Target,
   [string]$ProductName,
-  [string]$ScriptPath
+  [string]$ScriptPath,
+  [string]$ExpectedDigest,
+  [string]$WorkingDirectory
 )
 $ErrorActionPreference = "Stop"
 $backup = "$Target.old"
 $replacement = "$Target.new"
+$installed = $false
+$lastError = $null
 try {
   Wait-Process -Id $ProcessId -ErrorAction SilentlyContinue
-  Start-Sleep -Milliseconds 500
-  Copy-Item -LiteralPath $Source -Destination $replacement -Force
-  if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }
-  if (Test-Path -LiteralPath $Target) {
-    Move-Item -LiteralPath $Target -Destination $backup -Force
+  Start-Sleep -Milliseconds 1000
+  for ($attempt = 1; $attempt -le 120; $attempt++) {
+    try {
+      if (Test-Path -LiteralPath $Target) {
+        $targetDigest = (Get-FileHash -LiteralPath $Target -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($targetDigest -eq $ExpectedDigest) {
+          $installed = $true
+          break
+        }
+      }
+
+      Remove-Item -LiteralPath $replacement -Force -ErrorAction SilentlyContinue
+      Copy-Item -LiteralPath $Source -Destination $replacement -Force
+      $replacementDigest = (Get-FileHash -LiteralPath $replacement -Algorithm SHA256).Hash.ToLowerInvariant()
+      if ($replacementDigest -ne $ExpectedDigest) {
+        throw "The replacement executable failed verification."
+      }
+
+      if (Test-Path -LiteralPath $backup) {
+        Remove-Item -LiteralPath $backup -Force
+      }
+      if (Test-Path -LiteralPath $Target) {
+        Move-Item -LiteralPath $Target -Destination $backup -Force
+      }
+      Move-Item -LiteralPath $replacement -Destination $Target -Force
+      $targetDigest = (Get-FileHash -LiteralPath $Target -Algorithm SHA256).Hash.ToLowerInvariant()
+      if ($targetDigest -ne $ExpectedDigest) {
+        throw "The installed executable failed verification."
+      }
+      $installed = $true
+      break
+    } catch {
+      $lastError = $_
+      if ((Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $Target)) {
+        Move-Item -LiteralPath $backup -Destination $Target -Force -ErrorAction SilentlyContinue
+      }
+      Remove-Item -LiteralPath $replacement -Force -ErrorAction SilentlyContinue
+      Start-Sleep -Milliseconds 500
+    }
   }
-  Move-Item -LiteralPath $replacement -Destination $Target -Force
-  if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }
+
+  if (-not $installed) {
+    if ($lastError) { throw $lastError }
+    throw "Windows did not release the current executable in time."
+  }
+
+  Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $Source -Force -ErrorAction SilentlyContinue
-  Start-Process -FilePath $Target
+  Start-Process -FilePath $Target -WorkingDirectory $WorkingDirectory
 } catch {
   if ((Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $Target)) {
-    Move-Item -LiteralPath $backup -Destination $Target -Force
+    Move-Item -LiteralPath $backup -Destination $Target -Force -ErrorAction SilentlyContinue
   }
   Add-Type -AssemblyName PresentationFramework
   [System.Windows.MessageBox]::Show(
@@ -265,31 +321,46 @@ try {
       progress: 1,
       message: "Restarting to install the update...",
     });
-    const child = await new Promise<ReturnType<typeof spawn>>((resolve, reject) => {
-      const childProcess = spawn(
-        "powershell.exe",
-        [
-          "-NoProfile",
-          "-NonInteractive",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-WindowStyle",
-          "Hidden",
-          "-File",
-          scriptPath,
-          process.pid.toString(),
-          pendingDownload!,
-          target,
-          config.productName,
-          scriptPath,
-        ],
-        { detached: true, stdio: "ignore", windowsHide: true },
-      );
-      childProcess.once("spawn", () => resolve(childProcess));
-      childProcess.once("error", reject);
-    });
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = await new Promise<ReturnType<typeof spawn>>((resolve, reject) => {
+        const childProcess = spawn(
+          "powershell.exe",
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-File",
+            scriptPath,
+            process.pid.toString(),
+            pending.path,
+            target,
+            config.productName,
+            scriptPath,
+            pending.digest,
+            dirname(target),
+          ],
+          { detached: true, stdio: "ignore", windowsHide: true },
+        );
+        childProcess.once("spawn", () => resolve(childProcess));
+        childProcess.once("error", reject);
+      });
+    } catch (error) {
+      await unlink(scriptPath).catch(() => undefined);
+      return updateState({
+        status: "error",
+        progress: null,
+        message:
+          error instanceof Error
+            ? `Could not start the updater: ${error.message}`
+            : "Could not start the updater.",
+      });
+    }
     child.unref();
-    setTimeout(() => app.quit(), 150);
+    setTimeout(() => app.exit(0), 500);
     return state;
   };
 

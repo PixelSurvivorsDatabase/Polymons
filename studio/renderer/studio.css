@@ -888,9 +888,11 @@ button { color: inherit; }
 .delete-object { display: flex; width: 100%; align-items: center; justify-content: center; gap: 7px; margin-top: 22px; border: 1px solid rgba(197,67,94,.2); border-radius: 7px; background: rgba(197,67,94,.06); color: #d98a9a; cursor: pointer; padding: 8px; font-size: 10px; font-weight: 700; }
 .model-action { display: flex; width: 100%; align-items: center; justify-content: center; gap: 7px; margin-top: 10px; border: 1px solid var(--studio-line); border-radius: 7px; background: rgba(255,255,255,.025); color: #b9b1c2; cursor: pointer; padding: 8px; font-size: 10px; font-weight: 700; }
 .leaderstats-editor { display: grid; gap: 7px; }
-.leaderstat-row { display: grid; grid-template-columns: minmax(72px, 1fr) 68px minmax(58px, .7fr) 28px; gap: 5px; }
+.leaderstat-row { display: grid; grid-template-columns: minmax(72px, 1fr) 68px minmax(58px, .7fr) 48px 28px; gap: 5px; }
 .leaderstat-row input, .leaderstat-row select { min-width: 0; border: 1px solid var(--studio-line); border-radius: 5px; outline: 0; background: #111117; color: #d9d3df; padding: 6px; font-size: 9px; }
 .leaderstat-row button, .leaderstat-add { border: 1px solid var(--studio-line); border-radius: 5px; background: rgba(255,255,255,.025); color: #aaa3b2; cursor: pointer; }
+.leaderstat-visible { display: flex; align-items: center; justify-content: center; gap: 3px; color: #aaa3b2; font-size: 8px; cursor: pointer; }
+.leaderstat-visible input { width: 12px; height: 12px; padding: 0; accent-color: var(--studio-accent); }
 .leaderstat-add { display: flex; align-items: center; justify-content: center; gap: 5px; padding: 7px; font-size: 9px; font-weight: 700; }
 
 .script-workspace { display: grid; height: 100%; grid-template-rows: 35px minmax(0, 1fr) auto 24px; background: #09090d; }

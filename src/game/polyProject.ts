@@ -124,6 +124,7 @@ export type PolyLeaderstat = {
   name: string;
   type: "number" | "string";
   defaultValue: number | string;
+  showOnLeaderboard?: boolean;
 };
 
 export type PolyAnimationPose = {
@@ -409,6 +410,7 @@ export function normalizePolyProject(project: PolyProject): PolyProject {
   normalized.description ??= "";
   normalized.leaderstats = (normalized.leaderstats ?? []).map((stat) => ({
     ...stat,
+    showOnLeaderboard: stat.showOnLeaderboard ?? true,
     type: stat.type === "string" ? "string" : "number",
     defaultValue:
       stat.type === "string"
@@ -626,9 +628,10 @@ function findReferenceDeclaration(
   source: string,
   project: PolyProject,
   script?: PolyScript,
+  variables?: ReadonlyMap<string, Reference>,
 ): { variable: string; reference: Reference | null; requestedName: string } | null {
   const pathMatch = source.match(
-    /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*((?:script|Script|Workspace|workspace|PlayerGui|StarterGui|ReplicatedStorage|ServerStorage|ServerScriptService|StarterPlayerScripts|Players)(?:(?::FindFirstChild|\.Find)\(\s*["'][A-Za-z_]\w*["']\s*\)|\.(?!Find\s*\()[A-Za-z_]\w*)+)\s*;?/,
+    /^\s*(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*((?:script|Script|Workspace|workspace|PlayerGui|StarterGui|ReplicatedStorage|ServerStorage|ServerScriptService|StarterPlayerScripts|Players)(?:(?::FindFirstChild|\.Find)\(\s*["'][A-Za-z_]\w*["']\s*\)|\.(?!Find\s*\()[A-Za-z_]\w*)+)\s*;?\s*$/,
   );
   if (pathMatch) {
     const requestedName =
@@ -639,6 +642,21 @@ function findReferenceDeclaration(
       variable: pathMatch[1],
       reference: resolveReferenceExpression(pathMatch[2], project, script),
       requestedName,
+    };
+  }
+  const variablePathMatch = source.match(
+    /^\s*(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+)\s*;?\s*$/,
+  );
+  if (variablePathMatch && variables?.has(variablePathMatch[2].split(".")[0])) {
+    return {
+      variable: variablePathMatch[1],
+      reference: resolveReferenceExpression(
+        variablePathMatch[2],
+        project,
+        script,
+        variables,
+      ),
+      requestedName: variablePathMatch[2].split(".").at(-1) ?? variablePathMatch[2],
     };
   }
 
@@ -794,7 +812,7 @@ function callbackEndIndex(
 function remoteHandlers(script: PolyScript): RemoteHandler[] {
   const lines = script.source.split("\n");
   const handlers: RemoteHandler[] = [];
-  const target = String.raw`([A-Za-z_]\w*|ReplicatedStorage\.[A-Za-z_]\w*)`;
+  const target = String.raw`((?:script|Script|Workspace|workspace|PlayerGui|StarterGui|ReplicatedStorage|ServerStorage|ServerScriptService|StarterPlayerScripts|Players|[A-Za-z_]\w*)(?:\.[A-Za-z_]\w*)*)`;
   const patterns = [
     {
       side: "server" as const,
@@ -987,7 +1005,7 @@ function scriptEventHandlers(script: PolyScript): ScriptEventHandler[] {
   const lines = script.source.split("\n");
   const handlers: ScriptEventHandler[] = [];
   const target =
-    String.raw`((?:script|Script)\.Parent|[A-Za-z_]\w*|(?:Workspace|workspace)\.[A-Za-z_]\w*)`;
+    String.raw`((?:script|Script|Workspace|workspace|PlayerGui|StarterGui|ReplicatedStorage|ServerStorage|ServerScriptService|StarterPlayerScripts|Players|[A-Za-z_]\w*)(?:\.[A-Za-z_]\w*)*)`;
   const startPatterns = [
     new RegExp(
       String.raw`^\s*${target}\.(MouseButton1Click|Activated|Touched|TouchEnded)\s*:\s*Connect\s*\(\s*function\s*\(([^)]*)\)\s*$`,
@@ -1070,6 +1088,14 @@ function withoutEventHandlers(script: PolyScript): string {
   return lines.filter((_, index) => !ignored.has(index)).join("\n");
 }
 
+function handlerSource(script: PolyScript, handler: { prelude: string; body: string }) {
+  const setup = withoutEventHandlers({
+    ...script,
+    source: handler.prelude,
+  });
+  return `${setup}\n${handler.body}`;
+}
+
 function handlerTargetReference(
   target: string,
   prelude: string,
@@ -1093,7 +1119,7 @@ function handlerTargetReference(
             references,
           ),
         }
-      : findReferenceDeclaration(source, project, script);
+      : findReferenceDeclaration(source, project, script, references);
     if (declaration?.variable === target && declaration.reference) {
       return declaration.reference;
     }
@@ -2281,7 +2307,12 @@ export function analyzePolyScript(
       return;
     }
 
-    const declaration = findReferenceDeclaration(source, project, script);
+    const declaration = findReferenceDeclaration(
+      source,
+      project,
+      script,
+      variables,
+    );
     if (declaration) {
       if (!declaration.reference) {
         diagnostics.push(
@@ -2336,10 +2367,17 @@ export function analyzePolyScript(
     }
 
     const remoteCall = source.match(
-      /^\s*([A-Za-z_]\w*)(?::|\.|::)(FireServer|FireClient|FireAllClients|InvokeServer|InvokeClient)\s*\(/,
+      /^\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?::|\.|::)(FireServer|FireClient|FireAllClients|InvokeServer|InvokeClient)\s*\(/,
     );
     if (remoteCall) {
-      const reference = variables.get(remoteCall[1]);
+      const reference =
+        variables.get(remoteCall[1]) ??
+        resolveReferenceExpression(
+          remoteCall[1],
+          project,
+          script,
+          variables,
+        );
       if (!reference) {
         diagnostics.push(
           lineDiagnostic(line, source, `Unknown remote variable ${remoteCall[1]}.`),
@@ -2351,10 +2389,17 @@ export function analyzePolyScript(
       return;
     }
     const remoteInvoke = source.match(
-      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)(?::|\.|::)(InvokeServer|InvokeClient)\s*\(/,
+      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?::|\.|::)(InvokeServer|InvokeClient)\s*\(/,
     );
     if (remoteInvoke) {
-      const reference = variables.get(remoteInvoke[2]);
+      const reference =
+        variables.get(remoteInvoke[2]) ??
+        resolveReferenceExpression(
+          remoteInvoke[2],
+          project,
+          script,
+          variables,
+        );
       if (!reference) {
         diagnostics.push(
           lineDiagnostic(line, source, `Unknown remote variable ${remoteInvoke[2]}.`),
@@ -2575,7 +2620,12 @@ function requestedTweens(
 ): PolyTweenRequest[] {
   const references = new Map<string, Reference>();
   for (const line of source.split("\n")) {
-    const declaration = findReferenceDeclaration(line, project, script);
+    const declaration = findReferenceDeclaration(
+      line,
+      project,
+      script,
+      references,
+    );
     if (declaration?.reference) {
       references.set(declaration.variable, declaration.reference);
     }
@@ -2700,7 +2750,7 @@ function dispatchRemoteServerEvent(
         script,
         project,
         output,
-        `${handler.prelude}\n${handler.body}`,
+        handlerSource(script, handler),
         remoteCallbackValues(handler, argumentsList),
         depth + 1,
         undefined,
@@ -2744,7 +2794,7 @@ function dispatchRemoteServerFunction(
           script,
           project,
           output,
-          `${handler.prelude}\n${handler.body}`,
+          handlerSource(script, handler),
           remoteCallbackValues(handler, argumentsList),
           depth + 1,
           undefined,
@@ -2789,7 +2839,7 @@ function dispatchRemoteClientEvent(
         script,
         project,
         output,
-        `${handler.prelude}\n${handler.body}`,
+        handlerSource(script, handler),
         remoteCallbackValues(handler, argumentsList, false),
         depth + 1,
         undefined,
@@ -3076,6 +3126,13 @@ function executeScript(
   const stores = executionContext?.stores ?? new Map<string, string>();
   const values =
     executionContext?.values ?? new Map<string, PolyStoredValue>(initialValues);
+  if (!executionContext) {
+    for (const [name, value] of values) {
+      if (value === "LocalPlayer") {
+        variables.set(name, { kind: "player", id: "LocalPlayer" });
+      }
+    }
+  }
   const sourceText = sourceOverride ?? withoutEventHandlers(script);
   if (!executionContext) {
     tweenRequests.push(...requestedTweens(sourceText, script, project));
@@ -3143,10 +3200,15 @@ function executeScript(
           scriptName: script.name,
         });
       } else if (stat.type === "number") {
-        const value = Number(
-          resolveRawValue(leaderstatCall[3], values, modules).replace(/;$/, ""),
+        const value = resolveExpressionValue(
+          leaderstatCall[3],
+          project,
+          variables,
+          values,
+          modules,
+          script,
         );
-        if (!Number.isFinite(value)) {
+        if (typeof value !== "number" || !Number.isFinite(value)) {
           output.push({
             level: "error",
             message: `${stat.name} must be set to a number.`,
@@ -3260,7 +3322,12 @@ function executeScript(
       variables.set(genericReferenceDeclaration[1], genericReference);
       continue;
     }
-    const declaration = findReferenceDeclaration(source, project, script);
+    const declaration = findReferenceDeclaration(
+      source,
+      project,
+      script,
+      variables,
+    );
     if (declaration?.reference) {
       variables.set(declaration.variable, declaration.reference);
       continue;
@@ -3288,10 +3355,17 @@ function executeScript(
       continue;
     }
     const remoteCall = source.match(
-      /^\s*([A-Za-z_]\w*)(?::|\.|::)(FireServer|FireClient|FireAllClients|InvokeServer|InvokeClient)\s*\((.*?)\)\s*;?\s*$/,
+      /^\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?::|\.|::)(FireServer|FireClient|FireAllClients|InvokeServer|InvokeClient)\s*\((.*?)\)\s*;?\s*$/,
     );
     if (remoteCall) {
-      const reference = variables.get(remoteCall[1]);
+      const reference =
+        variables.get(remoteCall[1]) ??
+        resolveReferenceExpression(
+          remoteCall[1],
+          project,
+          script,
+          variables,
+        );
       if (reference?.kind === "remote") {
         const remote = project.remotes.find((item) => item.id === reference.id);
         const error = remoteCallError(project, reference, remoteCall[2], script);
@@ -3342,10 +3416,17 @@ function executeScript(
       continue;
     }
     const remoteInvoke = source.match(
-      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)(?::|\.|::)(InvokeServer|InvokeClient)\s*\((.*?)\)\s*;?\s*$/,
+      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?::|\.|::)(InvokeServer|InvokeClient)\s*\((.*?)\)\s*;?\s*$/,
     );
     if (remoteInvoke) {
-      const reference = variables.get(remoteInvoke[2]);
+      const reference =
+        variables.get(remoteInvoke[2]) ??
+        resolveReferenceExpression(
+          remoteInvoke[2],
+          project,
+          script,
+          variables,
+        );
       if (reference?.kind === "remote") {
         const remote = project.remotes.find((item) => item.id === reference.id);
         const error = remoteCallError(project, reference, remoteInvoke[3], script);
@@ -3598,7 +3679,7 @@ export function activatePolyGui(
         script,
         project,
         output,
-        `${handler.prelude}\n${handler.body}`,
+        handlerSource(script, handler),
         undefined,
         0,
         undefined,
@@ -3662,7 +3743,7 @@ export function activatePolyTool(
         script,
         project,
         output,
-        `${handler.prelude}\n${handler.body}`,
+        handlerSource(script, handler),
         undefined,
         0,
         undefined,
@@ -3733,7 +3814,7 @@ export function activatePolyTouched(
         script,
         project,
         output,
-        `${handler.prelude}\n${handler.body}`,
+        handlerSource(script, handler),
         undefined,
         0,
         handler.parameters[0]
@@ -3814,7 +3895,7 @@ export function activatePolyInput(
         script,
         project,
         output,
-        `${handler.prelude}\n${handler.body}`,
+        handlerSource(script, handler),
         handler.parameters[0]
           ? new Map([[handler.parameters[0], keyCode]])
           : undefined,

@@ -2042,6 +2042,13 @@ export default function BaseplateGame({
   onPlayerRespawn?: () => void;
 }) {
   const [dead, setDead] = useState(false);
+  const visibleLeaderstats = leaderstats.filter(
+    (stat) => stat.showOnLeaderboard !== false,
+  );
+  const playerListGridColumns =
+    visibleLeaderstats.length > 0
+      ? `32px minmax(0, 1fr) repeat(${visibleLeaderstats.length}, minmax(52px, auto))`
+      : "32px minmax(0, 1fr)";
   const spawnObject = worldObjects?.find((object) => object.type === "spawn");
   const spawn = spawnObject
     ? {
@@ -2295,22 +2302,22 @@ export default function BaseplateGame({
             <strong>Players</strong>
             <span>{remotePlayers.length + 1}</span>
           </header>
-          {leaderstats.length > 0 && (
+          {visibleLeaderstats.length > 0 && (
             <div
               className="player-list-columns"
               style={{
-                gridTemplateColumns: `minmax(0, 1fr) repeat(${leaderstats.length}, minmax(52px, auto))`,
+                gridTemplateColumns: `minmax(0, 1fr) repeat(${visibleLeaderstats.length}, minmax(52px, auto))`,
               }}
             >
               <span>Player</span>
-              {leaderstats.map((stat) => (
+              {visibleLeaderstats.map((stat) => (
                 <span key={stat.id}>{stat.name}</span>
               ))}
             </div>
           )}
           <button
             style={{
-              gridTemplateColumns: `32px minmax(0, 1fr) repeat(${leaderstats.length}, minmax(52px, auto))`,
+              gridTemplateColumns: playerListGridColumns,
             }}
             onClick={() => {
               setFriendStatus("");
@@ -2326,7 +2333,7 @@ export default function BaseplateGame({
               <strong>{localPlayer?.displayName ?? "LocalPlayer"}</strong>
               <small>@{localPlayer?.username ?? "localplayer"}</small>
             </div>
-            {leaderstats.map((stat) => (
+            {visibleLeaderstats.map((stat) => (
               <b key={stat.id}>{String(stat.defaultValue)}</b>
             ))}
           </button>
@@ -2334,7 +2341,7 @@ export default function BaseplateGame({
             <button
               key={player.id}
               style={{
-                gridTemplateColumns: `32px minmax(0, 1fr) repeat(${leaderstats.length}, minmax(52px, auto))`,
+                gridTemplateColumns: playerListGridColumns,
               }}
               onClick={() => {
                 setFriendStatus("");
@@ -2349,7 +2356,7 @@ export default function BaseplateGame({
                 <strong>{player.displayName}</strong>
                 <small>@{player.username}</small>
               </div>
-              {leaderstats.map((stat) => (
+              {visibleLeaderstats.map((stat) => (
                 <b key={stat.id}>{String(stat.defaultValue)}</b>
               ))}
             </button>

@@ -154,6 +154,29 @@ test("normalizes camera zoom limits for older projects", () => {
   assert.equal(result.project.playerSettings.cameraMaxZoomDistance, 80);
 });
 
+test("keeps legacy leaderstats visible and preserves hidden stats", () => {
+  const fixture = project();
+  fixture.leaderstats = [
+    {
+      id: "lava",
+      name: "lava",
+      type: "number",
+      defaultValue: 0,
+    },
+    {
+      id: "multiplier",
+      name: "Multiplier",
+      type: "number",
+      defaultValue: 1,
+      showOnLeaderboard: false,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.project.leaderstats[0].showOnLeaderboard, true);
+  assert.equal(result.project.leaderstats[1].showOnLeaderboard, false);
+});
+
 test("reports unknown objects and invalid property values", () => {
   const fixture = project();
   const script = {
@@ -425,6 +448,74 @@ end)`,
   assert.equal(started.project.leaderstats[0].defaultValue, 0);
   assert.equal(clicked.project.leaderstats[0].defaultValue, 10);
   assert.equal(clicked.diagnostics.length, 0);
+});
+
+test("uses player leaderstats in remote arithmetic and doubles multipliers", () => {
+  const fixture = project();
+  fixture.remotes = [
+    {
+      id: "click-event",
+      name: "Clicker",
+      kind: "remoteEvent",
+    },
+    {
+      id: "upgrade-event",
+      name: "Upgrade",
+      kind: "remoteEvent",
+    },
+  ];
+  fixture.leaderstats = [
+    { id: "lava", name: "lava", type: "number", defaultValue: 30 },
+    {
+      id: "multiplier",
+      name: "Multiplier",
+      type: "number",
+      defaultValue: 1,
+      showOnLeaderboard: false,
+    },
+  ];
+  fixture.scripts = [
+    {
+      id: "clicker-server",
+      name: "ClickerServer",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `local clicker = ReplicatedStorage.Clicker
+local upgrade = ReplicatedStorage.Upgrade
+
+clicker.OnServerEvent:Connect(function(player)
+    Leaderstats:Add(player, "lava", 1 * player.Multiplier)
+end)
+
+upgrade.OnServerEvent:Connect(function(player)
+    if player.lava >= 30 then
+        Leaderstats:Add(player, "lava", -30)
+        player.Multiplier = player.Multiplier * 2
+    end
+end)`,
+    },
+    {
+      id: "clicker-client",
+      name: "ClickerClient",
+      kind: "localScript",
+      parent: "StarterPlayerScripts",
+      source: `ReplicatedStorage.Clicker:FireServer()
+ReplicatedStorage.Upgrade:FireServer()`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0, JSON.stringify(result.diagnostics));
+  assert.equal(
+    result.project.leaderstats.find((stat) => stat.name === "lava")
+      ?.defaultValue,
+    1,
+  );
+  assert.equal(
+    result.project.leaderstats.find((stat) => stat.name === "Multiplier")
+      ?.defaultValue,
+    2,
+  );
 });
 
 test("returns OnServerInvoke values to C# LocalScripts", () => {
@@ -1368,4 +1459,109 @@ end`,
   assert.equal(result.project.values.find((item) => item.id === "enabled")?.value, true);
   assert.equal(result.project.values.find((item) => item.id === "count")?.value, 7);
   assert.equal(result.project.values.find((item) => item.id === "state")?.value, "ready");
+});
+
+test("uses direct child paths and local child chains in button callbacks", () => {
+  const fixture = project();
+  fixture.objects.push(
+    {
+      ...fixture.objects[0],
+      id: "audio-folder",
+      name: "Audio",
+    },
+    {
+      ...fixture.objects[0],
+      id: "button-sound",
+      name: "ClickSound",
+      type: "sound",
+      parentId: "audio-folder",
+      soundData: "data:audio/ogg;base64,T2dnUw==",
+    },
+  );
+  fixture.gui = [
+    {
+      ...fixture.gui[0],
+      id: "screen",
+      name: "Hud",
+    },
+    {
+      ...fixture.gui[1],
+      id: "play-button",
+      name: "PlayButton",
+      type: "textButton",
+      parentId: "screen",
+    },
+  ];
+  fixture.scripts = [
+    {
+      id: "direct-button",
+      name: "DirectButton",
+      kind: "localScript",
+      parent: "play-button",
+      source: `local audio = Workspace.Audio
+local sound = audio.ClickSound
+
+script.Parent.Activated:Connect(function()
+    sound:Play()
+end)`,
+    },
+  ];
+
+  const result = activatePolyGui(fixture, "play-button");
+  assert.equal(result.diagnostics.length, 0, JSON.stringify(result.diagnostics));
+  assert.deepEqual(
+    result.soundRequests.map(({ objectId, action }) => ({ objectId, action })),
+    [{ objectId: "button-sound", action: "play" }],
+  );
+});
+
+test("uses direct service paths inside OnServerEvent", () => {
+  const fixture = project();
+  fixture.objects.push(
+    {
+      ...fixture.objects[0],
+      id: "server-audio",
+      name: "ServerAudio",
+    },
+    {
+      ...fixture.objects[0],
+      id: "remote-sound",
+      name: "Alert",
+      type: "sound",
+      parentId: "server-audio",
+      soundData: "data:audio/ogg;base64,T2dnUw==",
+    },
+  );
+  fixture.remotes = [
+    {
+      id: "play-sound-remote",
+      name: "PlaySound",
+      kind: "remoteEvent",
+    },
+  ];
+  fixture.scripts = [
+    {
+      id: "direct-server",
+      name: "DirectServer",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `ReplicatedStorage.PlaySound.OnServerEvent:Connect(function(player)
+    Workspace.ServerAudio.Alert:Play()
+end)`,
+    },
+    {
+      id: "direct-client",
+      name: "DirectClient",
+      kind: "localScript",
+      parent: "StarterPlayerScripts",
+      source: "ReplicatedStorage.PlaySound:FireServer()",
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0, JSON.stringify(result.diagnostics));
+  assert.deepEqual(
+    result.soundRequests.map(({ objectId, action }) => ({ objectId, action })),
+    [{ objectId: "remote-sound", action: "play" }],
+  );
 });

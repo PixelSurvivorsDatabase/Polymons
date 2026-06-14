@@ -4716,6 +4716,29 @@ function LeaderstatsField({
               )
             }
           />
+          <label
+            className="leaderstat-visible"
+            title="Show this stat on the in-game leaderboard"
+          >
+            <input
+              aria-label={`Show ${stat.name} on leaderboard`}
+              type="checkbox"
+              checked={stat.showOnLeaderboard !== false}
+              onChange={(event) =>
+                onChange(
+                  value.map((item) =>
+                    item.id === stat.id
+                      ? {
+                          ...item,
+                          showOnLeaderboard: event.target.checked,
+                        }
+                      : item,
+                  ),
+                )
+              }
+            />
+            Show
+          </label>
           <button
             type="button"
             title={`Delete ${stat.name}`}
@@ -4742,6 +4765,7 @@ function LeaderstatsField({
               ),
               type: "number",
               defaultValue: 0,
+              showOnLeaderboard: true,
             },
           ])
         }

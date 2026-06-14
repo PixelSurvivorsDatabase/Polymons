@@ -209,6 +209,7 @@ type StudioProject = {
     name: string;
     type: "number" | "string";
     defaultValue: number | string;
+    showOnLeaderboard?: boolean;
   }>;
   animations: StudioAnimation[];
   values: StudioValueObject[];
@@ -616,6 +617,7 @@ function normalizeProject(project: StudioProject): StudioProject {
     description: project.description ?? "",
     leaderstats: (project.leaderstats ?? []).map((stat) => ({
       ...stat,
+      showOnLeaderboard: stat.showOnLeaderboard ?? true,
       type: stat.type === "string" ? "string" : "number",
       defaultValue:
         stat.type === "string"
@@ -1361,6 +1363,8 @@ function validateProject(project: StudioProject): void {
         stat.name.trim().length < 1 ||
         stat.name.length > 24 ||
         !["number", "string"].includes(stat.type) ||
+        (stat.showOnLeaderboard !== undefined &&
+          typeof stat.showOnLeaderboard !== "boolean") ||
         (stat.type === "number"
           ? !Number.isFinite(Number(stat.defaultValue))
           : typeof stat.defaultValue !== "string" ||

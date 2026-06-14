@@ -180,6 +180,7 @@ type StudioProject = {
     name: string;
     type: "number" | "string";
     defaultValue: number | string;
+    showOnLeaderboard?: boolean;
   }>;
   animations: StudioAnimation[];
   values: StudioValueObject[];
