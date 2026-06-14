@@ -54,6 +54,22 @@ type PlayerFriendship = {
   gameId: string | null;
 };
 
+type DesktopUpdateState = {
+  status:
+    | "unsupported"
+    | "checking"
+    | "current"
+    | "available"
+    | "downloading"
+    | "ready"
+    | "installing"
+    | "error";
+  version: string | null;
+  publishedAt: string | null;
+  progress: number | null;
+  message: string;
+};
+
 interface Window {
   polymons: {
     getAuth: () => Promise<PlayerAuth | null>;
@@ -92,5 +108,11 @@ interface Window {
     onLaunch: (callback: (launch: PlayerLaunch) => void) => () => void;
     onAuthChanged: (callback: (auth: PlayerAuth) => void) => () => void;
     onProtocolError: (callback: (message: string) => void) => () => void;
+    getUpdateState: () => Promise<DesktopUpdateState>;
+    checkForUpdates: () => Promise<DesktopUpdateState>;
+    installUpdate: () => Promise<DesktopUpdateState>;
+    onUpdateState: (
+      callback: (state: DesktopUpdateState) => void,
+    ) => () => void;
   };
 }

@@ -26,6 +26,43 @@ button {
   color: inherit;
 }
 
+.desktop-update-banner {
+  position: fixed;
+  z-index: 1000;
+  right: 18px;
+  bottom: 18px;
+  display: grid;
+  width: min(390px, calc(100vw - 36px));
+  gap: 10px;
+  border: 1px solid rgba(174, 122, 244, 0.3);
+  border-radius: 13px;
+  background: rgba(20, 17, 27, 0.97);
+  padding: 14px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(18px);
+}
+
+.desktop-update-banner > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.desktop-update-banner > div > svg { color: #ae7af4; }
+.desktop-update-banner span { display: grid; gap: 3px; }
+.desktop-update-banner small { color: #aaa3b5; }
+.desktop-update-banner progress { width: 100%; accent-color: #8b5ccc; }
+.desktop-update-banner button {
+  justify-self: end;
+  border: 1px solid rgba(174, 122, 244, 0.3);
+  border-radius: 8px;
+  background: #6f49bb;
+  cursor: pointer;
+  padding: 8px 11px;
+  font-weight: 800;
+}
+.desktop-update-banner.error { border-color: rgba(214, 74, 106, 0.35); }
+
 .player-loading {
   display: grid;
   min-height: 100vh;

@@ -38,6 +38,7 @@ export type PolyWorldObject = {
   restitution?: number;
   mass?: number;
   velocity?: [number, number, number];
+  angularVelocity?: [number, number, number];
   soundData?: string;
   soundFileName?: string;
   volume?: number;
@@ -246,6 +247,7 @@ const WORLD_PROPERTIES = new Set([
   "Restitution",
   "Mass",
   "Velocity",
+  "AngularVelocity",
   "Volume",
   "Looped",
   "PlaybackSpeed",
@@ -313,6 +315,7 @@ export function normalizePolyProject(project: PolyProject): PolyProject {
     restitution: object.restitution ?? 0.03,
     mass: object.mass ?? 1,
     velocity: object.velocity ?? [0, 0, 0],
+    angularVelocity: object.angularVelocity ?? [0, 0, 0],
     soundData: object.soundData ?? "",
     soundFileName: object.soundFileName ?? "",
     volume: Math.max(0, Math.min(1, object.volume ?? 0.7)),
@@ -1315,6 +1318,10 @@ function assignProperty(
       const value = parseNumbers(rawValue, 3);
       if (!value) return "Velocity must be Vector3.new(x, y, z).";
       object.velocity = value as [number, number, number];
+    } else if (property === "AngularVelocity") {
+      const value = parseNumbers(rawValue, 3);
+      if (!value) return "AngularVelocity must be Vector3.new(x, y, z).";
+      object.angularVelocity = value as [number, number, number];
     } else if (property === "Volume") {
       const value = parseNumber(rawValue);
       if (value === null || value < 0 || value > 1) {

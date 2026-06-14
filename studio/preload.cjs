@@ -21,4 +21,12 @@ contextBridge.exposeInMainWorld("polyStudio", {
   exportAnimation: (input) => ipcRenderer.invoke("animations:export", input),
   importAnimation: () => ipcRenderer.invoke("animations:import"),
   importSound: () => ipcRenderer.invoke("sounds:import"),
+  getUpdateState: () => ipcRenderer.invoke("updates:get"),
+  checkForUpdates: () => ipcRenderer.invoke("updates:check"),
+  installUpdate: () => ipcRenderer.invoke("updates:install"),
+  onUpdateState: (callback) => {
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on("updates:state", listener);
+    return () => ipcRenderer.removeListener("updates:state", listener);
+  },
 });

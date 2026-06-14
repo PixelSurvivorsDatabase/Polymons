@@ -606,14 +606,15 @@ function DeathPart({
       ref={body}
       position={position}
       colliders={false}
-      restitution={0.25}
-      friction={0.68}
       linearDamping={0.08}
       angularDamping={0.14}
       ccd
     >
       <CuboidCollider
         args={[size[0] / 2, size[1] / 2, size[2] / 2]}
+        restitution={0.25}
+        friction={0.68}
+        mass={Math.max(0.25, size[0] * size[1] * size[2] * 0.35)}
       />
       {head ? (
         <group scale={AVATAR_SCALE}>
@@ -1335,8 +1336,9 @@ function ProjectBlock({
     tweenStartedAt.current = null;
   }, [tween?.id]);
   useEffect(() => {
-    if (!body.current || object.anchored) return;
-    body.current.setLinvel(
+    const rigidBody = body.current;
+    if (!rigidBody || object.anchored) return;
+    rigidBody.setLinvel(
       {
         x: object.velocity?.[0] ?? 0,
         y: object.velocity?.[1] ?? 0,
@@ -1344,7 +1346,15 @@ function ProjectBlock({
       },
       true,
     );
-  }, [object.anchored, object.velocity]);
+    rigidBody.setAngvel(
+      {
+        x: object.angularVelocity?.[0] ?? 0,
+        y: object.angularVelocity?.[1] ?? 0,
+        z: object.angularVelocity?.[2] ?? 0,
+      },
+      true,
+    );
+  }, [object.anchored, object.angularVelocity, object.mass, object.velocity]);
   useFrame(({ clock }) => {
     if (!animated.current) return;
     animationStartedAt.current ??= clock.elapsedTime;
@@ -1475,9 +1485,6 @@ function ProjectBlock({
       colliders={false}
       position={object.position}
       rotation={object.rotation}
-      restitution={object.restitution ?? 0.03}
-      friction={object.friction ?? 0.82}
-      mass={object.mass ?? 1}
       ccd={!object.anchored}
     >
       <CuboidCollider
@@ -1487,6 +1494,9 @@ function ProjectBlock({
           Math.max(0.01, object.scale[2] / 2),
         ]}
         sensor={!object.canCollide}
+        friction={object.friction ?? 0.82}
+        restitution={object.restitution ?? 0.03}
+        mass={Math.max(0.01, object.mass ?? 1)}
         onCollisionEnter={playerEntered}
         onCollisionExit={playerExited}
         onIntersectionEnter={playerEntered}
@@ -2031,6 +2041,7 @@ export default function BaseplateGame({
   ) => void;
   onPlayerRespawn?: () => void;
 }) {
+  const [dead, setDead] = useState(false);
   const spawnObject = worldObjects?.find((object) => object.type === "spawn");
   const spawn = spawnObject
     ? {
@@ -2154,6 +2165,7 @@ export default function BaseplateGame({
     }
   };
   const handlePlayerDeath = useCallback(() => {
+    setDead(true);
     const deathSound = worldObjects?.find(
       (object) =>
         object.type === "sound" &&
@@ -2174,6 +2186,10 @@ export default function BaseplateGame({
     ]);
     setLocalSoundVersion((current) => current + 1);
   }, [worldObjects]);
+  const handlePlayerRespawn = useCallback(() => {
+    setDead(false);
+    onPlayerRespawn?.();
+  }, [onPlayerRespawn]);
 
   return (
     <section
@@ -2188,6 +2204,7 @@ export default function BaseplateGame({
       data-mobile={mobileDevice ? "true" : undefined}
       data-landscape={landscape ? "true" : undefined}
       data-graphics={graphicsMode}
+      data-dead={dead ? "true" : undefined}
     >
       <Canvas
         shadows={graphicsMode === "high" ? "basic" : false}
@@ -2221,7 +2238,7 @@ export default function BaseplateGame({
             onWorldTouchEnded={onWorldTouchEnded}
             localPlayer={localPlayer}
             onPlayerDeath={handlePlayerDeath}
-            onPlayerRespawn={onPlayerRespawn}
+            onPlayerRespawn={handlePlayerRespawn}
           />
         </Suspense>
       </Canvas>
@@ -2237,8 +2254,15 @@ export default function BaseplateGame({
           {remotePlayers.length + 1}{" "}
           {remotePlayers.length === 0 ? "player" : "players"} online
         </span>
-        <span>{playerSettings.health}/{playerSettings.maxHealth} health</span>
+        <span>{dead ? 0 : playerSettings.health}/{playerSettings.maxHealth} health</span>
       </div>
+
+      {dead && (
+        <div className="death-status" role="status" aria-live="polite">
+          <strong>Knocked out</strong>
+          <span>Respawning...</span>
+        </div>
+      )}
 
       <ProjectGui objects={guiObjects} onActivate={onGuiActivated} />
 

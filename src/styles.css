@@ -1708,6 +1708,35 @@ h3,
   font-weight: 800;
 }
 
+.death-status {
+  position: absolute;
+  z-index: 14;
+  left: 50%;
+  bottom: 28px;
+  display: grid;
+  min-width: 150px;
+  justify-items: center;
+  gap: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 11px;
+  background: rgba(13, 15, 22, 0.82);
+  color: #fff;
+  padding: 10px 16px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.24);
+  transform: translateX(-50%);
+  backdrop-filter: blur(12px);
+  pointer-events: none;
+}
+
+.death-status strong {
+  font-size: 12px;
+}
+
+.death-status span {
+  color: #cbd0da;
+  font-size: 10px;
+}
+
 .auth-dialog label small {
   color: #8f8999;
   font-size: 10px;

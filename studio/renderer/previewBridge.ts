@@ -180,6 +180,22 @@ const isPreview =
   new URLSearchParams(location.search).has("preview");
 
 if (isPreview && !window.polyStudio) {
+  const previewUpdateState: DesktopUpdateState =
+    new URLSearchParams(location.search).get("update") === "ready"
+      ? {
+          status: "ready",
+          version: "preview",
+          publishedAt: new Date().toISOString(),
+          progress: 1,
+          message: "Update downloaded. Restart when you are ready.",
+        }
+      : {
+          status: "unsupported",
+          version: null,
+          publishedAt: null,
+          progress: null,
+          message: "Updates are unavailable in preview mode.",
+        };
   const previewAuth: StudioAuth = {
     user: {
       id: "preview-user",
@@ -263,5 +279,9 @@ if (isPreview && !window.polyStudio) {
     exportAnimation: async () => "preview.pma",
     importAnimation: async () => null,
     importSound: async () => null,
+    getUpdateState: async () => previewUpdateState,
+    checkForUpdates: async () => previewUpdateState,
+    installUpdate: async () => previewUpdateState,
+    onUpdateState: () => () => undefined,
   };
 }

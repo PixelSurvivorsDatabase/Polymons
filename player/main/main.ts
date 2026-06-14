@@ -10,6 +10,7 @@ import {
   safeStorage,
   shell,
 } from "electron";
+import { registerUpdater } from "./updater.js";
 
 const API_URL = "https://polymons-server.onrender.com";
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -411,6 +412,10 @@ if (!hasLock) {
     }
     if (initialRequest?.launch) pendingLaunch = initialRequest.launch;
 
+    const updater = registerUpdater({
+      assetName: "PolymonsPlayer.exe",
+      productName: "Polymons Player",
+    });
     ipcMain.handle("auth:get", () => auth);
     ipcMain.handle(
       "auth:login",
@@ -525,6 +530,9 @@ if (!hasLock) {
       },
     );
     createWindow();
+    mainWindow?.webContents.once("did-finish-load", () => {
+      setTimeout(updater.checkAutomatically, 1_500);
+    });
   });
 }
 

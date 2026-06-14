@@ -1123,7 +1123,7 @@ tween:Play()`,
   assert.equal(result.tweenRequests[0].easingStyle, "Quad");
 });
 
-test("supports editable and scriptable Part velocity", () => {
+test("supports editable and scriptable Part linear and angular velocity", () => {
   const fixture = project();
   fixture.scripts = [
     {
@@ -1133,7 +1133,8 @@ test("supports editable and scriptable Part velocity", () => {
       parent: "ServerScriptService",
       source: `local part = Workspace:FindFirstChild("Part")
 part.Anchored = false
-part.Velocity = Vector3.new(12, 3, -4)`,
+part.Velocity = Vector3.new(12, 3, -4)
+part.AngularVelocity = Vector3.new(0, 2, 0)`,
     },
   ];
 
@@ -1141,6 +1142,7 @@ part.Velocity = Vector3.new(12, 3, -4)`,
   assert.equal(result.diagnostics.length, 0);
   assert.equal(result.project.objects[0].anchored, false);
   assert.deepEqual(result.project.objects[0].velocity, [12, 3, -4]);
+  assert.deepEqual(result.project.objects[0].angularVelocity, [0, 2, 0]);
 });
 
 test("collects Sound playback requests and editable audio properties", () => {

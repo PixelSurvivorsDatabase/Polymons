@@ -211,13 +211,24 @@ export default function CodeEditor({
         showWords: false,
         snippetsPreventQuickSuggestions: false,
         localityBonus: true,
+        preview: true,
+        selectionMode: "always",
       },
       quickSuggestions: { other: true, comments: false, strings: false },
       suggestOnTriggerCharacters: true,
       tabCompletion: "on",
       snippetSuggestions: "top",
       wordBasedSuggestions: "off",
+      acceptSuggestionOnEnter: "on",
+      acceptSuggestionOnCommitCharacter: true,
+      parameterHints: { enabled: true, cycle: true },
+      inlineSuggest: { enabled: true },
     });
+    editor.addCommand(
+      monaco.KeyCode.Tab,
+      () => editor.trigger("keyboard", "acceptSelectedSuggestion", {}),
+      "suggestWidgetVisible",
+    );
 
     const updateDiagnostics = (source: string) => {
       const nextScript = { ...scriptRef.current, source } as PolyScript;
@@ -268,15 +279,13 @@ export default function CodeEditor({
             "Restitution",
             "Mass",
             "Velocity",
+            "AngularVelocity",
             "Volume",
             "Looped",
             "PlaybackSpeed",
             "RollOffMinDistance",
             "RollOffMaxDistance",
             "Autoplay",
-            "Play",
-            "Pause",
-            "Stop",
             "Visible",
             "Text",
             "TextColor",
@@ -294,13 +303,6 @@ export default function CodeEditor({
             "MaxHealth",
             "SprintEnabled",
             "SprintMultiplier",
-            "SetAttribute",
-            "GetAttribute",
-            "FireServer",
-            "FireClient",
-            "FireAllClients",
-            "InvokeServer",
-            "InvokeClient",
             "OnServerEvent",
             "OnServerInvoke",
             "OnClientEvent",
@@ -315,6 +317,59 @@ export default function CodeEditor({
           ];
           const isLuau = projectRef.current.language === "luau";
           const isCpp = projectRef.current.language === "cpp";
+          const statementEnd = isLuau ? "" : ";";
+          const methodSnippets = [
+            {
+              label: "Play",
+              insertText: `Play()${statementEnd}`,
+              detail: "Play a Sound, Tween, or Animation",
+            },
+            {
+              label: "Pause",
+              insertText: `Pause()${statementEnd}`,
+              detail: "Pause playback",
+            },
+            {
+              label: "Stop",
+              insertText: `Stop()${statementEnd}`,
+              detail: "Stop playback and reset it",
+            },
+            {
+              label: "SetAttribute",
+              insertText: `SetAttribute("\${1:Name}", \${2:value})${statementEnd}`,
+              detail: "Set custom object data",
+            },
+            {
+              label: "GetAttribute",
+              insertText: `GetAttribute("\${1:Name}")`,
+              detail: "Read custom object data",
+            },
+            {
+              label: "FireServer",
+              insertText: `FireServer(\${1:value})${statementEnd}`,
+              detail: "Send a RemoteEvent from a LocalScript to the server",
+            },
+            {
+              label: "FireClient",
+              insertText: `FireClient(\${1:player}, \${2:value})${statementEnd}`,
+              detail: "Send a RemoteEvent to one player",
+            },
+            {
+              label: "FireAllClients",
+              insertText: `FireAllClients(\${1:value})${statementEnd}`,
+              detail: "Send a RemoteEvent to every player",
+            },
+            {
+              label: "InvokeServer",
+              insertText: `InvokeServer(\${1:value})`,
+              detail: "Call a RemoteFunction on the server and receive its result",
+            },
+            {
+              label: "InvokeClient",
+              insertText: `InvokeClient(\${1:player}, \${2:value})`,
+              detail: "Call a RemoteFunction on one client",
+            },
+          ];
           const findLabel = isLuau
             ? "Workspace:FindFirstChild"
             : "Workspace.Find";
@@ -423,6 +478,16 @@ export default function CodeEditor({
                 kind: monaco.languages.CompletionItemKind.Property,
                 insertText: property,
                 detail: "Poly property",
+                range,
+              })),
+              ...methodSnippets.map((method) => ({
+                label: method.label,
+                kind: monaco.languages.CompletionItemKind.Method,
+                insertText: method.insertText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: method.detail,
+                documentation: `${method.detail}. Press Tab to fill each argument.`,
                 range,
               })),
               {

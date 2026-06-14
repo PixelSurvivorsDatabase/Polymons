@@ -56,6 +56,7 @@ type StudioObject = {
   restitution?: number;
   mass?: number;
   velocity?: [number, number, number];
+  angularVelocity?: [number, number, number];
   soundData?: string;
   soundFileName?: string;
   volume?: number;
@@ -187,6 +188,22 @@ type ProjectSummary = Pick<
   "id" | "name" | "language" | "createdAt" | "updatedAt"
 >;
 
+type DesktopUpdateState = {
+  status:
+    | "unsupported"
+    | "checking"
+    | "current"
+    | "available"
+    | "downloading"
+    | "ready"
+    | "installing"
+    | "error";
+  version: string | null;
+  publishedAt: string | null;
+  progress: number | null;
+  message: string;
+};
+
 interface Window {
   polyStudio: {
     getAuth: () => Promise<StudioAuth | null>;
@@ -235,5 +252,11 @@ interface Window {
       dataUrl: string;
       byteLength: number;
     } | null>;
+    getUpdateState: () => Promise<DesktopUpdateState>;
+    checkForUpdates: () => Promise<DesktopUpdateState>;
+    installUpdate: () => Promise<DesktopUpdateState>;
+    onUpdateState: (
+      callback: (state: DesktopUpdateState) => void,
+    ) => () => void;
   };
 }

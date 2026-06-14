@@ -17,6 +17,7 @@ import {
   safeStorage,
   shell,
 } from "electron";
+import { registerUpdater } from "./updater.js";
 
 const API_URL = "https://polymons-server.onrender.com";
 const WEBSITE_URL = "https://pixelsurvivorsdatabase.github.io/Polymons/";
@@ -84,6 +85,7 @@ type SceneObject = {
   restitution?: number;
   mass?: number;
   velocity?: [number, number, number];
+  angularVelocity?: [number, number, number];
   soundData?: string;
   soundFileName?: string;
   volume?: number;
@@ -476,6 +478,8 @@ function migrateLegacyProject(
       friction: 0.82,
       restitution: 0.03,
       mass: 1,
+      velocity: [0, 0, 0] as [number, number, number],
+      angularVelocity: [0, 0, 0] as [number, number, number],
       parentId: null,
       modelId: null,
       attributes: {},
@@ -534,6 +538,7 @@ function normalizeProject(project: StudioProject): StudioProject {
       restitution: object.restitution ?? 0.03,
       mass: object.mass ?? 1,
       velocity: object.velocity ?? [0, 0, 0],
+      angularVelocity: object.angularVelocity ?? [0, 0, 0],
       soundData: object.soundData ?? "",
       soundFileName: object.soundFileName ?? "",
       volume: Math.max(0, Math.min(1, object.volume ?? 0.7)),
@@ -629,6 +634,8 @@ function starterObjects(): SceneObject[] {
       friction: 0.82,
       restitution: 0.03,
       mass: 1,
+      velocity: [0, 0, 0],
+      angularVelocity: [0, 0, 0],
       parentId: null,
       modelId: null,
       attributes: {},
@@ -652,6 +659,8 @@ function starterObjects(): SceneObject[] {
       friction: 0.82,
       restitution: 0.03,
       mass: 1,
+      velocity: [0, 0, 0],
+      angularVelocity: [0, 0, 0],
       parentId: null,
       modelId: null,
       attributes: {},
@@ -675,6 +684,8 @@ function starterObjects(): SceneObject[] {
       friction: 0.82,
       restitution: 0.03,
       mass: 1,
+      velocity: [0, 0, 0],
+      angularVelocity: [0, 0, 0],
       parentId: null,
       modelId: null,
       attributes: {},
@@ -730,6 +741,8 @@ function tutorialObjects(): SceneObject[] {
       friction: 0.82,
       restitution: 0.03,
       mass: 1,
+      velocity: [0, 0, 0] as [number, number, number],
+      angularVelocity: [0, 0, 0] as [number, number, number],
       parentId: null,
       modelId: null,
       attributes: {
@@ -1040,6 +1053,14 @@ function validateProject(project: StudioProject): void {
         (!Number.isFinite(object.mass) ||
           object.mass <= 0 ||
           object.mass > 10_000)) ||
+      (object.velocity !== undefined &&
+        (!Array.isArray(object.velocity) ||
+          object.velocity.length !== 3 ||
+          !object.velocity.every(Number.isFinite))) ||
+      (object.angularVelocity !== undefined &&
+        (!Array.isArray(object.angularVelocity) ||
+          object.angularVelocity.length !== 3 ||
+          !object.angularVelocity.every(Number.isFinite))) ||
       (object.type === "sound" &&
         ((object.soundData &&
           (!/^data:audio\/[a-z0-9.+-]+;base64,/i.test(object.soundData) ||
@@ -1499,6 +1520,7 @@ async function exportPmxl(input: {
         restitution: part.restitution,
         mass: part.mass,
         velocity: part.velocity,
+        angularVelocity: part.angularVelocity,
         soundData: part.soundData,
         soundFileName: part.soundFileName,
         volume: part.volume,
@@ -1583,6 +1605,7 @@ async function importPmxl(): Promise<{
       restitution: part.restitution ?? 0.03,
       mass: part.mass ?? 1,
       velocity: part.velocity ?? [0, 0, 0],
+      angularVelocity: part.angularVelocity ?? [0, 0, 0],
       soundData: part.soundData ?? "",
       soundFileName: part.soundFileName ?? "",
       volume: part.volume ?? 0.7,
@@ -1857,6 +1880,12 @@ function createWindow(): void {
 
 void app.whenReady().then(async () => {
   auth = previewMode ? null : await loadAuth();
+  const updater = previewMode
+    ? null
+    : registerUpdater({
+        assetName: "PolyStudio.exe",
+        productName: "Poly Studio",
+      });
   if (
     auth &&
     (!auth.session.expiresAt ||
@@ -2037,6 +2066,12 @@ void app.whenReady().then(async () => {
   ipcMain.handle("sounds:import", () => importSound());
 
   createWindow();
+  if (updater) {
+    const window = BrowserWindow.getAllWindows()[0];
+    window?.webContents.once("did-finish-load", () => {
+      setTimeout(updater.checkAutomatically, 1_500);
+    });
+  }
 });
 
 app.on("window-all-closed", () => {

@@ -33,6 +33,7 @@ import {
   Upload,
   UserRound,
   Volume2,
+  CircleHelp,
 } from "lucide-react";
 import {
   type ReactNode,
@@ -657,6 +658,7 @@ export default function StudioEditor({
       restitution: 0.03,
       mass: 1,
       velocity: [0, 0, 0],
+      angularVelocity: [0, 0, 0],
       soundData: "",
       soundFileName: "",
       volume: 0.7,
@@ -726,6 +728,7 @@ export default function StudioEditor({
       restitution: 0.03,
       mass: 1,
       velocity: [0, 0, 0],
+      angularVelocity: [0, 0, 0],
       parentId: name === "HumanoidRootPart" ? null : rootId,
       modelId,
       attributes: { RigPart: name },
@@ -835,6 +838,7 @@ end)
         restitution: 0,
         mass: 1,
         velocity: [0, 0, 0],
+        angularVelocity: [0, 0, 0],
         parentId: parentObject?.id ?? null,
         modelId,
         attributes: { Damage: 20, Range: 6, Cooldown: 0.45 },
@@ -870,6 +874,7 @@ end)
       restitution: 0,
       mass: 0.25,
       velocity: [0, 0, 0],
+      angularVelocity: [0, 0, 0],
       parentId: tool.id,
       modelId: tool.modelId,
       attributes: {},
@@ -1267,7 +1272,7 @@ end)
     if (activeWorldIds.length === 0) return;
     const ids = new Set(activeWorldIds);
     const positionStep = Math.max(0.01, gridSnap);
-    const rotationStep = (Math.max(1, angleSnap) * Math.PI) / 180;
+    const rotationStep = (Math.max(0.1, angleSnap) * Math.PI) / 180;
     updateProject((current) => ({
       ...current,
       objects: current.objects.map((object) =>
@@ -1922,13 +1927,26 @@ end)
             Angle
             <input
               type="number"
-              min="1"
+              min="0.1"
               max="180"
-              step="1"
+              step="0.5"
               value={angleSnap}
-              onChange={(event) => setAngleSnap(Math.max(1, Number(event.target.value) || 15))}
+              onChange={(event) => setAngleSnap(Math.max(0.1, Number(event.target.value) || 15))}
             />
           </label>
+          <div className="angle-presets" aria-label="Rotation snap presets">
+            {[15, 30, 45, 90].map((degrees) => (
+              <button
+                key={degrees}
+                type="button"
+                className={angleSnap === degrees ? "active" : ""}
+                title={`Set rotation snap to ${degrees} degrees`}
+                onClick={() => setAngleSnap(degrees)}
+              >
+                {degrees}°
+              </button>
+            ))}
+          </div>
         </div>
         <div className="workspace-tabs">
           <button
@@ -3629,8 +3647,9 @@ function ViewportTransformControls({
       tool === "move" ? "translate" : tool === "rotate" ? "rotate" : "scale",
     );
     controls.setTranslationSnap(Math.max(0.01, gridSnap));
-    controls.setRotationSnap((Math.max(1, angleSnap) * Math.PI) / 180);
+    controls.setRotationSnap((Math.max(0.1, angleSnap) * Math.PI) / 180);
     controls.setScaleSnap(0.1);
+    controls.setSpace(tool === "rotate" ? "local" : "world");
   }, [angleSnap, gridSnap, tool]);
 
   return null;
@@ -3976,6 +3995,20 @@ function Properties({
             <NumberField label="Bounciness" value={world.restitution ?? 0.03} minimum={0} maximum={1} step={0.05} onChange={(restitution) => onWorldChange({ restitution })} />
             <NumberField label="Mass" value={world.mass ?? 1} minimum={0.01} maximum={10000} step={0.25} onChange={(mass) => onWorldChange({ mass })} />
             <VectorField label="Velocity" value={world.velocity ?? [0, 0, 0]} step={0.5} onChange={(velocity) => onWorldChange({ velocity })} />
+            <VectorField
+              label="Rotation speed (deg/s)"
+              value={(world.angularVelocity ?? [0, 0, 0]).map(
+                (value) => (value * 180) / Math.PI,
+              ) as [number, number, number]}
+              step={5}
+              onChange={(degrees) =>
+                onWorldChange({
+                  angularVelocity: degrees.map(
+                    (value) => (value * Math.PI) / 180,
+                  ) as [number, number, number],
+                })
+              }
+            />
           </PropertySection>}
           <PropertySection title="Gameplay data">
             {world.type === "humanoidRootPart" && (
@@ -4205,6 +4238,49 @@ function PropertySection({ title, children }: { title: string; children: ReactNo
   );
 }
 
+const PROPERTY_HELP: Record<string, string> = {
+  Name: "The name scripts and Explorer use to identify this object.",
+  Position: "The object's X, Y, and Z location in the world.",
+  "Rotation (degrees)": "The object's X, Y, and Z angles in degrees.",
+  Size: "The object's width, height, and depth.",
+  Color: "The base color used to render this object.",
+  Material: "Changes how the surface reflects light.",
+  "Surface texture": "Adds a visible surface pattern. None uses smooth plastic.",
+  Transparency: "0 is fully visible. 1 is fully invisible.",
+  CastShadow: "Controls whether this object casts a shadow.",
+  Visible: "Hides or shows the object without deleting it.",
+  Anchored: "Anchored objects stay fixed and are not moved by physics.",
+  CanCollide: "When enabled, players and other physical parts cannot pass through.",
+  Friction: "How strongly surfaces resist sliding. Higher values stop movement faster.",
+  Bounciness: "How much energy is returned after a collision. 0 does not bounce; 1 is very springy.",
+  Mass: "How strongly a moving part resists pushes and affects other parts in collisions. Mass does not make gravity accelerate it faster.",
+  Velocity: "Starting movement speed on the X, Y, and Z axes in world units per second.",
+  "Rotation speed (deg/s)": "Starting spin around the X, Y, and Z axes, shown in degrees per second.",
+  Volume: "Sound loudness from 0 to 1.",
+  PlaybackSpeed: "How quickly the sound plays. Values above 1 play faster.",
+  Looped: "Restarts the sound automatically when it reaches the end.",
+  Autoplay: "Starts the sound as soon as the game loads.",
+  "Min distance": "Distance where a 3D sound begins getting quieter.",
+  "Max distance": "Distance where a 3D sound can no longer be heard.",
+  Health: "The object's current health.",
+  MaxHealth: "The highest health value this object can have.",
+};
+
+function PropertyLabel({ label }: { label: string }) {
+  const help = PROPERTY_HELP[label];
+  return (
+    <span className="property-label">
+      <span>{label}</span>
+      {help && (
+        <span className="property-help" tabIndex={0} aria-label={`${label} help`}>
+          <CircleHelp size={12} />
+          <span className="property-tooltip">{help}</span>
+        </span>
+      )}
+    </span>
+  );
+}
+
 function NameField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   return <TextField label="Name" value={value} onChange={onChange} />;
 }
@@ -4212,7 +4288,7 @@ function NameField({ value, onChange }: { value: string; onChange: (value: strin
 function TextField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   return (
     <label className="property-name">
-      {label}
+      <PropertyLabel label={label} />
       <input value={value} onChange={(event) => onChange(event.target.value)} />
     </label>
   );
@@ -4221,7 +4297,7 @@ function TextField({ label, value, onChange }: { label: string; value: string; o
 function ReadOnlyField({ label, value }: { label: string; value: string }) {
   return (
     <label className="property-name">
-      {label}
+      <PropertyLabel label={label} />
       <input value={value} readOnly />
     </label>
   );
@@ -4240,7 +4316,7 @@ function SelectField({
 }) {
   return (
     <label className="property-name">
-      {label}
+      <PropertyLabel label={label} />
       <select value={value} onChange={(event) => onChange(event.target.value)}>
         {options.map((option) => (
           <option key={option.value} value={option.value}>
@@ -4440,7 +4516,7 @@ function NumberField({
 }) {
   return (
     <label className="property-name number-field">
-      {label}
+      <PropertyLabel label={label} />
       <input
         type="number"
         value={value}
@@ -4456,7 +4532,7 @@ function NumberField({
 function ToggleField({ label, value, onChange }: { label: string; value: boolean; onChange: (value: boolean) => void }) {
   return (
     <label className="toggle-field">
-      {label}
+      <PropertyLabel label={label} />
       <input type="checkbox" checked={value} onChange={(event) => onChange(event.target.checked)} />
     </label>
   );
@@ -4465,7 +4541,7 @@ function ToggleField({ label, value, onChange }: { label: string; value: boolean
 function ColorField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   return (
     <label className="color-field">
-      {label}
+      <PropertyLabel label={label} />
       <span>
         <input type="color" value={value} onChange={(event) => onChange(event.target.value)} />
         <code>{value.toUpperCase()}</code>
@@ -4497,7 +4573,7 @@ function VectorField({
 }) {
   return (
     <div className="vector-field">
-      <span>{label}</span>
+      <PropertyLabel label={label} />
       <div>
         {(["X", "Y", "Z"] as const).map((axis, index) => (
           <label key={axis}>
