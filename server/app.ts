@@ -116,7 +116,7 @@ export function createApp(
       allowedHeaders: ["Authorization", "Content-Type"],
     }),
   );
-  app.use(express.json({ limit: "2mb" }));
+  app.use(express.json({ limit: "16mb" }));
   app.use(
     rateLimit({
       windowMs: 60_000,

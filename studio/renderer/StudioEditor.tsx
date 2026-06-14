@@ -32,6 +32,7 @@ import {
   Ungroup,
   Upload,
   UserRound,
+  Volume2,
 } from "lucide-react";
 import {
   type ReactNode,
@@ -620,7 +621,13 @@ export default function StudioEditor({
         : null;
     const targetModelId = parentModel?.id ?? parentObject?.modelId ?? null;
     const baseName =
-      type === "tool" ? "Tool" : type === "handle" ? "Handle" : "Part";
+      type === "tool"
+        ? "Tool"
+        : type === "handle"
+          ? "Handle"
+          : type === "sound"
+            ? "Sound"
+            : "Part";
     const next: StudioObject = {
       id: crypto.randomUUID(),
       name: nextName(
@@ -636,19 +643,28 @@ export default function StudioEditor({
           ]
         : [0, 2, 0],
       rotation: [0, 0, 0],
-      scale: type === "handle" ? [1, 3, 1] : [4, 4, 4],
+      scale:
+        type === "handle" ? [1, 3, 1] : type === "sound" ? [0.6, 0.6, 0.6] : [4, 4, 4],
       color: "#30254D",
       anchored: true,
       visible: true,
       transparency: 0,
       material: "plastic",
       surfaceTexture: "none",
-      canCollide: true,
-      castShadow: true,
+      canCollide: type !== "sound",
+      castShadow: type !== "sound",
       friction: 0.82,
       restitution: 0.03,
       mass: 1,
       velocity: [0, 0, 0],
+      soundData: "",
+      soundFileName: "",
+      volume: 0.7,
+      looped: false,
+      playbackSpeed: 1,
+      rolloffMinDistance: 5,
+      rolloffMaxDistance: 60,
+      autoplay: false,
       parentId: parentObject?.id ?? null,
       modelId: targetModelId,
       attributes: {},
@@ -1513,6 +1529,7 @@ end)
         { label: "Part", icon: <Box size={14} />, run: () => addPart("part", target) },
         { label: "Tool", icon: <Package size={14} />, run: () => addPart("tool", target) },
         { label: "Handle", icon: <Move3D size={14} />, run: () => addPart("handle", target) },
+        { label: "Sound", icon: <Volume2 size={14} />, run: () => addPart("sound", target) },
         {
           label: "HumanoidRootPart",
           icon: <UserRound size={14} />,
@@ -1597,11 +1614,17 @@ end)
       if (object?.type === "tool") {
         actions.push(
           { label: "Handle", icon: <Move3D size={14} />, run: () => addPart("handle", target) },
+          { label: "Sound", icon: <Volume2 size={14} />, run: () => addPart("sound", target) },
           { label: "Linked Sword Template", icon: <Package size={14} />, run: () => addLinkedSword(target) },
           { label: "Script", icon: <FileCode2 size={14} />, run: () => addScript("script", target) },
           { label: "LocalScript", icon: <Code2 size={14} />, run: () => addScript("localScript", target) },
         );
       } else {
+        actions.push({
+          label: "Sound",
+          icon: <Volume2 size={14} />,
+          run: () => addPart("sound", target),
+        });
         actions.push({
           label: "Script",
           icon: <FileCode2 size={14} />,
@@ -3027,6 +3050,8 @@ function WorldTree({
         icon={
           object.type === "tool"
             ? <Package size={14} />
+            : object.type === "sound"
+              ? <Volume2 size={14} />
             : object.type === "humanoidRootPart"
               ? <UserRound size={14} />
               : object.type === "part" || object.type === "handle"
@@ -3407,11 +3432,25 @@ function SceneViewport({
               );
             }}
           >
-            <boxGeometry args={[1, 1, 1]} />
-            <StudioSurfaceMaterial
-              object={object}
-              selected={selectedWorldIds.includes(object.id)}
-            />
+            {object.type === "sound" ? (
+              <>
+                <sphereGeometry args={[0.5, 18, 12]} />
+                <meshStandardMaterial
+                  color="#9B6DFF"
+                  emissive="#4A238B"
+                  emissiveIntensity={0.8}
+                  wireframe
+                />
+              </>
+            ) : (
+              <>
+                <boxGeometry args={[1, 1, 1]} />
+                <StudioSurfaceMaterial
+                  object={object}
+                  selected={selectedWorldIds.includes(object.id)}
+                />
+              </>
+            )}
             {selectedWorldIds.includes(object.id) && (
               <mesh scale={1.012}>
                 <boxGeometry args={[1, 1, 1]} />
@@ -3866,7 +3905,35 @@ function Properties({
             />
             <VectorField label="Size" value={world.scale} minimum={0.1} onChange={(scale) => onWorldChange({ scale })} />
           </PropertySection>
-          <PropertySection title="Appearance">
+          {world.type === "sound" && (
+            <PropertySection title="Sound">
+              <ReadOnlyField
+                label="Audio file"
+                value={world.soundFileName || "No audio selected"}
+              />
+              <button
+                className="property-action-button"
+                onClick={async () => {
+                  const imported = await window.polyStudio.importSound();
+                  if (!imported) return;
+                  onWorldChange({
+                    soundData: imported.dataUrl,
+                    soundFileName: imported.fileName,
+                  });
+                }}
+              >
+                <Upload size={14} />
+                Upload audio
+              </button>
+              <NumberField label="Volume" value={world.volume ?? 0.7} minimum={0} maximum={1} step={0.05} onChange={(volume) => onWorldChange({ volume })} />
+              <NumberField label="PlaybackSpeed" value={world.playbackSpeed ?? 1} minimum={0.25} maximum={4} step={0.05} onChange={(playbackSpeed) => onWorldChange({ playbackSpeed })} />
+              <ToggleField label="Looped" value={world.looped ?? false} onChange={(looped) => onWorldChange({ looped })} />
+              <ToggleField label="Autoplay" value={world.autoplay ?? false} onChange={(autoplay) => onWorldChange({ autoplay })} />
+              <NumberField label="Min distance" value={world.rolloffMinDistance ?? 5} minimum={0.1} maximum={1000} step={0.5} onChange={(rolloffMinDistance) => onWorldChange({ rolloffMinDistance })} />
+              <NumberField label="Max distance" value={world.rolloffMaxDistance ?? 60} minimum={world.rolloffMinDistance ?? 5} maximum={10000} step={1} onChange={(rolloffMaxDistance) => onWorldChange({ rolloffMaxDistance })} />
+            </PropertySection>
+          )}
+          {world.type !== "sound" && <PropertySection title="Appearance">
             <ColorField label="Color" value={world.color} onChange={(color) => onWorldChange({ color })} />
             <SelectField
               label="Material"
@@ -3901,15 +3968,15 @@ function Properties({
             <NumberField label="Transparency" value={world.transparency} minimum={0} maximum={1} step={0.05} onChange={(transparency) => onWorldChange({ transparency })} />
             <ToggleField label="CastShadow" value={world.castShadow} onChange={(castShadow) => onWorldChange({ castShadow })} />
             <ToggleField label="Visible" value={world.visible !== false} onChange={(visible) => onWorldChange({ visible })} />
-          </PropertySection>
-          <PropertySection title="Physics">
+          </PropertySection>}
+          {world.type !== "sound" && <PropertySection title="Physics">
             <ToggleField label="Anchored" value={world.anchored} onChange={(anchored) => onWorldChange({ anchored })} />
             <ToggleField label="CanCollide" value={world.canCollide} onChange={(canCollide) => onWorldChange({ canCollide })} />
             <NumberField label="Friction" value={world.friction ?? 0.82} minimum={0} maximum={2} step={0.05} onChange={(friction) => onWorldChange({ friction })} />
             <NumberField label="Bounciness" value={world.restitution ?? 0.03} minimum={0} maximum={1} step={0.05} onChange={(restitution) => onWorldChange({ restitution })} />
             <NumberField label="Mass" value={world.mass ?? 1} minimum={0.01} maximum={10000} step={0.25} onChange={(mass) => onWorldChange({ mass })} />
             <VectorField label="Velocity" value={world.velocity ?? [0, 0, 0]} step={0.5} onChange={(velocity) => onWorldChange({ velocity })} />
-          </PropertySection>
+          </PropertySection>}
           <PropertySection title="Gameplay data">
             {world.type === "humanoidRootPart" && (
               <>

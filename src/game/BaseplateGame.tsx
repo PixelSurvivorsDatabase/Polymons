@@ -19,6 +19,8 @@ import {
   useState,
 } from "react";
 import {
+  AudioListener,
+  AudioLoader,
   CanvasTexture,
   Color,
   Euler,
@@ -27,12 +29,14 @@ import {
   MeshStandardMaterial,
   Quaternion,
   SRGBColorSpace,
+  PositionalAudio as ThreePositionalAudio,
   Vector2,
   Vector3,
 } from "three";
 import { ShirtMaterials } from "./AvatarPreview";
 import type { ShirtId } from "./avatarCatalog";
 import { chatUsernameColor } from "./chat";
+import defaultDeathSoundUrl from "../../assets/audio/polymons-oof-remix.mp3";
 import type {
   ChatMessage,
   PlayerTransform,
@@ -43,6 +47,7 @@ import type {
   PolyGuiObject,
   PolyLeaderstat,
   PolyPlayerSettings,
+  PolySoundRequest,
   PolyTweenRequest,
   PolyWorldObject,
 } from "./polyProject";
@@ -524,6 +529,288 @@ function BlockAvatar({
   );
 }
 
+function playSynthesizedDeathSound() {
+  const browserWindow = window as Window & {
+    speechSynthesis?: SpeechSynthesis;
+    webkitAudioContext?: typeof AudioContext;
+  };
+  if (browserWindow.speechSynthesis) {
+    browserWindow.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance("OOF!");
+    utterance.rate = 1.35;
+    utterance.pitch = 0.55;
+    utterance.volume = 0.9;
+    browserWindow.speechSynthesis.speak(utterance);
+    return;
+  }
+  const AudioContextClass =
+    globalThis.AudioContext ?? browserWindow.webkitAudioContext;
+  if (!AudioContextClass) return;
+  const context = new AudioContextClass();
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  oscillator.type = "square";
+  oscillator.frequency.setValueAtTime(165, context.currentTime);
+  oscillator.frequency.exponentialRampToValueAtTime(
+    82,
+    context.currentTime + 0.22,
+  );
+  gain.gain.setValueAtTime(0.18, context.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.24);
+  oscillator.connect(gain).connect(context.destination);
+  oscillator.start();
+  oscillator.stop(context.currentTime + 0.25);
+  oscillator.addEventListener("ended", () => void context.close());
+}
+
+function playDefaultDeathSound() {
+  const audio = new Audio(defaultDeathSoundUrl);
+  audio.volume = 0.9;
+  void audio.play().catch(() => playSynthesizedDeathSound());
+}
+
+function DeathPart({
+  position,
+  size,
+  color,
+  velocity,
+  shirtId,
+  sleeve = false,
+  head = false,
+}: {
+  position: [number, number, number];
+  size: [number, number, number];
+  color: string;
+  velocity: [number, number, number];
+  shirtId?: ShirtId | null;
+  sleeve?: boolean;
+  head?: boolean;
+}) {
+  const body = useRef<RapierRigidBody>(null);
+  useEffect(() => {
+    body.current?.setLinvel(
+      { x: velocity[0], y: velocity[1], z: velocity[2] },
+      true,
+    );
+    body.current?.setAngvel(
+      {
+        x: velocity[2] * 0.7,
+        y: velocity[0] * 0.55,
+        z: -velocity[1] * 0.35,
+      },
+      true,
+    );
+  }, [velocity]);
+  return (
+    <RigidBody
+      ref={body}
+      position={position}
+      colliders={false}
+      restitution={0.25}
+      friction={0.68}
+      linearDamping={0.08}
+      angularDamping={0.14}
+      ccd
+    >
+      <CuboidCollider
+        args={[size[0] / 2, size[1] / 2, size[2] / 2]}
+      />
+      {head ? (
+        <group scale={AVATAR_SCALE}>
+          <mesh castShadow receiveShadow>
+            <latheGeometry args={[HEAD_PROFILE, 32]} />
+            <meshStandardMaterial color={color} roughness={0.72} />
+          </mesh>
+          <mesh position={[-0.28, 0.08, -0.852]}>
+            <boxGeometry args={[0.15, 0.2, 0.035]} />
+            <meshStandardMaterial color="#24202b" roughness={0.85} />
+          </mesh>
+          <mesh position={[0.28, 0.08, -0.852]}>
+            <boxGeometry args={[0.15, 0.2, 0.035]} />
+            <meshStandardMaterial color="#24202b" roughness={0.85} />
+          </mesh>
+          <mesh position={[0, -0.28, -0.852]}>
+            <boxGeometry args={[0.4, 0.075, 0.035]} />
+            <meshStandardMaterial color="#8e5b52" roughness={0.9} />
+          </mesh>
+        </group>
+      ) : (
+        <mesh castShadow receiveShadow>
+          <boxGeometry args={size} />
+          {shirtId !== undefined ? (
+            <ShirtMaterials shirtId={shirtId} sleeve={sleeve} />
+          ) : (
+            <meshStandardMaterial color={color} roughness={0.72} />
+          )}
+        </mesh>
+      )}
+    </RigidBody>
+  );
+}
+
+function DeathParts({
+  origin,
+  player,
+}: {
+  origin: [number, number, number];
+  player?: {
+    equippedShirtId?: ShirtId | null;
+  };
+}) {
+  const at = (
+    x: number,
+    y: number,
+    z: number,
+  ): [number, number, number] => [origin[0] + x, origin[1] + y, origin[2] + z];
+  const shirtId = player?.equippedShirtId ?? null;
+  return (
+    <>
+      <DeathPart
+        position={at(0, 0.24, 0)}
+        size={[1.76, 1.6, 0.96]}
+        color="#5635B8"
+        velocity={[0.5, 4.8, -1.1]}
+        shirtId={shirtId}
+      />
+      <DeathPart
+        position={at(0, 1.66, 0)}
+        size={[1.36, 1.16, 1.36]}
+        color="#e7bd91"
+        velocity={[-0.4, 6.4, 0.8]}
+        head
+      />
+      <DeathPart
+        position={at(-1.28, 0.2, 0)}
+        size={[0.8, 1.68, 0.84]}
+        color="#e7bd91"
+        velocity={[-5.2, 4.3, 1.8]}
+        shirtId={shirtId}
+        sleeve
+      />
+      <DeathPart
+        position={at(1.28, 0.2, 0)}
+        size={[0.8, 1.68, 0.84]}
+        color="#e7bd91"
+        velocity={[5.2, 4.6, -1.5]}
+        shirtId={shirtId}
+        sleeve
+      />
+      <DeathPart
+        position={at(-0.46, -1.36, 0)}
+        size={[0.88, 1.6, 0.88]}
+        color="#313542"
+        velocity={[-2.8, 3.2, -2.2]}
+      />
+      <DeathPart
+        position={at(0.46, -1.36, 0)}
+        size={[0.88, 1.6, 0.88]}
+        color="#313542"
+        velocity={[2.8, 3.5, 2.2]}
+      />
+    </>
+  );
+}
+
+function ProjectSound({
+  object,
+  listener,
+  requests,
+  requestVersion,
+}: {
+  object: PolyWorldObject;
+  listener: AudioListener;
+  requests: PolySoundRequest[];
+  requestVersion: number;
+}) {
+  const sound = useMemo(() => new ThreePositionalAudio(listener), [listener]);
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    sound.position.set(...object.position);
+    sound.setVolume(object.volume ?? 0.7);
+    sound.setLoop(object.looped ?? false);
+    sound.setPlaybackRate(object.playbackSpeed ?? 1);
+    sound.setRefDistance(object.rolloffMinDistance ?? 5);
+    sound.setMaxDistance(object.rolloffMaxDistance ?? 60);
+    sound.setRolloffFactor(1);
+  }, [object, sound]);
+  useEffect(() => {
+    setLoaded(false);
+    if (!object.soundData) return;
+    let active = true;
+    new AudioLoader().load(
+      object.soundData,
+      (buffer) => {
+        if (!active) return;
+        if (sound.isPlaying) sound.stop();
+        sound.setBuffer(buffer);
+        setLoaded(true);
+      },
+      undefined,
+      () => {
+        if (active) setLoaded(false);
+      },
+    );
+    return () => {
+      active = false;
+      if (sound.isPlaying) sound.stop();
+    };
+  }, [object.soundData, sound]);
+  useEffect(() => {
+    if (!loaded || !object.autoplay) return;
+    void listener.context.resume().then(() => {
+      if (!sound.isPlaying) sound.play();
+    });
+  }, [listener, loaded, object.autoplay, sound]);
+  useEffect(() => {
+    if (!loaded) return;
+    const request = [...requests]
+      .reverse()
+      .find((candidate) => candidate.objectId === object.id);
+    if (!request) return;
+    void listener.context.resume().then(() => {
+      if (request.action === "play") {
+        if (sound.isPlaying) sound.stop();
+        sound.play();
+      } else if (request.action === "pause") {
+        if (sound.isPlaying) sound.pause();
+      } else if (sound.isPlaying) {
+        sound.stop();
+      }
+    });
+  }, [listener, loaded, object.id, requestVersion, requests, sound]);
+  return <primitive object={sound} />;
+}
+
+function ProjectSounds({
+  objects,
+  requests,
+  requestVersion,
+}: {
+  objects: PolyWorldObject[];
+  requests: PolySoundRequest[];
+  requestVersion: number;
+}) {
+  const { camera } = useThree();
+  const listener = useMemo(() => new AudioListener(), []);
+  useEffect(() => {
+    camera.add(listener);
+    return () => {
+      camera.remove(listener);
+    };
+  }, [camera, listener]);
+  return objects
+    .filter((object) => object.type === "sound")
+    .map((object) => (
+      <ProjectSound
+        key={object.id}
+        object={object}
+        listener={listener}
+        requests={requests}
+        requestVersion={requestVersion}
+      />
+    ));
+}
+
 function PlayerNameTag({
   username,
   displayName,
@@ -623,6 +910,8 @@ function PlayerController({
   spawn,
   playerSettings,
   localPlayer,
+  onDeath,
+  onRespawn,
 }: {
   input: MutableRefObject<InputState>;
   onTelemetry: (telemetry: Telemetry) => void;
@@ -634,6 +923,8 @@ function PlayerController({
     displayName: string;
     equippedShirtId?: ShirtId | null;
   };
+  onDeath: () => void;
+  onRespawn?: () => void;
 }) {
   const body = useRef<RapierRigidBody>(null);
   const groundContacts = useRef(0);
@@ -642,16 +933,35 @@ function PlayerController({
   const facing = useRef(0);
   const lastTelemetry = useRef(0);
   const jumpCooldown = useRef(0);
+  const lastPosition = useRef<[number, number, number]>([
+    spawn.x,
+    spawn.y,
+    spawn.z,
+  ]);
+  const [death, setDeath] = useState<{
+    origin: [number, number, number];
+  } | null>(null);
   const { camera } = useThree();
   const { rapier, world } = useRapier();
 
-  const reset = useCallback(() => {
-    const rigidBody = body.current;
-    if (!rigidBody) return;
-    rigidBody.setTranslation(spawn, true);
-    rigidBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
-    rigidBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
-  }, [spawn]);
+  const die = useCallback(() => {
+    if (death) return;
+    setDeath({ origin: [...lastPosition.current] });
+    onDeath();
+  }, [death, onDeath]);
+
+  useEffect(() => {
+    if (playerSettings.health <= 0) die();
+  }, [die, playerSettings.health]);
+
+  useEffect(() => {
+    if (!death) return;
+    const timer = window.setTimeout(() => {
+      setDeath(null);
+      onRespawn?.();
+    }, 2_600);
+    return () => window.clearTimeout(timer);
+  }, [death, onRespawn]);
 
   useFrame((state, delta) => {
     const rigidBody = body.current;
@@ -712,9 +1022,10 @@ function PlayerController({
     }
 
     const position = rigidBody.translation();
+    lastPosition.current = [position.x, position.y, position.z];
     if (position.y < -14 || input.current.resetQueued) {
       input.current.resetQueued = false;
-      reset();
+      die();
       return;
     }
 
@@ -775,6 +1086,10 @@ function PlayerController({
       });
     }
   });
+
+  if (death) {
+    return <DeathParts origin={death.origin} player={localPlayer} />;
+  }
 
   return (
     <RigidBody
@@ -1131,11 +1446,15 @@ function Scene({
   animationVersion,
   tweenRequests,
   tweenVersion,
+  soundRequests,
+  soundVersion,
   playerSettings,
   spawn,
   onWorldTouched,
   onWorldTouchEnded,
   localPlayer,
+  onPlayerDeath,
+  onPlayerRespawn,
 }: {
   input: MutableRefObject<InputState>;
   onTelemetry: (telemetry: Telemetry) => void;
@@ -1148,6 +1467,8 @@ function Scene({
   animationVersion: number;
   tweenRequests: PolyTweenRequest[];
   tweenVersion: number;
+  soundRequests: PolySoundRequest[];
+  soundVersion: number;
   playerSettings: PolyPlayerSettings;
   spawn: { x: number; y: number; z: number };
   onWorldTouched?: (worldObjectId: string) => void;
@@ -1157,6 +1478,8 @@ function Scene({
     displayName: string;
     equippedShirtId?: ShirtId | null;
   };
+  onPlayerDeath: () => void;
+  onPlayerRespawn?: () => void;
 }) {
   return (
     <>
@@ -1174,12 +1497,14 @@ function Scene({
           spawn={spawn}
           playerSettings={playerSettings}
           localPlayer={localPlayer}
+          onDeath={onPlayerDeath}
+          onRespawn={onPlayerRespawn}
         />
         {remotePlayers.map((player) => (
           <RemoteBlockAvatar key={player.id} player={player} />
         ))}
         {worldObjects ? (
-          worldObjects.map((object) => (
+          worldObjects.filter((object) => object.type !== "sound").map((object) => (
             <ProjectBlock
               key={`${object.id}-${animationVersion}-${tweenVersion}`}
               object={object}
@@ -1229,6 +1554,13 @@ function Scene({
             <PhysicsCrate position={[5.6, 1.1, 3.8]} color="#4d8fdf" />
             <PhysicsCrate position={[4.8, 2.8, 4]} color="#e0bd4f" />
           </>
+        )}
+        {worldObjects && (
+          <ProjectSounds
+            objects={worldObjects}
+            requests={soundRequests}
+            requestVersion={soundVersion}
+          />
         )}
       </Physics>
     </>
@@ -1522,6 +1854,8 @@ export default function BaseplateGame({
   animationVersion = 0,
   tweenRequests = [],
   tweenVersion = 0,
+  soundRequests = [],
+  soundVersion = 0,
   guiObjects = [],
   playerSettings = {
     health: 100,
@@ -1546,6 +1880,7 @@ export default function BaseplateGame({
   onWorldTouched,
   onWorldTouchEnded,
   onKeyInput,
+  onPlayerRespawn,
 }: {
   remotePlayers?: RemotePlayer[];
   onPlayerState?: (state: Omit<PlayerTransform, "sequence">) => void;
@@ -1555,6 +1890,8 @@ export default function BaseplateGame({
   animationVersion?: number;
   tweenRequests?: PolyTweenRequest[];
   tweenVersion?: number;
+  soundRequests?: PolySoundRequest[];
+  soundVersion?: number;
   guiObjects?: PolyGuiObject[];
   playerSettings?: PolyPlayerSettings;
   leaderstats?: PolyLeaderstat[];
@@ -1576,6 +1913,7 @@ export default function BaseplateGame({
     keyCode: string,
     event: "InputBegan" | "InputEnded",
   ) => void;
+  onPlayerRespawn?: () => void;
 }) {
   const spawnObject = worldObjects?.find((object) => object.type === "spawn");
   const spawn = spawnObject
@@ -1599,6 +1937,10 @@ export default function BaseplateGame({
   const [landscape, setLandscape] = useState(false);
   const [graphicsMode, setGraphicsMode] = useState<"low" | "high">("high");
   const [fullscreen, setFullscreen] = useState(false);
+  const [localSoundRequests, setLocalSoundRequests] = useState<
+    PolySoundRequest[]
+  >([]);
+  const [localSoundVersion, setLocalSoundVersion] = useState(0);
   const mobileGraphicsInitialized = useRef(false);
   const [telemetry, setTelemetry] = useState<Telemetry>({
     grounded: false,
@@ -1695,6 +2037,27 @@ export default function BaseplateGame({
       // Fullscreen and orientation locking vary by mobile browser.
     }
   };
+  const handlePlayerDeath = useCallback(() => {
+    const deathSound = worldObjects?.find(
+      (object) =>
+        object.type === "sound" &&
+        (object.name.toLowerCase() === "deathsound" ||
+          object.tags.some((tag) => tag.toLowerCase() === "deathsound")),
+    );
+    if (!deathSound?.soundData) {
+      playDefaultDeathSound();
+      return;
+    }
+    setLocalSoundRequests((current) => [
+      ...current,
+      {
+        id: `death-${Date.now()}`,
+        objectId: deathSound.id,
+        action: "play",
+      },
+    ]);
+    setLocalSoundVersion((current) => current + 1);
+  }, [worldObjects]);
 
   return (
     <section
@@ -1734,11 +2097,15 @@ export default function BaseplateGame({
             animationVersion={animationVersion}
             tweenRequests={tweenRequests}
             tweenVersion={tweenVersion}
+            soundRequests={[...soundRequests, ...localSoundRequests]}
+            soundVersion={soundVersion + localSoundVersion}
             playerSettings={playerSettings}
             spawn={spawn}
             onWorldTouched={onWorldTouched}
             onWorldTouchEnded={onWorldTouchEnded}
             localPlayer={localPlayer}
+            onPlayerDeath={handlePlayerDeath}
+            onPlayerRespawn={onPlayerRespawn}
           />
         </Suspense>
       </Canvas>

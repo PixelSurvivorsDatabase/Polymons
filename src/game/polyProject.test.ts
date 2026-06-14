@@ -1118,3 +1118,45 @@ part.Velocity = Vector3.new(12, 3, -4)`,
   assert.equal(result.project.objects[0].anchored, false);
   assert.deepEqual(result.project.objects[0].velocity, [12, 3, -4]);
 });
+
+test("collects Sound playback requests and editable audio properties", () => {
+  const fixture = project();
+  fixture.objects.push({
+    ...fixture.objects[0],
+    id: "sound",
+    name: "RoundStart",
+    type: "sound",
+    scale: [0.6, 0.6, 0.6],
+    canCollide: false,
+    castShadow: false,
+    soundData: "data:audio/ogg;base64,T2dnUw==",
+    soundFileName: "round-start.ogg",
+    volume: 0.7,
+    looped: false,
+    playbackSpeed: 1,
+    rolloffMinDistance: 5,
+    rolloffMaxDistance: 60,
+    autoplay: false,
+  });
+  fixture.scripts = [
+    {
+      id: "sound-script",
+      name: "SoundScript",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `local sound = Workspace:FindFirstChild("RoundStart")
+sound.Volume = 0.4
+sound.Looped = true
+sound:Play()`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0);
+  assert.equal(result.project.objects[1].volume, 0.4);
+  assert.equal(result.project.objects[1].looped, true);
+  assert.deepEqual(
+    result.soundRequests.map(({ objectId, action }) => ({ objectId, action })),
+    [{ objectId: "sound", action: "play" }],
+  );
+});

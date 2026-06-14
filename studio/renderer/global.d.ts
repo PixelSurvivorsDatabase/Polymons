@@ -26,7 +26,14 @@ type StudioAuth = {
 type StudioObject = {
   id: string;
   name: string;
-  type: "baseplate" | "spawn" | "part" | "tool" | "handle" | "humanoidRootPart";
+  type:
+    | "baseplate"
+    | "spawn"
+    | "part"
+    | "tool"
+    | "handle"
+    | "humanoidRootPart"
+    | "sound";
   position: [number, number, number];
   rotation: [number, number, number];
   scale: [number, number, number];
@@ -49,6 +56,14 @@ type StudioObject = {
   restitution?: number;
   mass?: number;
   velocity?: [number, number, number];
+  soundData?: string;
+  soundFileName?: string;
+  volume?: number;
+  looped?: boolean;
+  playbackSpeed?: number;
+  rolloffMinDistance?: number;
+  rolloffMaxDistance?: number;
+  autoplay?: boolean;
   parentId?: string | null;
   modelId: string | null;
   attributes: Record<string, string | number | boolean | null>;
@@ -214,6 +229,11 @@ interface Window {
       version: 1;
       animation: Omit<StudioAnimation, "id" | "rigModelId">;
       partNames: Record<string, string>;
+    } | null>;
+    importSound: () => Promise<{
+      fileName: string;
+      dataUrl: string;
+      byteLength: number;
     } | null>;
   };
 }

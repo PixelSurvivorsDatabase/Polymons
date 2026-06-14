@@ -833,6 +833,8 @@ button { color: inherit; }
 .property-name input[readonly] { color: #8d8696; }
 .property-section { margin-top: 18px; padding-top: 13px; border-top: 1px solid var(--studio-line); }
 .property-section h3 { margin: 0 0 12px; color: #d3ccd9; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+.property-action-button { display: flex; width: 100%; align-items: center; justify-content: center; gap: 7px; margin-bottom: 10px; border: 1px solid #4b3968; border-radius: 7px; background: #21172f; color: #d9c5ff; cursor: pointer; padding: 8px; font-size: 10px; font-weight: 700; }
+.property-action-button:hover { border-color: #7955ad; background: #2a1c3e; }
 .vector-field { margin-bottom: 12px; }
 .vector-field > span, .color-field, .toggle-field { display: block; color: var(--studio-muted); font-size: 9px; font-weight: 700; }
 .vector-field > div { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-top: 5px; }

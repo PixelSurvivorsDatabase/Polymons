@@ -8,7 +8,14 @@ export type PolyScriptParent =
 export type PolyWorldObject = {
   id: string;
   name: string;
-  type: "baseplate" | "spawn" | "part" | "tool" | "handle" | "humanoidRootPart";
+  type:
+    | "baseplate"
+    | "spawn"
+    | "part"
+    | "tool"
+    | "handle"
+    | "humanoidRootPart"
+    | "sound";
   position: [number, number, number];
   rotation: [number, number, number];
   scale: [number, number, number];
@@ -31,6 +38,14 @@ export type PolyWorldObject = {
   restitution?: number;
   mass?: number;
   velocity?: [number, number, number];
+  soundData?: string;
+  soundFileName?: string;
+  volume?: number;
+  looped?: boolean;
+  playbackSpeed?: number;
+  rolloffMinDistance?: number;
+  rolloffMaxDistance?: number;
+  autoplay?: boolean;
   parentId?: string | null;
   modelId: string | null;
   attributes: Record<string, PolyStoredValue>;
@@ -174,6 +189,14 @@ export type PolyRuntimeResult = {
   animationVersion: number;
   tweenRequests: PolyTweenRequest[];
   tweenVersion: number;
+  soundRequests: PolySoundRequest[];
+  soundVersion: number;
+};
+
+export type PolySoundRequest = {
+  id: string;
+  objectId: string;
+  action: "play" | "pause" | "stop";
 };
 
 export type PolyTweenRequest = {
@@ -221,6 +244,12 @@ const WORLD_PROPERTIES = new Set([
   "Restitution",
   "Mass",
   "Velocity",
+  "Volume",
+  "Looped",
+  "PlaybackSpeed",
+  "RollOffMinDistance",
+  "RollOffMaxDistance",
+  "Autoplay",
 ]);
 const GUI_PROPERTIES = new Set([
   "Name",
@@ -282,6 +311,17 @@ export function normalizePolyProject(project: PolyProject): PolyProject {
     restitution: object.restitution ?? 0.03,
     mass: object.mass ?? 1,
     velocity: object.velocity ?? [0, 0, 0],
+    soundData: object.soundData ?? "",
+    soundFileName: object.soundFileName ?? "",
+    volume: Math.max(0, Math.min(1, object.volume ?? 0.7)),
+    looped: object.looped ?? false,
+    playbackSpeed: Math.max(0.25, Math.min(4, object.playbackSpeed ?? 1)),
+    rolloffMinDistance: Math.max(0.1, object.rolloffMinDistance ?? 5),
+    rolloffMaxDistance: Math.max(
+      Math.max(0.1, object.rolloffMinDistance ?? 5),
+      object.rolloffMaxDistance ?? 60,
+    ),
+    autoplay: object.autoplay ?? false,
     parentId: object.parentId ?? null,
     modelId: object.modelId ?? null,
     attributes: object.attributes ?? {},
@@ -1248,6 +1288,40 @@ function assignProperty(
       const value = parseNumbers(rawValue, 3);
       if (!value) return "Velocity must be Vector3.new(x, y, z).";
       object.velocity = value as [number, number, number];
+    } else if (property === "Volume") {
+      const value = parseNumber(rawValue);
+      if (value === null || value < 0 || value > 1) {
+        return "Volume must be between 0 and 1.";
+      }
+      object.volume = value;
+    } else if (property === "Looped" || property === "Autoplay") {
+      const value = parseBoolean(rawValue);
+      if (value === null) return `${property} must be true or false.`;
+      if (property === "Looped") object.looped = value;
+      if (property === "Autoplay") object.autoplay = value;
+    } else if (property === "PlaybackSpeed") {
+      const value = parseNumber(rawValue);
+      if (value === null || value < 0.25 || value > 4) {
+        return "PlaybackSpeed must be between 0.25 and 4.";
+      }
+      object.playbackSpeed = value;
+    } else if (property === "RollOffMinDistance") {
+      const value = parseNumber(rawValue);
+      if (value === null || value < 0.1 || value > 1_000) {
+        return "RollOffMinDistance must be between 0.1 and 1000.";
+      }
+      object.rolloffMinDistance = value;
+      object.rolloffMaxDistance = Math.max(value, object.rolloffMaxDistance ?? 60);
+    } else if (property === "RollOffMaxDistance") {
+      const value = parseNumber(rawValue);
+      if (
+        value === null ||
+        value < (object.rolloffMinDistance ?? 5) ||
+        value > 10_000
+      ) {
+        return "RollOffMaxDistance must be at least RollOffMinDistance and no greater than 10000.";
+      }
+      object.rolloffMaxDistance = value;
     } else {
       const value = parseNumbers(rawValue, 3);
       if (!value) return `${property} must be Vector3.new(x, y, z).`;
@@ -1942,6 +2016,28 @@ export function analyzePolyScript(
       return;
     }
 
+    const soundCall = source.match(
+      /^\s*([A-Za-z_]\w*)(?::|\.|::)(Play|Pause|Stop)\s*\(\s*\)\s*;?\s*$/,
+    );
+    if (soundCall) {
+      const reference = variables.get(soundCall[1]);
+      if (!reference) return;
+      const object =
+        reference?.kind === "world"
+          ? validationProject.objects.find((item) => item.id === reference.id)
+          : null;
+      if (object?.type !== "sound") {
+        diagnostics.push(
+          lineDiagnostic(
+            line,
+            source,
+            `${soundCall[1]} must reference a Sound object.`,
+          ),
+        );
+      }
+      return;
+    }
+
     const remoteCall = source.match(
       /^\s*([A-Za-z_]\w*)(?::|\.|::)(FireServer|FireClient|FireAllClients|InvokeServer|InvokeClient)\s*\(/,
     );
@@ -2271,6 +2367,7 @@ function dispatchRemoteServerEvent(
   output: PolyRuntimeResult["output"],
   depth: number,
   tweenRequests: PolyTweenRequest[],
+  soundRequests: PolySoundRequest[],
 ): void {
   if (depth > 8) {
     output.push({
@@ -2300,6 +2397,7 @@ function dispatchRemoteServerEvent(
         depth + 1,
         undefined,
         tweenRequests,
+        soundRequests,
       );
     }
   }
@@ -2312,6 +2410,7 @@ function dispatchRemoteServerFunction(
   output: PolyRuntimeResult["output"],
   depth: number,
   tweenRequests: PolyTweenRequest[],
+  soundRequests: PolySoundRequest[],
 ): PolyStoredValue {
   if (depth > 8) {
     output.push({
@@ -2342,6 +2441,7 @@ function dispatchRemoteServerFunction(
           depth + 1,
           undefined,
           tweenRequests,
+          soundRequests,
         ) ?? null
       );
     }
@@ -2356,6 +2456,7 @@ function dispatchRemoteClientEvent(
   output: PolyRuntimeResult["output"],
   depth: number,
   tweenRequests: PolyTweenRequest[],
+  soundRequests: PolySoundRequest[],
 ): void {
   if (depth > 8) {
     output.push({
@@ -2385,6 +2486,7 @@ function dispatchRemoteClientEvent(
         depth + 1,
         undefined,
         tweenRequests,
+        soundRequests,
       );
     }
   }
@@ -2399,6 +2501,7 @@ function executeScript(
   remoteDepth = 0,
   initialReferences?: ReadonlyMap<string, Reference>,
   tweenRequests: PolyTweenRequest[] = [],
+  soundRequests: PolySoundRequest[] = [],
 ): PolyStoredValue | undefined {
   const variables = new Map<string, Reference>(initialReferences);
   const modules = new Map<string, Record<string, PolyStoredValue>>();
@@ -2556,6 +2659,31 @@ function executeScript(
       variables.set(declaration.variable, declaration.reference);
       continue;
     }
+    const soundCall = source.match(
+      /^\s*([A-Za-z_]\w*)(?::|\.|::)(Play|Pause|Stop)\s*\(\s*\)\s*;?\s*$/,
+    );
+    if (soundCall) {
+      const reference = variables.get(soundCall[1]);
+      if (!reference) continue;
+      const object =
+        reference?.kind === "world"
+          ? project.objects.find((item) => item.id === reference.id)
+          : null;
+      if (object?.type === "sound") {
+        soundRequests.push({
+          id: `${script.id}-${object.id}-${Date.now()}-${soundRequests.length}`,
+          objectId: object.id,
+          action: soundCall[2].toLowerCase() as PolySoundRequest["action"],
+        });
+      } else {
+        output.push({
+          level: "error",
+          message: `${soundCall[1]} is not a Sound object.`,
+          scriptName: script.name,
+        });
+      }
+      continue;
+    }
     const remoteCall = source.match(
       /^\s*([A-Za-z_]\w*)(?::|\.|::)(FireServer|FireClient|FireAllClients|InvokeServer|InvokeClient)\s*\((.*?)\)\s*;?\s*$/,
     );
@@ -2578,6 +2706,7 @@ function executeScript(
               output,
               remoteDepth,
               tweenRequests,
+              soundRequests,
             );
           } else if (remoteCall[2] === "FireAllClients") {
             dispatchRemoteClientEvent(
@@ -2587,6 +2716,7 @@ function executeScript(
               output,
               remoteDepth,
               tweenRequests,
+              soundRequests,
             );
           } else if (remoteCall[2] === "FireClient") {
             dispatchRemoteClientEvent(
@@ -2596,6 +2726,7 @@ function executeScript(
               output,
               remoteDepth,
               tweenRequests,
+              soundRequests,
             );
           }
           output.push({
@@ -2631,6 +2762,7 @@ function executeScript(
                   output,
                   remoteDepth,
                   tweenRequests,
+                  soundRequests,
                 )
               : null,
           );
@@ -2784,6 +2916,7 @@ export function activatePolyGui(
   const output: PolyRuntimeResult["output"] = [];
   const animationRequests: string[] = [];
   const tweenRequests: PolyTweenRequest[] = [];
+  const soundRequests: PolySoundRequest[] = [];
 
   for (const script of scripts) {
     if (
@@ -2804,6 +2937,7 @@ export function activatePolyGui(
         0,
         undefined,
         tweenRequests,
+        soundRequests,
       );
       for (const name of requestedAnimations(handler.body, project)) {
         if (!animationRequests.includes(name)) animationRequests.push(name);
@@ -2819,6 +2953,8 @@ export function activatePolyGui(
     animationVersion: animationRequests.length > 0 ? 1 : 0,
     tweenRequests,
     tweenVersion: tweenRequests.length > 0 ? 1 : 0,
+    soundRequests,
+    soundVersion: soundRequests.length > 0 ? 1 : 0,
   };
 }
 
@@ -2851,6 +2987,7 @@ export function activatePolyTool(
   const output: PolyRuntimeResult["output"] = [];
   const animationRequests: string[] = [];
   const tweenRequests: PolyTweenRequest[] = [];
+  const soundRequests: PolySoundRequest[] = [];
   for (const script of scripts) {
     for (const handler of guiEventHandlers(script).filter(
       (candidate) => candidate.event === "Activated",
@@ -2864,6 +3001,7 @@ export function activatePolyTool(
         0,
         undefined,
         tweenRequests,
+        soundRequests,
       );
       applyNearestDamage(handler.body, project, toolId, output, script.name);
       for (const name of requestedAnimations(handler.body, project)) {
@@ -2879,6 +3017,8 @@ export function activatePolyTool(
     animationVersion: animationRequests.length > 0 ? 1 : 0,
     tweenRequests,
     tweenVersion: tweenRequests.length > 0 ? 1 : 0,
+    soundRequests,
+    soundVersion: soundRequests.length > 0 ? 1 : 0,
   };
 }
 
@@ -2908,6 +3048,7 @@ export function activatePolyTouched(
   const output: PolyRuntimeResult["output"] = [];
   const animationRequests: string[] = [];
   const tweenRequests: PolyTweenRequest[] = [];
+  const soundRequests: PolySoundRequest[] = [];
 
   for (const script of scripts) {
     if (
@@ -2938,6 +3079,7 @@ export function activatePolyTouched(
             ])
           : undefined,
         tweenRequests,
+        soundRequests,
       );
       for (const name of requestedAnimations(handler.body, project)) {
         if (!animationRequests.includes(name)) animationRequests.push(name);
@@ -2953,6 +3095,8 @@ export function activatePolyTouched(
     animationVersion: animationRequests.length > 0 ? 1 : 0,
     tweenRequests,
     tweenVersion: tweenRequests.length > 0 ? 1 : 0,
+    soundRequests,
+    soundVersion: soundRequests.length > 0 ? 1 : 0,
   };
 }
 
@@ -2982,6 +3126,7 @@ export function activatePolyInput(
   const output: PolyRuntimeResult["output"] = [];
   const animationRequests: string[] = [];
   const tweenRequests: PolyTweenRequest[] = [];
+  const soundRequests: PolySoundRequest[] = [];
   for (const script of scripts) {
     if (
       diagnostics.some(
@@ -3010,6 +3155,7 @@ export function activatePolyInput(
         0,
         undefined,
         tweenRequests,
+        soundRequests,
       );
       for (const name of requestedAnimations(handler.body, project)) {
         if (!animationRequests.includes(name)) animationRequests.push(name);
@@ -3024,6 +3170,8 @@ export function activatePolyInput(
     animationVersion: animationRequests.length > 0 ? 1 : 0,
     tweenRequests,
     tweenVersion: tweenRequests.length > 0 ? 1 : 0,
+    soundRequests,
+    soundVersion: soundRequests.length > 0 ? 1 : 0,
   };
 }
 
@@ -3142,6 +3290,7 @@ export function runPolyProject(input: PolyProject): PolyRuntimeResult {
   const output: PolyRuntimeResult["output"] = [];
   const animationRequests: string[] = [];
   const tweenRequests: PolyTweenRequest[] = [];
+  const soundRequests: PolySoundRequest[] = [];
 
   for (const script of project.scripts.filter((item) => item.kind === "script")) {
     if (
@@ -3159,6 +3308,7 @@ export function runPolyProject(input: PolyProject): PolyRuntimeResult {
         0,
         undefined,
         tweenRequests,
+        soundRequests,
       );
       for (const name of requestedAnimations(script.source, project)) {
         if (!animationRequests.includes(name)) animationRequests.push(name);
@@ -3183,6 +3333,7 @@ export function runPolyProject(input: PolyProject): PolyRuntimeResult {
         0,
         undefined,
         tweenRequests,
+        soundRequests,
       );
       for (const name of requestedAnimations(script.source, project)) {
         if (!animationRequests.includes(name)) animationRequests.push(name);
@@ -3198,5 +3349,7 @@ export function runPolyProject(input: PolyProject): PolyRuntimeResult {
     animationVersion: animationRequests.length > 0 ? 1 : 0,
     tweenRequests,
     tweenVersion: tweenRequests.length > 0 ? 1 : 0,
+    soundRequests,
+    soundVersion: soundRequests.length > 0 ? 1 : 0,
   };
 }

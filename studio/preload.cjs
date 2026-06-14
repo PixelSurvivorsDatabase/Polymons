@@ -20,4 +20,5 @@ contextBridge.exposeInMainWorld("polyStudio", {
   importModel: () => ipcRenderer.invoke("models:import"),
   exportAnimation: (input) => ipcRenderer.invoke("animations:export", input),
   importAnimation: () => ipcRenderer.invoke("animations:import"),
+  importSound: () => ipcRenderer.invoke("sounds:import"),
 });

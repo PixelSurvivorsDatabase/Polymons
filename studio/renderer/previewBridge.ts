@@ -262,5 +262,6 @@ if (isPreview && !window.polyStudio) {
     importModel: async () => null,
     exportAnimation: async () => "preview.pma",
     importAnimation: async () => null,
+    importSound: async () => null,
   };
 }

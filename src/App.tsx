@@ -944,6 +944,8 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
           animationVersion={runtime?.animationVersion}
           tweenRequests={runtime?.tweenRequests}
           tweenVersion={runtime?.tweenVersion}
+          soundRequests={runtime?.soundRequests}
+          soundVersion={runtime?.soundVersion}
           guiObjects={runtime?.project.gui}
           playerSettings={runtime?.project.playerSettings}
           leaderstats={runtime?.project.leaderstats}
@@ -972,6 +974,9 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
                 tweenRequests: [...current.tweenRequests, ...activated.tweenRequests],
                 tweenVersion:
                   current.tweenVersion + (activated.tweenRequests.length > 0 ? 1 : 0),
+                soundRequests: [...current.soundRequests, ...activated.soundRequests],
+                soundVersion:
+                  current.soundVersion + (activated.soundRequests.length > 0 ? 1 : 0),
               };
             });
           }}
@@ -995,6 +1000,9 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
                 tweenRequests: [...current.tweenRequests, ...activated.tweenRequests],
                 tweenVersion:
                   current.tweenVersion + (activated.tweenRequests.length > 0 ? 1 : 0),
+                soundRequests: [...current.soundRequests, ...activated.soundRequests],
+                soundVersion:
+                  current.soundVersion + (activated.soundRequests.length > 0 ? 1 : 0),
               };
             });
           }}
@@ -1021,6 +1029,9 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
                 tweenRequests: [...current.tweenRequests, ...activated.tweenRequests],
                 tweenVersion:
                   current.tweenVersion + (activated.tweenRequests.length > 0 ? 1 : 0),
+                soundRequests: [...current.soundRequests, ...activated.soundRequests],
+                soundVersion:
+                  current.soundVersion + (activated.soundRequests.length > 0 ? 1 : 0),
               };
             });
           }}
@@ -1044,8 +1055,27 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
                 tweenRequests: [...current.tweenRequests, ...activated.tweenRequests],
                 tweenVersion:
                   current.tweenVersion + (activated.tweenRequests.length > 0 ? 1 : 0),
+                soundRequests: [...current.soundRequests, ...activated.soundRequests],
+                soundVersion:
+                  current.soundVersion + (activated.soundRequests.length > 0 ? 1 : 0),
               };
             });
+          }}
+          onPlayerRespawn={() => {
+            setRuntime((current) =>
+              current
+                ? {
+                    ...current,
+                    project: {
+                      ...current.project,
+                      playerSettings: {
+                        ...current.project.playerSettings,
+                        health: current.project.playerSettings.maxHealth,
+                      },
+                    },
+                  }
+                : current,
+            );
           }}
           onFriendRequest={
             session

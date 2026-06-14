@@ -268,6 +268,15 @@ export default function CodeEditor({
             "Restitution",
             "Mass",
             "Velocity",
+            "Volume",
+            "Looped",
+            "PlaybackSpeed",
+            "RollOffMinDistance",
+            "RollOffMaxDistance",
+            "Autoplay",
+            "Play",
+            "Pause",
+            "Stop",
             "Visible",
             "Text",
             "TextColor",
@@ -395,6 +404,11 @@ export default function CodeEditor({
             : isCpp
               ? "auto tween = TweenService::Create(${1:part}, TweenInfo(${2:1}, EasingStyle::Quad, EasingDirection::Out), { Position = Vector3(${3:0}, ${4:5}, ${5:0}) });\ntween.Play();"
               : "var tween = TweenService.Create(${1:part}, new TweenInfo(${2:1}, EasingStyle.Quad, EasingDirection.Out), new { Position = new Vector3(${3:0}, ${4:5}, ${5:0}) });\ntween.Play();";
+          const soundText = isLuau
+            ? 'local sound = Workspace:FindFirstChild("${1:Sound}")\nsound:Play()'
+            : isCpp
+              ? 'auto sound = Workspace.Find("${1:Sound}");\nsound.Play();'
+              : 'var sound = Workspace.Find("${1:Sound}");\nsound.Play();';
           return {
             suggestions: [
               ...names.map((name) => ({
@@ -520,6 +534,15 @@ export default function CodeEditor({
                 insertTextRules:
                   monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
                 detail: "Tween a Part's transform or appearance",
+                range,
+              },
+              {
+                label: "Play Sound",
+                kind: monaco.languages.CompletionItemKind.Snippet,
+                insertText: soundText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: "Find and play a Sound object",
                 range,
               },
               {

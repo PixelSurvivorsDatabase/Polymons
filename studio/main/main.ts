@@ -52,7 +52,14 @@ type StoredAuth = {
 type SceneObject = {
   id: string;
   name: string;
-  type: "baseplate" | "spawn" | "part" | "tool" | "handle" | "humanoidRootPart";
+  type:
+    | "baseplate"
+    | "spawn"
+    | "part"
+    | "tool"
+    | "handle"
+    | "humanoidRootPart"
+    | "sound";
   position: [number, number, number];
   rotation: [number, number, number];
   scale: [number, number, number];
@@ -74,6 +81,15 @@ type SceneObject = {
   friction?: number;
   restitution?: number;
   mass?: number;
+  velocity?: [number, number, number];
+  soundData?: string;
+  soundFileName?: string;
+  volume?: number;
+  looped?: boolean;
+  playbackSpeed?: number;
+  rolloffMinDistance?: number;
+  rolloffMaxDistance?: number;
+  autoplay?: boolean;
   parentId?: string | null;
   modelId: string | null;
   attributes: Record<string, string | number | boolean | null>;
@@ -515,6 +531,18 @@ function normalizeProject(project: StudioProject): StudioProject {
       friction: object.friction ?? 0.82,
       restitution: object.restitution ?? 0.03,
       mass: object.mass ?? 1,
+      velocity: object.velocity ?? [0, 0, 0],
+      soundData: object.soundData ?? "",
+      soundFileName: object.soundFileName ?? "",
+      volume: Math.max(0, Math.min(1, object.volume ?? 0.7)),
+      looped: object.looped ?? false,
+      playbackSpeed: Math.max(0.25, Math.min(4, object.playbackSpeed ?? 1)),
+      rolloffMinDistance: Math.max(0.1, object.rolloffMinDistance ?? 5),
+      rolloffMaxDistance: Math.max(
+        Math.max(0.1, object.rolloffMinDistance ?? 5),
+        object.rolloffMaxDistance ?? 60,
+      ),
+      autoplay: object.autoplay ?? false,
       parentId: object.parentId ?? null,
       modelId: object.modelId ?? null,
       attributes: object.attributes ?? {},
@@ -969,7 +997,7 @@ function validateProject(project: StudioProject): void {
       typeof object.id !== "string" ||
       typeof object.name !== "string" ||
       object.name.length > 100 ||
-      !["baseplate", "spawn", "part", "tool", "handle", "humanoidRootPart"].includes(object.type) ||
+      !["baseplate", "spawn", "part", "tool", "handle", "humanoidRootPart", "sound"].includes(object.type) ||
       !Array.isArray(object.position) ||
       !Array.isArray(object.rotation) ||
       !Array.isArray(object.scale) ||
@@ -1010,6 +1038,18 @@ function validateProject(project: StudioProject): void {
         (!Number.isFinite(object.mass) ||
           object.mass <= 0 ||
           object.mass > 10_000)) ||
+      (object.type === "sound" &&
+        ((object.soundData &&
+          (!/^data:audio\/[a-z0-9.+-]+;base64,/i.test(object.soundData) ||
+            object.soundData.length > 2_900_000)) ||
+          (object.volume !== undefined &&
+            (!Number.isFinite(object.volume) ||
+              object.volume < 0 ||
+              object.volume > 1)) ||
+          (object.playbackSpeed !== undefined &&
+            (!Number.isFinite(object.playbackSpeed) ||
+              object.playbackSpeed < 0.25 ||
+              object.playbackSpeed > 4)))) ||
       (object.parentId !== undefined &&
         object.parentId !== null &&
         typeof object.parentId !== "string") ||
@@ -1456,6 +1496,15 @@ async function exportPmxl(input: {
         friction: part.friction,
         restitution: part.restitution,
         mass: part.mass,
+        velocity: part.velocity,
+        soundData: part.soundData,
+        soundFileName: part.soundFileName,
+        volume: part.volume,
+        looped: part.looped,
+        playbackSpeed: part.playbackSpeed,
+        rolloffMinDistance: part.rolloffMinDistance,
+        rolloffMaxDistance: part.rolloffMaxDistance,
+        autoplay: part.autoplay,
         parentIndex:
           part.parentId && partIndexes.has(part.parentId)
             ? partIndexes.get(part.parentId)!
@@ -1499,7 +1548,7 @@ async function importPmxl(): Promise<{
     raw.model.parts.length < 1 ||
     raw.model.parts.length > 1_000 ||
     raw.model.parts.some((part) =>
-      !["part", "tool", "handle", "humanoidRootPart"].includes(part.type),
+      !["part", "tool", "handle", "humanoidRootPart", "sound"].includes(part.type),
     )
   ) {
     throw new Error("This is not a valid PMXL model.");
@@ -1531,6 +1580,15 @@ async function importPmxl(): Promise<{
       friction: part.friction ?? 0.82,
       restitution: part.restitution ?? 0.03,
       mass: part.mass ?? 1,
+      velocity: part.velocity ?? [0, 0, 0],
+      soundData: part.soundData ?? "",
+      soundFileName: part.soundFileName ?? "",
+      volume: part.volume ?? 0.7,
+      looped: part.looped ?? false,
+      playbackSpeed: part.playbackSpeed ?? 1,
+      rolloffMinDistance: part.rolloffMinDistance ?? 5,
+      rolloffMaxDistance: part.rolloffMaxDistance ?? 60,
+      autoplay: part.autoplay ?? false,
       parentId:
         typeof parentIndex === "number" && partIds[parentIndex]
           ? partIds[parentIndex]
@@ -1662,6 +1720,46 @@ async function importPma(): Promise<PmaFile | null> {
     throw new Error("This is not a valid Polymons animation file.");
   }
   return file as PmaFile;
+}
+
+async function importSound(): Promise<{
+  fileName: string;
+  dataUrl: string;
+  byteLength: number;
+} | null> {
+  requireAuth();
+  const result = await dialog.showOpenDialog({
+    title: "Import Sound",
+    properties: ["openFile"],
+    filters: [
+      {
+        name: "Audio",
+        extensions: ["mp3", "wav", "ogg", "m4a", "aac", "webm", "flac"],
+      },
+    ],
+  });
+  if (result.canceled || !result.filePaths[0]) return null;
+  const path = result.filePaths[0];
+  const data = await readFile(path);
+  if (data.byteLength > 2 * 1024 * 1024) {
+    throw new Error("Sounds must be 2 MB or smaller.");
+  }
+  const extension = path.split(".").pop()?.toLowerCase() ?? "";
+  const mimeType: Record<string, string> = {
+    mp3: "audio/mpeg",
+    wav: "audio/wav",
+    ogg: "audio/ogg",
+    m4a: "audio/mp4",
+    aac: "audio/aac",
+    webm: "audio/webm",
+    flac: "audio/flac",
+  };
+  if (!mimeType[extension]) throw new Error("Unsupported audio format.");
+  return {
+    fileName: path.split(/[\\/]/).pop() ?? `sound.${extension}`,
+    dataUrl: `data:${mimeType[extension]};base64,${data.toString("base64")}`,
+    byteLength: data.byteLength,
+  };
 }
 
 async function listProjects(): Promise<ProjectSummary[]> {
@@ -1934,6 +2032,7 @@ void app.whenReady().then(async () => {
     ) => exportPma(input),
   );
   ipcMain.handle("animations:import", () => importPma());
+  ipcMain.handle("sounds:import", () => importSound());
 
   createWindow();
 });
