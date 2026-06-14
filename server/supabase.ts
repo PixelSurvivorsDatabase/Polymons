@@ -98,13 +98,16 @@ export async function syncAvatarUnlocks(
 }
 
 export function publicSession(session: Session) {
+  const expiresIn = Number(session.expires_in) || 3600;
+  const expiresAt = Number(session.expires_at);
   return {
     accessToken: session.access_token,
     refreshToken: session.refresh_token,
     expiresAt:
-      session.expires_at ??
-      Math.floor(Date.now() / 1000) + session.expires_in,
-    expiresIn: session.expires_in,
+      Number.isFinite(expiresAt) && expiresAt > 0
+        ? expiresAt
+        : Math.floor(Date.now() / 1000) + expiresIn,
+    expiresIn,
     tokenType: session.token_type,
   };
 }

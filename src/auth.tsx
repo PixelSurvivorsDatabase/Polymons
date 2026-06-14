@@ -12,7 +12,6 @@ import {
 import {
   type AuthResponse,
   login,
-  PolymonsApiError,
   type PolymonsSession,
   type PolymonsUser,
   refreshSession,
@@ -45,6 +44,15 @@ function readStoredAuth(): StoredAuth | null {
   } catch {
     return null;
   }
+}
+
+function sessionExpiryMs(session: PolymonsSession): number {
+  const raw = Number(session.expiresAt);
+  if (Number.isFinite(raw) && raw > 0) {
+    return raw > 10_000_000_000 ? raw : raw * 1000;
+  }
+  const lifetime = Number(session.expiresIn);
+  return Date.now() + (Number.isFinite(lifetime) ? lifetime : 3600) * 1000;
 }
 
 function writeStoredAuth(next: StoredAuth | null) {
@@ -85,15 +93,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         return authRef.current?.session ?? null;
       })
-      .catch((error: unknown) => {
+      .catch(() => {
+        const stored = readStoredAuth();
         if (
-          error instanceof PolymonsApiError &&
-          error.status === 401 &&
-          authRef.current?.session.refreshToken === refreshToken
+          stored &&
+          stored.session.refreshToken !== refreshToken
         ) {
-          saveAuth(null);
+          saveAuth(stored);
+          return stored.session;
         }
-        return null;
+        // A different tab or desktop client may have rotated the token.
+        // Keep the last session and let the next authenticated request retry.
+        return authRef.current?.session ?? null;
       })
       .finally(() => {
         if (refreshInFlight.current === request) {
@@ -110,15 +121,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    const expiresSoon =
-      !auth.session.expiresAt ||
-      auth.session.expiresAt * 1000 < Date.now() + 60_000;
-    if (expiresSoon) {
-      void refresh().finally(() => setReady(true));
-    } else {
-      setReady(true);
-    }
+    setReady(true);
+    const delay = Math.max(
+      5_000,
+      sessionExpiryMs(auth.session) - Date.now() - 2 * 60_000,
+    );
+    const timer = window.setTimeout(() => {
+      void refresh();
+    }, delay);
+    return () => window.clearTimeout(timer);
   }, [auth, refresh]);
+
+  useEffect(() => {
+    const syncStoredSession = (event: StorageEvent) => {
+      if (event.key !== STORAGE_KEY) return;
+      const stored = readStoredAuth();
+      authRef.current = stored;
+      setAuth(stored);
+    };
+    window.addEventListener("storage", syncStoredSession);
+    return () => window.removeEventListener("storage", syncStoredSession);
+  }, []);
 
   const value = useMemo<AuthContextValue>(
     () => ({

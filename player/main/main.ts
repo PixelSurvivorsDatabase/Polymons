@@ -206,6 +206,7 @@ async function apiRequest<T>(
 
 async function refreshAuth(): Promise<StoredAuth | null> {
   if (!auth) return null;
+  const current = auth;
   try {
     const next = await apiRequest<StoredAuth>("/v1/accounts/refresh", {
       method: "POST",
@@ -214,8 +215,7 @@ async function refreshAuth(): Promise<StoredAuth | null> {
     await saveAuth(next);
     return next;
   } catch {
-    await saveAuth(null);
-    return null;
+    return current;
   }
 }
 

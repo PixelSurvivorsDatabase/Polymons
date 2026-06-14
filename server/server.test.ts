@@ -24,6 +24,7 @@ import {
   claimAccountConnection,
   releaseAccountConnection,
 } from "./websocket.js";
+import { publicSession } from "./supabase.js";
 
 test("normalizes usernames and builds internal account identifiers", () => {
   assert.equal(normalizeUsername("  Nova_7 "), "nova_7");
@@ -33,6 +34,18 @@ test("normalizes usernames and builds internal account identifiers", () => {
   );
   assert.equal(isReservedUsername("POLYMONS"), true);
   assert.equal(isReservedUsername("nova_7"), false);
+});
+
+test("normalizes Supabase session expiry values", () => {
+  const session = publicSession({
+    access_token: "access",
+    refresh_token: "refresh",
+    expires_at: "1781395200",
+    expires_in: "3600",
+    token_type: "bearer",
+  } as never);
+  assert.equal(session.expiresAt, 1_781_395_200);
+  assert.equal(session.expiresIn, 3_600);
 });
 
 test("keeps the official account reserved and login-disabled", () => {

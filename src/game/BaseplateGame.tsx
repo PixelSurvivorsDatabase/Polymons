@@ -711,6 +711,32 @@ function DeathParts({
   );
 }
 
+function DeathCamera({
+  origin,
+  input,
+}: {
+  origin: [number, number, number];
+  input: MutableRefObject<InputState>;
+}) {
+  const { camera } = useThree();
+  useFrame((_state, delta) => {
+    cameraTarget.set(origin[0], origin[1] + 0.35, origin[2]);
+    const distance = Math.max(4.6, input.current.zoomDistance * 0.28);
+    const horizontalDistance = Math.cos(input.current.pitch) * distance;
+    desiredCameraPosition.set(
+      origin[0] + Math.sin(input.current.yaw) * horizontalDistance,
+      origin[1] + 2.2 + Math.sin(input.current.pitch) * distance,
+      origin[2] + Math.cos(input.current.yaw) * horizontalDistance,
+    );
+    camera.position.lerp(
+      desiredCameraPosition,
+      1 - Math.exp(-7 * delta),
+    );
+    camera.lookAt(cameraTarget);
+  });
+  return null;
+}
+
 function ProjectSound({
   object,
   listener,
@@ -911,7 +937,6 @@ function PlayerController({
   playerSettings,
   localPlayer,
   onDeath,
-  onRespawn,
 }: {
   input: MutableRefObject<InputState>;
   onTelemetry: (telemetry: Telemetry) => void;
@@ -923,8 +948,7 @@ function PlayerController({
     displayName: string;
     equippedShirtId?: ShirtId | null;
   };
-  onDeath: () => void;
-  onRespawn?: () => void;
+  onDeath: (origin: [number, number, number]) => void;
 }) {
   const body = useRef<RapierRigidBody>(null);
   const groundContacts = useRef(0);
@@ -938,30 +962,23 @@ function PlayerController({
     spawn.y,
     spawn.z,
   ]);
-  const [death, setDeath] = useState<{
-    origin: [number, number, number];
-  } | null>(null);
+  const deathTriggered = useRef(false);
   const { camera } = useThree();
   const { rapier, world } = useRapier();
 
   const die = useCallback(() => {
-    if (death) return;
-    setDeath({ origin: [...lastPosition.current] });
-    onDeath();
-  }, [death, onDeath]);
+    if (deathTriggered.current) return;
+    deathTriggered.current = true;
+    onDeath([...lastPosition.current]);
+  }, [onDeath]);
 
   useEffect(() => {
-    if (playerSettings.health <= 0) die();
+    if (playerSettings.health <= 0) {
+      die();
+    } else {
+      deathTriggered.current = false;
+    }
   }, [die, playerSettings.health]);
-
-  useEffect(() => {
-    if (!death) return;
-    const timer = window.setTimeout(() => {
-      setDeath(null);
-      onRespawn?.();
-    }, 2_600);
-    return () => window.clearTimeout(timer);
-  }, [death, onRespawn]);
 
   useFrame((state, delta) => {
     const rigidBody = body.current;
@@ -1086,10 +1103,6 @@ function PlayerController({
       });
     }
   });
-
-  if (death) {
-    return <DeathParts origin={death.origin} player={localPlayer} />;
-  }
 
   return (
     <RigidBody
@@ -1481,6 +1494,30 @@ function Scene({
   onPlayerDeath: () => void;
   onPlayerRespawn?: () => void;
 }) {
+  const [death, setDeath] = useState<{
+    origin: [number, number, number];
+  } | null>(null);
+  const respawnCallback = useRef(onPlayerRespawn);
+  respawnCallback.current = onPlayerRespawn;
+
+  useEffect(() => {
+    if (!death) return;
+    const timer = window.setTimeout(() => {
+      respawnCallback.current?.();
+      setDeath(null);
+    }, 2_600);
+    return () => window.clearTimeout(timer);
+  }, [death]);
+
+  const beginDeath = useCallback(
+    (origin: [number, number, number]) => {
+      if (death) return;
+      setDeath({ origin });
+      onPlayerDeath();
+    },
+    [death, onPlayerDeath],
+  );
+
   return (
     <>
       <MouseLook
@@ -1490,16 +1527,22 @@ function Scene({
       />
       <BaseplateWorld />
       <Physics gravity={[0, -24, 0]} timeStep="vary" colliders={false}>
-        <PlayerController
-          input={input}
-          onTelemetry={onTelemetry}
-          onPlayerState={onPlayerState}
-          spawn={spawn}
-          playerSettings={playerSettings}
-          localPlayer={localPlayer}
-          onDeath={onPlayerDeath}
-          onRespawn={onPlayerRespawn}
-        />
+        {death ? (
+          <>
+            <DeathCamera origin={death.origin} input={input} />
+            <DeathParts origin={death.origin} player={localPlayer} />
+          </>
+        ) : (
+          <PlayerController
+            input={input}
+            onTelemetry={onTelemetry}
+            onPlayerState={onPlayerState}
+            spawn={spawn}
+            playerSettings={playerSettings}
+            localPlayer={localPlayer}
+            onDeath={beginDeath}
+          />
+        )}
         {remotePlayers.map((player) => (
           <RemoteBlockAvatar key={player.id} player={player} />
         ))}
