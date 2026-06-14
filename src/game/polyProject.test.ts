@@ -113,6 +113,7 @@ label.Text = "Ready"`,
     },
     leaderstats: [],
     animations: [],
+    values: [],
     publication: null,
     dataStores: {},
   };
@@ -1256,4 +1257,115 @@ end)`,
   assert.equal(first.soundRequests.length, 1);
   assert.equal(second.soundRequests.length, 1);
   assert.notEqual(first.soundRequests[0].id, second.soundRequests[0].id);
+});
+
+test("resolves nested Parent and sibling paths", () => {
+  const fixture = project();
+  fixture.gui = [
+    {
+      ...fixture.gui[0],
+      id: "screen",
+      name: "ShopGui",
+    },
+    {
+      ...fixture.gui[1],
+      id: "button",
+      name: "OpenButton",
+      type: "textButton",
+      parentId: "screen",
+    },
+    {
+      ...fixture.gui[1],
+      id: "panel",
+      name: "ShopPanel",
+      parentId: "screen",
+      visible: false,
+    },
+  ];
+  fixture.scripts = [
+    {
+      id: "nested-parent",
+      name: "NestedParent",
+      kind: "localScript",
+      parent: "button",
+      source: `local panel = script.Parent.Parent.ShopPanel
+panel.Visible = true`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0);
+  assert.equal(result.project.gui.find((item) => item.id === "panel")?.visible, true);
+});
+
+test("runs Value objects through conditionals, wait, and bounded loops", () => {
+  const fixture = project();
+  fixture.values = [
+    {
+      id: "enabled",
+      name: "Enabled",
+      type: "boolValue",
+      parent: "ReplicatedStorage",
+      value: false,
+    },
+    {
+      id: "count",
+      name: "Count",
+      type: "numberValue",
+      parent: "ReplicatedStorage",
+      value: 0,
+    },
+    {
+      id: "state",
+      name: "State",
+      type: "stringValue",
+      parent: "ReplicatedStorage",
+      value: "idle",
+    },
+  ];
+  fixture.scripts = [
+    {
+      id: "control-flow",
+      name: "ControlFlow",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `local enabled = ReplicatedStorage.Enabled
+local count = ReplicatedStorage.Count
+local state = ReplicatedStorage.State
+
+if enabled.Value == false then
+    enabled.Value = true
+end
+
+for i = 1, 3 do
+    count.Value = count.Value + 1
+    wait()
+end
+
+local steps = 0
+while steps < 2 do
+    steps += 1
+    count.Value = count.Value + 2
+end
+
+repeat
+    steps -= 1
+    task.wait(0.1)
+until steps == 0
+
+if false then
+    state.Value = "wrong"
+elseif count.Value == 7 then
+    state.Value = "ready"
+else
+    state.Value = "wrong"
+end`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0, JSON.stringify(result.diagnostics));
+  assert.equal(result.project.values.find((item) => item.id === "enabled")?.value, true);
+  assert.equal(result.project.values.find((item) => item.id === "count")?.value, 7);
+  assert.equal(result.project.values.find((item) => item.id === "state")?.value, "ready");
 });

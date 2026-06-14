@@ -61,6 +61,7 @@ type Selection =
   | { type: "remote"; id: string }
   | { type: "gui"; id: string }
   | { type: "script"; id: string }
+  | { type: "value"; id: string }
   | { type: "player"; id: "LocalPlayer" }
   | { type: "service"; id: string }
   | null;
@@ -402,6 +403,10 @@ export default function StudioEditor({
   const selectedRemote =
     selection?.type === "remote"
       ? project.remotes.find((remote) => remote.id === selection.id) ?? null
+      : null;
+  const selectedValue =
+    selection?.type === "value"
+      ? project.values.find((value) => value.id === selection.id) ?? null
       : null;
   const activeWorldIds = selectedModel
     ? project.objects
@@ -971,6 +976,32 @@ end)
       remotes: [...current.remotes, next],
     }));
     setSelection({ type: "remote", id: next.id });
+    setSelectedPartIds([]);
+  }
+
+  function addValue(
+    type: StudioValueObject["type"],
+    target: ContextTarget,
+  ) {
+    const parent = target.id;
+    const baseName =
+      type === "boolValue"
+        ? "BoolValue"
+        : type === "stringValue"
+          ? "StringValue"
+          : "NumberValue";
+    const next: StudioValueObject = {
+      id: crypto.randomUUID(),
+      name: nextName(project.values.map((value) => value.name), baseName),
+      type,
+      parent,
+      value: type === "boolValue" ? false : type === "stringValue" ? "" : 0,
+    };
+    updateProject((current) => ({
+      ...current,
+      values: [...current.values, next],
+    }));
+    setSelection({ type: "value", id: next.id });
     setSelectedPartIds([]);
   }
 
@@ -1562,6 +1593,13 @@ end)
         { label: "ScrollingFrame", icon: <LayoutPanelTop size={14} />, run: () => addGui("scrollingFrame", target) },
       );
     };
+    const addValueChildren = () => {
+      actions.push(
+        { label: "BoolValue", icon: <Database size={14} />, run: () => addValue("boolValue", target) },
+        { label: "NumberValue", icon: <Database size={14} />, run: () => addValue("numberValue", target) },
+        { label: "StringValue", icon: <Database size={14} />, run: () => addValue("stringValue", target) },
+      );
+    };
 
     if (target.type === "service") {
       if (target.id === "Workspace") {
@@ -1663,7 +1701,35 @@ end)
         run: () => addScript("moduleScript", target),
       });
     }
+    if (
+      target.type === "service" ||
+      target.type === "world" ||
+      target.type === "model" ||
+      target.type === "gui" ||
+      target.type === "script" ||
+      target.type === "value"
+    ) {
+      addValueChildren();
+    }
     return actions;
+  }
+
+  function withoutValuesUnder(
+    values: StudioValueObject[],
+    parentIds: ReadonlySet<string>,
+  ): StudioValueObject[] {
+    const removed = new Set(parentIds);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const value of values) {
+        if (removed.has(value.parent) && !removed.has(value.id)) {
+          removed.add(value.id);
+          changed = true;
+        }
+      }
+    }
+    return values.filter((value) => !removed.has(value.id));
   }
 
   function removeSelected() {
@@ -1682,6 +1748,10 @@ end)
         scripts: current.scripts.filter(
           (script) =>
             script.parent !== selectedModel.id && !objectIds.has(script.parent),
+        ),
+        values: withoutValuesUnder(
+          current.values,
+          new Set([selectedModel.id, ...objectIds]),
         ),
       }));
     } else if (selectedRemote) {
@@ -1712,6 +1782,7 @@ end)
           (item) => ["baseplate", "spawn"].includes(item.type) || !ids.has(item.id),
         ),
         scripts: current.scripts.filter((script) => !ids.has(script.parent)),
+        values: withoutValuesUnder(current.values, ids),
       }));
     } else if (selectedScript) {
       const ids = new Set([selectedScript.id]);
@@ -1728,6 +1799,7 @@ end)
       updateProject((current) => ({
         ...current,
         scripts: current.scripts.filter((item) => !ids.has(item.id)),
+        values: withoutValuesUnder(current.values, ids),
       }));
     } else if (selectedGui) {
       const ids = new Set([selectedGui.id]);
@@ -1745,6 +1817,23 @@ end)
         ...current,
         gui: current.gui.filter((item) => !ids.has(item.id)),
         scripts: current.scripts.filter((item) => !ids.has(item.parent)),
+        values: withoutValuesUnder(current.values, ids),
+      }));
+    } else if (selectedValue) {
+      const ids = new Set([selectedValue.id]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const value of project.values) {
+          if (ids.has(value.parent) && !ids.has(value.id)) {
+            ids.add(value.id);
+            changed = true;
+          }
+        }
+      }
+      updateProject((current) => ({
+        ...current,
+        values: current.values.filter((value) => !ids.has(value.id)),
       }));
     }
     setSelection(null);
@@ -2142,6 +2231,15 @@ end)
               ),
             }));
           }}
+          onValueChange={(patch) => {
+            if (!selectedValue) return;
+            updateProject((current) => ({
+              ...current,
+              values: current.values.map((value) =>
+                value.id === selectedValue.id ? { ...value, ...patch } : value,
+              ),
+            }));
+          }}
           onPlayerChange={(patch) =>
             updateProject((current) => ({
               ...current,
@@ -2185,6 +2283,10 @@ end)
                         ? project.scripts.find(
                             (item) => item.id === contextMenu.target.id,
                           )?.name
+                        : contextMenu.target.type === "value"
+                          ? project.values.find(
+                              (item) => item.id === contextMenu.target.id,
+                            )?.name
                         : contextMenu.target.type}
             </span>
           </header>
@@ -2642,6 +2744,8 @@ function Explorer({
 }) {
   const scriptsAt = (parent: string) =>
     project.scripts.filter((script) => script.parent === parent);
+  const valuesAt = (parent: string) =>
+    project.values.filter((value) => value.parent === parent);
   const guiRoots = project.gui.filter((gui) => gui.parentId === null);
   const stores = Object.keys(project.dataStores).sort();
   const looseObjects = project.objects.filter(
@@ -2697,6 +2801,9 @@ function Explorer({
               onContextMenu={onContextMenu}
             />
           ))}
+          {valuesAt("Workspace").map((value) => (
+            <ValueTree key={value.id} value={value} project={project} selection={selection} onSelect={onSelect} onContextMenu={onContextMenu} />
+          ))}
         </TreeRoot>
         <TreeRoot
           icon={<Server size={14} />}
@@ -2719,6 +2826,9 @@ function Explorer({
               onSelect={onSelect}
               onContextMenu={onContextMenu}
             />
+          ))}
+          {valuesAt("ServerScriptService").map((value) => (
+            <ValueTree key={value.id} value={value} project={project} selection={selection} onSelect={onSelect} onContextMenu={onContextMenu} />
           ))}
         </TreeRoot>
         <TreeRoot
@@ -2752,6 +2862,9 @@ function Explorer({
               }
             />
           ))}
+          {valuesAt("ReplicatedStorage").map((value) => (
+            <ValueTree key={value.id} value={value} project={project} selection={selection} onSelect={onSelect} onContextMenu={onContextMenu} />
+          ))}
         </TreeRoot>
         <TreeRoot
           icon={<Folder size={14} />}
@@ -2771,6 +2884,9 @@ function Explorer({
               onSelect={onSelect}
               onContextMenu={onContextMenu}
             />
+          ))}
+          {valuesAt("ServerStorage").map((value) => (
+            <ValueTree key={value.id} value={value} project={project} selection={selection} onSelect={onSelect} onContextMenu={onContextMenu} />
           ))}
         </TreeRoot>
         <TreeRoot
@@ -2819,6 +2935,9 @@ function Explorer({
               nested
             />
           ))}
+          {valuesAt("StarterPlayerScripts").map((value) => (
+            <ValueTree key={value.id} value={value} project={project} selection={selection} onSelect={onSelect} onContextMenu={onContextMenu} nested />
+          ))}
         </TreeRoot>
         <TreeRoot
           icon={<Monitor size={14} />}
@@ -2848,6 +2967,9 @@ function Explorer({
               onSelect={onSelect}
               onContextMenu={onContextMenu}
             />
+          ))}
+          {valuesAt("StarterGui").map((value) => (
+            <ValueTree key={value.id} value={value} project={project} selection={selection} onSelect={onSelect} onContextMenu={onContextMenu} />
           ))}
         </TreeRoot>
         <TreeRoot
@@ -2947,6 +3069,52 @@ function TreeItem({
   );
 }
 
+function ValueTree({
+  value,
+  project,
+  selection,
+  onSelect,
+  onContextMenu,
+  nested = false,
+}: {
+  value: StudioValueObject;
+  project: StudioProject;
+  selection: Selection;
+  onSelect: (selection: Exclude<Selection, null>) => void;
+  onContextMenu: (
+    target: ContextTarget,
+    event: React.MouseEvent<HTMLElement>,
+  ) => void;
+  nested?: boolean;
+}) {
+  const children = project.values.filter((item) => item.parent === value.id);
+  return (
+    <div className="value-tree-node">
+      <TreeItem
+        active={selection?.type === "value" && selection.id === value.id}
+        nested={nested}
+        icon={<Database size={14} />}
+        label={value.name}
+        onClick={() => onSelect({ type: "value", id: value.id })}
+        onContextMenu={(event) =>
+          onContextMenu({ type: "value", id: value.id }, event)
+        }
+      />
+      {children.map((child) => (
+        <ValueTree
+          key={child.id}
+          value={child}
+          project={project}
+          selection={selection}
+          onSelect={onSelect}
+          onContextMenu={onContextMenu}
+          nested
+        />
+      ))}
+    </div>
+  );
+}
+
 function ModelTree({
   model,
   project,
@@ -3028,6 +3196,11 @@ function ModelTree({
             nested
           />
         ))}
+      {project.values
+        .filter((value) => value.parent === model.id)
+        .map((value) => (
+          <ValueTree key={value.id} value={value} project={project} selection={selection} onSelect={onSelect} onContextMenu={onContextMenu} nested />
+        ))}
     </div>
   );
 }
@@ -3060,6 +3233,7 @@ function WorldTree({
   const scripts = project.scripts.filter(
     (script) => script.parent === object.id,
   );
+  const values = project.values.filter((value) => value.parent === object.id);
   return (
     <div className="world-tree-node">
       <TreeItem
@@ -3107,6 +3281,9 @@ function WorldTree({
           onContextMenu={onContextMenu}
           nested
         />
+      ))}
+      {values.map((value) => (
+        <ValueTree key={value.id} value={value} project={project} selection={selection} onSelect={onSelect} onContextMenu={onContextMenu} nested />
       ))}
     </div>
   );
@@ -3156,6 +3333,7 @@ function ScriptTree({
   nested?: boolean;
 }) {
   const children = project.scripts.filter((item) => item.parent === script.id);
+  const values = project.values.filter((value) => value.parent === script.id);
   return (
     <div className="script-tree-node">
       <ScriptTreeItem
@@ -3177,6 +3355,9 @@ function ScriptTree({
           onContextMenu={onContextMenu}
           nested
         />
+      ))}
+      {values.map((value) => (
+        <ValueTree key={value.id} value={value} project={project} selection={selection} onSelect={onSelect} onContextMenu={onContextMenu} nested />
       ))}
     </div>
   );
@@ -3202,6 +3383,7 @@ function GuiTree({
 }) {
   const children = project.gui.filter((item) => item.parentId === gui.id);
   const scripts = project.scripts.filter((script) => script.parent === gui.id);
+  const values = project.values.filter((value) => value.parent === gui.id);
   return (
     <div className="gui-tree-node" style={{ "--tree-depth": depth } as React.CSSProperties}>
       <TreeItem
@@ -3234,6 +3416,9 @@ function GuiTree({
           onContextMenu={onContextMenu}
           nested
         />
+      ))}
+      {values.map((value) => (
+        <ValueTree key={value.id} value={value} project={project} selection={selection} onSelect={onSelect} onContextMenu={onContextMenu} nested />
       ))}
     </div>
   );
@@ -3855,6 +4040,7 @@ function Properties({
   onRemoteChange,
   onGuiChange,
   onScriptChange,
+  onValueChange,
   onPlayerChange,
   onLeaderstatsChange,
   onDelete,
@@ -3868,6 +4054,7 @@ function Properties({
   onRemoteChange: (patch: Partial<StudioRemote>) => void;
   onGuiChange: (patch: Partial<StudioGuiObject>) => void;
   onScriptChange: (patch: Partial<StudioScript>) => void;
+  onValueChange: (patch: Partial<StudioValueObject>) => void;
   onPlayerChange: (patch: Partial<StudioProject["playerSettings"]>) => void;
   onLeaderstatsChange: (leaderstats: StudioProject["leaderstats"]) => void;
   onDelete: () => void;
@@ -3893,6 +4080,10 @@ function Properties({
   const remote =
     selection?.type === "remote"
       ? project.remotes.find((item) => item.id === selection.id)
+      : null;
+  const value =
+    selection?.type === "value"
+      ? project.values.find((item) => item.id === selection.id)
       : null;
 
   return (
@@ -4146,7 +4337,29 @@ function Properties({
                   <TextField label="Placeholder" value={gui.placeholder} onChange={(placeholder) => onGuiChange({ placeholder })} />
                 )}
                 {(gui.type === "imageLabel" || gui.type === "imageButton") && (
-                  <TextField label="Image URL" value={gui.imageUrl} onChange={(imageUrl) => onGuiChange({ imageUrl })} />
+                  <>
+                    <TextField label="Image URL" value={gui.imageUrl.startsWith("data:") ? "" : gui.imageUrl} onChange={(imageUrl) => onGuiChange({ imageUrl })} />
+                    <button
+                      className="property-action-button"
+                      onClick={async () => {
+                        const imported = await window.polyStudio.importImage();
+                        if (!imported) return;
+                        onGuiChange({ imageUrl: imported.dataUrl });
+                      }}
+                    >
+                      <Upload size={14} />
+                      Upload image
+                    </button>
+                    {gui.imageUrl && (
+                      <button
+                        className="property-action-button"
+                        onClick={() => onGuiChange({ imageUrl: "" })}
+                      >
+                        <Trash2 size={14} />
+                        Clear image
+                      </button>
+                    )}
+                  </>
                 )}
                 {gui.type === "scrollingFrame" && (
                   <Vector2Field label="Canvas size" value={gui.canvasSize} minimum={0.01} onChange={(canvasSize) => onGuiChange({ canvasSize })} />
@@ -4180,6 +4393,46 @@ function Properties({
               onChange={(parent) => onScriptChange({ parent })}
             />
             <ReadOnlyField label="Language" value={languageName[project.language]} />
+          </PropertySection>
+          <DeleteButton onClick={onDelete} />
+        </div>
+      ) : value ? (
+        <div className="properties-content">
+          <NameField value={value.name} onChange={(name) => onValueChange({ name })} />
+          <PropertySection title="Value">
+            <ReadOnlyField
+              label="Type"
+              value={
+                value.type === "boolValue"
+                  ? "BoolValue"
+                  : value.type === "stringValue"
+                    ? "StringValue"
+                    : "NumberValue"
+              }
+            />
+            {value.type === "boolValue" ? (
+              <ToggleField
+                label="Value"
+                value={Boolean(value.value)}
+                onChange={(next) => onValueChange({ value: next })}
+              />
+            ) : value.type === "stringValue" ? (
+              <TextField
+                label="Value"
+                value={String(value.value)}
+                onChange={(next) => onValueChange({ value: next })}
+              />
+            ) : (
+              <NumberField
+                label="Value"
+                value={Number(value.value)}
+                minimum={-1_000_000_000}
+                maximum={1_000_000_000}
+                step={1}
+                onChange={(next) => onValueChange({ value: next })}
+              />
+            )}
+            <ReadOnlyField label="Parent" value={value.parent} />
           </PropertySection>
           <DeleteButton onClick={onDelete} />
         </div>

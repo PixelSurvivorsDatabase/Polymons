@@ -145,6 +145,14 @@ export type PolyAnimation = {
 
 export type PolyStoredValue = string | number | boolean | null;
 
+export type PolyValueObject = {
+  id: string;
+  name: string;
+  type: "boolValue" | "numberValue" | "stringValue";
+  parent: string;
+  value: string | number | boolean;
+};
+
 export type PolyProject = {
   version: 2;
   id: string;
@@ -161,6 +169,7 @@ export type PolyProject = {
   playerSettings: PolyPlayerSettings;
   leaderstats: PolyLeaderstat[];
   animations: PolyAnimation[];
+  values: PolyValueObject[];
   publication?: {
     gameId: string;
     slug: string;
@@ -224,7 +233,11 @@ export type PolyTweenRequest = {
 
 type Reference =
   | { kind: "world"; id: string }
+  | { kind: "model"; id: string }
   | { kind: "gui"; id: string }
+  | { kind: "script"; id: string }
+  | { kind: "value"; id: string }
+  | { kind: "service"; id: string }
   | { kind: "player"; id: "LocalPlayer" }
   | { kind: "remote"; id: string };
 
@@ -339,6 +352,23 @@ export function normalizePolyProject(project: PolyProject): PolyProject {
     tags: model.tags ?? [],
   }));
   normalized.remotes ??= [];
+  normalized.values = (normalized.values ?? []).map((value) => ({
+    ...value,
+    type:
+      value.type === "boolValue"
+        ? "boolValue"
+        : value.type === "stringValue"
+          ? "stringValue"
+          : "numberValue",
+    value:
+      value.type === "boolValue"
+        ? Boolean(value.value)
+        : value.type === "stringValue"
+          ? String(value.value ?? "")
+          : Number.isFinite(Number(value.value))
+            ? Number(value.value)
+            : 0,
+  }));
   normalized.gui = normalized.gui.map((gui) => ({
     ...gui,
     rotation: gui.rotation ?? 0,
@@ -422,19 +452,174 @@ function lineDiagnostic(
 
 function referenceByName(
   project: PolyProject,
-  container: "Workspace" | "PlayerGui" | "ReplicatedStorage",
+  container:
+    | "Workspace"
+    | "PlayerGui"
+    | "StarterGui"
+    | "ReplicatedStorage"
+    | "ServerStorage"
+    | "ServerScriptService"
+    | "StarterPlayerScripts",
   name: string,
 ): Reference | null {
   if (container === "Workspace") {
+    const model = project.models.find((item) => item.name === name);
+    if (model) return { kind: "model", id: model.id };
     const object = project.objects.find((item) => item.name === name);
-    return object ? { kind: "world", id: object.id } : null;
+    if (object) return { kind: "world", id: object.id };
   }
-  if (container === "PlayerGui") {
+  if (container === "PlayerGui" || container === "StarterGui") {
     const gui = project.gui.find((item) => item.name === name);
-    return gui ? { kind: "gui", id: gui.id } : null;
+    if (gui) return { kind: "gui", id: gui.id };
   }
-  const remote = project.remotes.find((item) => item.name === name);
-  return remote ? { kind: "remote", id: remote.id } : null;
+  if (container === "ReplicatedStorage") {
+    const remote = project.remotes.find((item) => item.name === name);
+    if (remote) return { kind: "remote", id: remote.id };
+  }
+  const script = project.scripts.find(
+    (item) => item.parent === container && item.name === name,
+  );
+  if (script) return { kind: "script", id: script.id };
+  const value = project.values.find(
+    (item) => item.parent === container && item.name === name,
+  );
+  return value ? { kind: "value", id: value.id } : null;
+}
+
+function referenceForId(project: PolyProject, id: string): Reference | null {
+  if (project.objects.some((item) => item.id === id)) return { kind: "world", id };
+  if (project.models.some((item) => item.id === id)) return { kind: "model", id };
+  if (project.gui.some((item) => item.id === id)) return { kind: "gui", id };
+  if (project.scripts.some((item) => item.id === id)) return { kind: "script", id };
+  if (project.values.some((item) => item.id === id)) return { kind: "value", id };
+  if (project.remotes.some((item) => item.id === id)) return { kind: "remote", id };
+  return null;
+}
+
+function parentReference(
+  project: PolyProject,
+  reference: Reference,
+): Reference | null {
+  if (reference.kind === "world") {
+    const object = project.objects.find((item) => item.id === reference.id);
+    if (!object) return null;
+    if (object.parentId) return referenceForId(project, object.parentId);
+    if (object.modelId) return { kind: "model", id: object.modelId };
+    return { kind: "service", id: "Workspace" };
+  }
+  if (reference.kind === "model") {
+    return { kind: "service", id: "Workspace" };
+  }
+  if (reference.kind === "gui") {
+    const gui = project.gui.find((item) => item.id === reference.id);
+    return gui?.parentId
+      ? referenceForId(project, gui.parentId)
+      : { kind: "service", id: "PlayerGui" };
+  }
+  if (reference.kind === "script") {
+    const script = project.scripts.find((item) => item.id === reference.id);
+    return script
+      ? referenceForId(project, script.parent) ?? {
+          kind: "service",
+          id: script.parent,
+        }
+      : null;
+  }
+  if (reference.kind === "value") {
+    const value = project.values.find((item) => item.id === reference.id);
+    return value
+      ? referenceForId(project, value.parent) ?? {
+          kind: "service",
+          id: value.parent,
+        }
+      : null;
+  }
+  if (reference.kind === "remote") {
+    return { kind: "service", id: "ReplicatedStorage" };
+  }
+  if (reference.kind === "player") {
+    return { kind: "service", id: "Players" };
+  }
+  return null;
+}
+
+function childReference(
+  project: PolyProject,
+  parent: Reference,
+  name: string,
+): Reference | null {
+  if (parent.kind === "service") {
+    if (parent.id === "Players" && name === "LocalPlayer") {
+      return { kind: "player", id: "LocalPlayer" };
+    }
+    return referenceByName(
+      project,
+      parent.id as Parameters<typeof referenceByName>[1],
+      name,
+    );
+  }
+  const parentId = parent.id;
+  const object = project.objects.find(
+    (item) => item.parentId === parentId && item.name === name,
+  );
+  if (object) return { kind: "world", id: object.id };
+  const gui = project.gui.find(
+    (item) => item.parentId === parentId && item.name === name,
+  );
+  if (gui) return { kind: "gui", id: gui.id };
+  const script = project.scripts.find(
+    (item) => item.parent === parentId && item.name === name,
+  );
+  if (script) return { kind: "script", id: script.id };
+  const value = project.values.find(
+    (item) => item.parent === parentId && item.name === name,
+  );
+  return value ? { kind: "value", id: value.id } : null;
+}
+
+function resolveReferenceExpression(
+  expression: string,
+  project: PolyProject,
+  script?: PolyScript,
+  variables?: ReadonlyMap<string, Reference>,
+): Reference | null {
+  const normalized = expression
+    .trim()
+    .replace(/;$/, "")
+    .replace(
+      /(?::FindFirstChild|\.Find)\(\s*["']([A-Za-z_]\w*)["']\s*\)/g,
+      ".$1",
+    )
+    .replace(/::/g, ".");
+  const parts = normalized.split(".").filter(Boolean);
+  if (parts.length === 0) return null;
+  let reference: Reference | null =
+    variables?.get(parts[0]) ??
+    (parts[0] === "script" || parts[0] === "Script"
+      ? script
+        ? { kind: "script", id: script.id }
+        : null
+      : parts[0].toLowerCase() === "workspace"
+        ? { kind: "service", id: "Workspace" }
+        : [
+              "PlayerGui",
+              "StarterGui",
+              "ReplicatedStorage",
+              "ServerStorage",
+              "ServerScriptService",
+              "StarterPlayerScripts",
+              "Players",
+            ].includes(parts[0])
+          ? { kind: "service", id: parts[0] }
+          : null);
+  for (const part of parts.slice(1)) {
+    if (!reference) return null;
+    reference =
+      part === "Parent"
+        ? parentReference(project, reference)
+        : childReference(project, reference, part);
+  }
+  return reference;
 }
 
 function findReferenceDeclaration(
@@ -442,21 +627,18 @@ function findReferenceDeclaration(
   project: PolyProject,
   script?: PolyScript,
 ): { variable: string; reference: Reference | null; requestedName: string } | null {
-  const scriptParentMatch = source.match(
-    /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*(?:script|Script)\.Parent\s*;?/,
+  const pathMatch = source.match(
+    /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*((?:script|Script|Workspace|workspace|PlayerGui|StarterGui|ReplicatedStorage|ServerStorage|ServerScriptService|StarterPlayerScripts|Players)(?:(?::FindFirstChild|\.Find)\(\s*["'][A-Za-z_]\w*["']\s*\)|\.(?!Find\s*\()[A-Za-z_]\w*)+)\s*;?/,
   );
-  if (scriptParentMatch && script) {
-    const worldParent = project.objects.find(
-      (item) => item.id === script.parent,
-    );
+  if (pathMatch) {
+    const requestedName =
+      pathMatch[2].match(/["']([A-Za-z_]\w*)["']\s*\)?$/)?.[1] ??
+      pathMatch[2].split(".").at(-1) ??
+      pathMatch[2];
     return {
-      variable: scriptParentMatch[1],
-      reference: worldParent
-        ? { kind: "world", id: worldParent.id }
-        : project.gui.some((item) => item.id === script.parent)
-          ? { kind: "gui", id: script.parent }
-          : null,
-      requestedName: "script.Parent",
+      variable: pathMatch[1],
+      reference: resolveReferenceExpression(pathMatch[2], project, script),
+      requestedName,
     };
   }
 
@@ -499,17 +681,8 @@ function findDirectReference(
   project: PolyProject,
   script?: PolyScript,
 ): Reference | null {
-  if (
-    /^(?:script|Script)\.Parent$/.test(expression) &&
-    script
-  ) {
-    if (project.objects.some((item) => item.id === script.parent)) {
-      return { kind: "world", id: script.parent };
-    }
-    if (project.gui.some((item) => item.id === script.parent)) {
-      return { kind: "gui", id: script.parent };
-    }
-  }
+  const resolved = resolveReferenceExpression(expression, project, script);
+  if (resolved) return resolved;
   const direct = expression.match(
     /^(Workspace|workspace|PlayerGui|ReplicatedStorage)\.([A-Za-z_]\w*)$/,
   );
@@ -905,13 +1078,30 @@ function handlerTargetReference(
 ): Reference | null {
   const direct = findDirectReference(target, project, script);
   if (direct) return direct;
+  const references = new Map<string, Reference>();
   for (const source of prelude.split("\n")) {
-    const declaration = findReferenceDeclaration(source, project, script);
+    const generic = source.match(
+      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*(.+?)\s*;?\s*$/,
+    );
+    const declaration = generic
+      ? {
+          variable: generic[1],
+          reference: resolveReferenceExpression(
+            generic[2],
+            project,
+            script,
+            references,
+          ),
+        }
+      : findReferenceDeclaration(source, project, script);
     if (declaration?.variable === target && declaration.reference) {
       return declaration.reference;
     }
+    if (declaration?.reference) {
+      references.set(declaration.variable, declaration.reference);
+    }
   }
-  return null;
+  return resolveReferenceExpression(target, project, script, references);
 }
 
 function resolveSoundCall(
@@ -930,7 +1120,7 @@ function resolveSoundCall(
   if (!match) return null;
   const reference =
     variables.get(match[1]) ??
-    findDirectReference(match[1], project, script);
+    resolveReferenceExpression(match[1], project, script, variables);
   if (!reference) return null;
   return {
     target: match[1],
@@ -1067,6 +1257,25 @@ function referencePropertyValue(
   reference: Reference,
   property: string,
 ): PolyStoredValue | undefined {
+  if (reference.kind === "value") {
+    const value = project.values.find((item) => item.id === reference.id);
+    if (!value) return undefined;
+    if (property === "Value") return value.value;
+    if (property === "Name") return value.name;
+    return undefined;
+  }
+  if (reference.kind === "world") {
+    const object = project.objects.find((item) => item.id === reference.id);
+    if (property === "Name") return object?.name;
+    return undefined;
+  }
+  if (reference.kind === "gui") {
+    const gui = project.gui.find((item) => item.id === reference.id);
+    if (property === "Name") return gui?.name;
+    if (property === "Text") return gui?.text;
+    if (property === "Visible") return gui?.visible;
+    return undefined;
+  }
   if (reference.kind !== "player") return undefined;
   const leaderstat = project.leaderstats.find((stat) => stat.name === property);
   if (leaderstat) return leaderstat.defaultValue;
@@ -1138,14 +1347,28 @@ function resolveExpressionValue(
   variables: Map<string, Reference>,
   values: Map<string, PolyStoredValue>,
   modules: Map<string, Record<string, PolyStoredValue>>,
+  script?: PolyScript,
 ): PolyStoredValue | undefined {
   const expression = rawValue.trim().replace(/;$/, "");
+  if (/^not\s+/.test(expression)) {
+    const value = resolveExpressionValue(
+      expression.replace(/^not\s+/, ""),
+      project,
+      variables,
+      values,
+      modules,
+      script,
+    );
+    return value === false || value === null || value === undefined;
+  }
   const binary = expression.match(/^(.+?)\s*([+\-*/])\s*(.+)$/);
   if (binary) {
     const operand = (source: string): PolyStoredValue | undefined => {
-      const property = source.trim().match(/^([A-Za-z_]\w*)\.([A-Za-z_]\w*)$/);
+      const property = source.trim().match(/^(.+)\.([A-Za-z_]\w*)$/);
       if (property) {
-        const reference = variables.get(property[1]);
+        const reference =
+          variables.get(property[1]) ??
+          resolveReferenceExpression(property[1], project, script, variables);
         if (reference) {
           const value = referencePropertyValue(project, reference, property[2]);
           if (value !== undefined) return value;
@@ -1168,9 +1391,11 @@ function resolveExpressionValue(
       return `${left ?? ""}${right ?? ""}`;
     }
   }
-  const property = expression.match(/^([A-Za-z_]\w*)\.([A-Za-z_]\w*)$/);
+  const property = expression.match(/^(.+)\.([A-Za-z_]\w*)$/);
   if (property) {
-    const reference = variables.get(property[1]);
+    const reference =
+      variables.get(property[1]) ??
+      resolveReferenceExpression(property[1], project, script, variables);
     if (reference) {
       const value = referencePropertyValue(project, reference, property[2]);
       if (value !== undefined) return value;
@@ -1186,6 +1411,14 @@ function propertySetFor(
   if (reference.kind === "world") return WORLD_PROPERTIES;
   if (reference.kind === "gui") return GUI_PROPERTIES;
   if (reference.kind === "remote") return new Set();
+  if (reference.kind === "value") return new Set(["Name", "Value"]);
+  if (
+    reference.kind === "model" ||
+    reference.kind === "script" ||
+    reference.kind === "service"
+  ) {
+    return new Set();
+  }
   return new Set([
     ...PLAYER_PROPERTIES,
     ...project.leaderstats.map((stat) => stat.name),
@@ -1460,6 +1693,33 @@ function assignProperty(
       value,
       project.playerSettings.maxHealth,
     );
+    return null;
+  }
+  if (reference.kind === "value") {
+    const valueObject = project.values.find((item) => item.id === reference.id);
+    if (!valueObject) return "The referenced Value object no longer exists.";
+    if (property === "Name") {
+      const value = parseString(rawValue);
+      if (value === null) return "Name must be a string.";
+      valueObject.name = value;
+      return null;
+    }
+    if (property !== "Value") {
+      return `${property} is not a supported property for this Value object.`;
+    }
+    if (valueObject.type === "boolValue") {
+      const value = parseBoolean(rawValue);
+      if (value === null) return "BoolValue.Value must be true or false.";
+      valueObject.value = value;
+    } else if (valueObject.type === "stringValue") {
+      const value = parseString(rawValue);
+      if (value === null) return "StringValue.Value must be a string.";
+      valueObject.value = value;
+    } else {
+      const value = parseNumber(rawValue);
+      if (value === null) return "NumberValue.Value must be a number.";
+      valueObject.value = value;
+    }
     return null;
   }
   if (value === null || value <= 0 || value > 500) {
@@ -2113,7 +2373,12 @@ export function analyzePolyScript(
     if (assignment) {
       const reference =
         variables.get(assignment[1]) ??
-        findDirectReference(assignment[1], project, script);
+        resolveReferenceExpression(
+          assignment[1],
+          project,
+          script,
+          variables,
+        );
       if (!reference) {
         if (
           assignment[1].startsWith("Workspace.") ||
@@ -2157,7 +2422,13 @@ export function analyzePolyScript(
           validationProject,
           reference,
           assignment[2],
-          resolveRawValue(assignment[3], values, modules),
+          resolveAssignmentValue(
+            assignment[3],
+            validationProject,
+            variables,
+            values,
+            modules,
+          ),
         );
         if (valueError) {
           diagnostics.push(lineDiagnostic(line, source, valueError));
@@ -2529,6 +2800,262 @@ function dispatchRemoteClientEvent(
   }
 }
 
+type ScriptExecutionContext = {
+  variables: Map<string, Reference>;
+  modules: Map<string, Record<string, PolyStoredValue>>;
+  stores: Map<string, string>;
+  values: Map<string, PolyStoredValue>;
+};
+
+function expressionTruth(
+  expression: string,
+  project: PolyProject,
+  context: ScriptExecutionContext,
+  script: PolyScript,
+): boolean {
+  const source = expression.trim().replace(/;$/, "");
+  const orParts = source.split(/\s+or\s+/);
+  if (orParts.length > 1) {
+    return orParts.some((part) =>
+      expressionTruth(part, project, context, script),
+    );
+  }
+  const andParts = source.split(/\s+and\s+/);
+  if (andParts.length > 1) {
+    return andParts.every((part) =>
+      expressionTruth(part, project, context, script),
+    );
+  }
+  if (/^not\s+/.test(source)) {
+    return !expressionTruth(source.replace(/^not\s+/, ""), project, context, script);
+  }
+  const comparison = source.match(/^(.+?)\s*(==|~=|!=|>=|<=|>|<)\s*(.+)$/);
+  if (comparison) {
+    const left = resolveExpressionValue(
+      comparison[1],
+      project,
+      context.variables,
+      context.values,
+      context.modules,
+      script,
+    );
+    const right = resolveExpressionValue(
+      comparison[3],
+      project,
+      context.variables,
+      context.values,
+      context.modules,
+      script,
+    );
+    if (comparison[2] === "==" ) return left === right;
+    if (comparison[2] === "~=" || comparison[2] === "!=") return left !== right;
+    if (typeof left !== "number" || typeof right !== "number") return false;
+    if (comparison[2] === ">") return left > right;
+    if (comparison[2] === "<") return left < right;
+    if (comparison[2] === ">=") return left >= right;
+    return left <= right;
+  }
+  const value = resolveExpressionValue(
+    source,
+    project,
+    context.variables,
+    context.values,
+    context.modules,
+    script,
+  );
+  return value !== false && value !== null && value !== undefined;
+}
+
+function luauBlockEnd(lines: string[], start: number): number {
+  let depth = 1;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (
+      /^if\b.*\bthen\s*$/.test(line) ||
+      /^(?:for|while)\b.*\bdo\s*$/.test(line) ||
+      /^repeat\s*$/.test(line)
+    ) {
+      depth += 1;
+    }
+    if (/^end\b/.test(line) || /^until\b/.test(line)) {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return lines.length - 1;
+}
+
+function executeLuauControlFlow(
+  lines: string[],
+  script: PolyScript,
+  project: PolyProject,
+  output: PolyRuntimeResult["output"],
+  context: ScriptExecutionContext,
+  remoteDepth: number,
+  tweenRequests: PolyTweenRequest[],
+  soundRequests: PolySoundRequest[],
+): PolyStoredValue | undefined {
+  const runRange = (
+    start: number,
+    end: number,
+  ): { kind: "normal" | "break" | "return"; value?: PolyStoredValue } => {
+    for (let index = start; index < end; index += 1) {
+      const line = lines[index].trim();
+      if (!line || line.startsWith("--")) continue;
+      if (line === "break") return { kind: "break" };
+
+      const ifMatch = line.match(/^if\s+(.+)\s+then\s*$/);
+      if (ifMatch) {
+        const blockEnd = luauBlockEnd(lines, index);
+        const branches: Array<{ condition: string | null; start: number; end: number }> = [];
+        let branchCondition: string | null = ifMatch[1];
+        let branchStart = index + 1;
+        let depth = 1;
+        for (let cursor = index + 1; cursor <= blockEnd; cursor += 1) {
+          const candidate = lines[cursor]?.trim() ?? "";
+          if (
+            /^if\b.*\bthen\s*$/.test(candidate) ||
+            /^(?:for|while)\b.*\bdo\s*$/.test(candidate) ||
+            /^repeat\s*$/.test(candidate)
+          ) {
+            depth += 1;
+          }
+          if (/^end\b/.test(candidate) || /^until\b/.test(candidate)) {
+            depth -= 1;
+          }
+          if (depth === 1) {
+            const elseifMatch = candidate.match(/^elseif\s+(.+)\s+then\s*$/);
+            if (elseifMatch || candidate === "else") {
+              branches.push({
+                condition: branchCondition,
+                start: branchStart,
+                end: cursor,
+              });
+              branchCondition = elseifMatch ? elseifMatch[1] : null;
+              branchStart = cursor + 1;
+            }
+          }
+        }
+        branches.push({
+          condition: branchCondition,
+          start: branchStart,
+          end: blockEnd,
+        });
+        const branch = branches.find(
+          (candidate) =>
+            candidate.condition === null ||
+            expressionTruth(candidate.condition, project, context, script),
+        );
+        if (branch) {
+          const result = runRange(branch.start, branch.end);
+          if (result.kind !== "normal") return result;
+        }
+        index = blockEnd;
+        continue;
+      }
+
+      const forMatch = line.match(
+        /^for\s+([A-Za-z_]\w*)\s*=\s*(.+?)\s*,\s*(.+?)(?:\s*,\s*(.+?))?\s+do\s*$/,
+      );
+      if (forMatch) {
+        const blockEnd = luauBlockEnd(lines, index);
+        const startValue = Number(
+          resolveExpressionValue(forMatch[2], project, context.variables, context.values, context.modules, script),
+        );
+        const endValue = Number(
+          resolveExpressionValue(forMatch[3], project, context.variables, context.values, context.modules, script),
+        );
+        const stepValue = forMatch[4]
+          ? Number(resolveExpressionValue(forMatch[4], project, context.variables, context.values, context.modules, script))
+          : 1;
+        if (Number.isFinite(startValue) && Number.isFinite(endValue) && Number.isFinite(stepValue) && stepValue !== 0) {
+          let iterations = 0;
+          for (
+            let value = startValue;
+            stepValue > 0 ? value <= endValue : value >= endValue;
+            value += stepValue
+          ) {
+            context.values.set(forMatch[1], value);
+            const result = runRange(index + 1, blockEnd);
+            if (result.kind === "return") return result;
+            if (result.kind === "break") break;
+            iterations += 1;
+            if (iterations >= 1000) break;
+          }
+        }
+        index = blockEnd;
+        continue;
+      }
+
+      const whileMatch = line.match(/^while\s+(.+)\s+do\s*$/);
+      if (whileMatch) {
+        const blockEnd = luauBlockEnd(lines, index);
+        let iterations = 0;
+        while (
+          expressionTruth(whileMatch[1], project, context, script) &&
+          iterations < 1000
+        ) {
+          const result = runRange(index + 1, blockEnd);
+          if (result.kind === "return") return result;
+          if (result.kind === "break") break;
+          iterations += 1;
+        }
+        index = blockEnd;
+        continue;
+      }
+
+      if (line === "repeat") {
+        const blockEnd = luauBlockEnd(lines, index);
+        const condition = lines[blockEnd]?.trim().replace(/^until\s+/, "") ?? "true";
+        let iterations = 0;
+        do {
+          const result = runRange(index + 1, blockEnd);
+          if (result.kind === "return") return result;
+          if (result.kind === "break") break;
+          iterations += 1;
+        } while (
+          !expressionTruth(condition, project, context, script) &&
+          iterations < 1000
+        );
+        index = blockEnd;
+        continue;
+      }
+
+      const returnMatch = line.match(/^return(?:\s+(.+?))?\s*;?$/);
+      if (returnMatch) {
+        return {
+          kind: "return",
+          value: returnMatch[1]
+            ? resolveExpressionValue(
+                returnMatch[1],
+                project,
+                context.variables,
+                context.values,
+                context.modules,
+                script,
+              ) ?? null
+            : null,
+        };
+      }
+      executeScript(
+        script,
+        project,
+        output,
+        lines[index],
+        undefined,
+        remoteDepth,
+        undefined,
+        tweenRequests,
+        soundRequests,
+        context,
+      );
+    }
+    return { kind: "normal" };
+  };
+  const result = runRange(0, lines.length);
+  return result.kind === "return" ? result.value : undefined;
+}
+
 function executeScript(
   script: PolyScript,
   project: PolyProject,
@@ -2539,14 +3066,41 @@ function executeScript(
   initialReferences?: ReadonlyMap<string, Reference>,
   tweenRequests: PolyTweenRequest[] = [],
   soundRequests: PolySoundRequest[] = [],
+  executionContext?: ScriptExecutionContext,
 ): PolyStoredValue | undefined {
-  const variables = new Map<string, Reference>(initialReferences);
-  const modules = new Map<string, Record<string, PolyStoredValue>>();
-  const stores = new Map<string, string>();
-  const values = new Map<string, PolyStoredValue>(initialValues);
+  const variables =
+    executionContext?.variables ?? new Map<string, Reference>(initialReferences);
+  const modules =
+    executionContext?.modules ??
+    new Map<string, Record<string, PolyStoredValue>>();
+  const stores = executionContext?.stores ?? new Map<string, string>();
+  const values =
+    executionContext?.values ?? new Map<string, PolyStoredValue>(initialValues);
   const sourceText = sourceOverride ?? withoutEventHandlers(script);
-  tweenRequests.push(...requestedTweens(sourceText, script, project));
+  if (!executionContext) {
+    tweenRequests.push(...requestedTweens(sourceText, script, project));
+    if (
+      project.language === "luau" &&
+      /(^|\n)\s*(?:if\b.*\bthen|for\b.*\bdo|while\b.*\bdo|repeat)\s*(?:\n|$)/.test(
+        sourceText,
+      )
+    ) {
+      return executeLuauControlFlow(
+        sourceText.split("\n"),
+        script,
+        project,
+        output,
+        { variables, modules, stores, values },
+        remoteDepth,
+        tweenRequests,
+        soundRequests,
+      );
+    }
+  }
   for (const source of sourceText.split("\n")) {
+    if (/^\s*(?:wait|task\.wait)\s*\([^)]*\)\s*;?\s*$/.test(source)) {
+      continue;
+    }
     const returnValue = source.match(/^\s*return\s+(.+?)\s*;?\s*$/);
     if (returnValue) {
       return (
@@ -2691,6 +3245,21 @@ function executeScript(
       }
       continue;
     }
+    const genericReferenceDeclaration = source.match(
+      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*(.+?)\s*;?\s*$/,
+    );
+    const genericReference = genericReferenceDeclaration
+      ? resolveReferenceExpression(
+          genericReferenceDeclaration[2],
+          project,
+          script,
+          variables,
+        )
+      : null;
+    if (genericReferenceDeclaration && genericReference) {
+      variables.set(genericReferenceDeclaration[1], genericReference);
+      continue;
+    }
     const declaration = findReferenceDeclaration(source, project, script);
     if (declaration?.reference) {
       variables.set(declaration.variable, declaration.reference);
@@ -2809,6 +3378,64 @@ function executeScript(
       }
       continue;
     }
+    const localValueDeclaration = source.match(
+      /^\s*(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*(.+?)\s*;?\s*$/,
+    );
+    if (localValueDeclaration) {
+      const value = resolveExpressionValue(
+        localValueDeclaration[2],
+        project,
+        variables,
+        values,
+        modules,
+        script,
+      );
+      if (value !== undefined) {
+        values.set(localValueDeclaration[1], value);
+        continue;
+      }
+    }
+    const compoundValueAssignment = source.match(
+      /^\s*([A-Za-z_]\w*)\s*([+\-*/])=\s*(.+?)\s*;?\s*$/,
+    );
+    if (compoundValueAssignment && values.has(compoundValueAssignment[1])) {
+      const left = values.get(compoundValueAssignment[1]);
+      const right = resolveExpressionValue(
+        compoundValueAssignment[3],
+        project,
+        variables,
+        values,
+        modules,
+        script,
+      );
+      if (typeof left === "number" && typeof right === "number") {
+        const next = {
+          "+": left + right,
+          "-": left - right,
+          "*": left * right,
+          "/": right === 0 ? Number.NaN : left / right,
+        }[compoundValueAssignment[2]];
+        if (typeof next === "number" && Number.isFinite(next)) {
+          values.set(compoundValueAssignment[1], next);
+        }
+      }
+      continue;
+    }
+    const valueAssignment = source.match(
+      /^\s*([A-Za-z_]\w*)\s*=\s*(.+?)\s*;?\s*$/,
+    );
+    if (valueAssignment && values.has(valueAssignment[1])) {
+      const value = resolveExpressionValue(
+        valueAssignment[2],
+        project,
+        variables,
+        values,
+        modules,
+        script,
+      );
+      if (value !== undefined) values.set(valueAssignment[1], value);
+      continue;
+    }
     const logged = outputCall(source);
     if (logged) {
       output.push({
@@ -2824,7 +3451,12 @@ function executeScript(
     if (!assignment) continue;
     const reference =
       variables.get(assignment[1]) ??
-      findDirectReference(assignment[1], project, script);
+      resolveReferenceExpression(
+        assignment[1],
+        project,
+        script,
+        variables,
+      );
     if (!reference) continue;
     const error = assignProperty(
       project,

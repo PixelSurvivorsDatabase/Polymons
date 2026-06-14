@@ -172,6 +172,14 @@ type StudioAnimation = {
   }>;
 };
 
+type StudioValueObject = {
+  id: string;
+  name: string;
+  type: "boolValue" | "numberValue" | "stringValue";
+  parent: string;
+  value: string | number | boolean;
+};
+
 type StudioProject = {
   version: 2;
   id: string;
@@ -203,6 +211,7 @@ type StudioProject = {
     defaultValue: number | string;
   }>;
   animations: StudioAnimation[];
+  values: StudioValueObject[];
   publication: {
     gameId: string;
     slug: string;
@@ -510,6 +519,7 @@ function migrateLegacyProject(
     },
     leaderstats: [],
     animations: [],
+    values: [],
     publication: null,
     dataStores: {},
   };
@@ -562,6 +572,23 @@ function normalizeProject(project: StudioProject): StudioProject {
       tags: model.tags ?? [],
     })),
     remotes: project.remotes ?? [],
+    values: (project.values ?? []).map((value) => ({
+      ...value,
+      type:
+        value.type === "boolValue"
+          ? "boolValue"
+          : value.type === "stringValue"
+            ? "stringValue"
+            : "numberValue",
+      value:
+        value.type === "boolValue"
+          ? Boolean(value.value)
+          : value.type === "stringValue"
+            ? String(value.value ?? "")
+            : Number.isFinite(Number(value.value))
+              ? Number(value.value)
+              : 0,
+    })),
     gui: project.gui.map((gui) => ({
       ...gui,
       rotation: gui.rotation ?? 0,
@@ -1186,7 +1213,16 @@ function validateProject(project: StudioProject): void {
     if (
       typeof gui.id !== "string" ||
       typeof gui.name !== "string" ||
-      !["screenGui", "frame", "textLabel", "textButton"].includes(gui.type) ||
+      ![
+        "screenGui",
+        "frame",
+        "textLabel",
+        "textButton",
+        "textBox",
+        "imageLabel",
+        "imageButton",
+        "scrollingFrame",
+      ].includes(gui.type) ||
       (gui.parentId !== null && typeof gui.parentId !== "string") ||
       !Array.isArray(gui.position) ||
       gui.position.length !== 2 ||
@@ -1205,6 +1241,10 @@ function validateProject(project: StudioProject): void {
       || !Number.isFinite(gui.textSize)
       || !Number.isFinite(gui.borderRadius)
       || !Number.isInteger(gui.zIndex)
+      || typeof gui.imageUrl !== "string"
+      || gui.imageUrl.length > 2_900_000
+      || (gui.imageUrl.startsWith("data:") &&
+        !/^data:image\/(?:png|jpeg|webp|gif);base64,/i.test(gui.imageUrl))
     ) {
       throw new Error("Invalid GUI object.");
     }
@@ -1255,6 +1295,43 @@ function validateProject(project: StudioProject): void {
       parentId =
         project.scripts.find((candidate) => candidate.id === parentId)
           ?.parent ?? "";
+    }
+  }
+  if (!Array.isArray(project.values) || project.values.length > 5_000) {
+    throw new Error("Invalid project values.");
+  }
+  const valueIds = new Set(project.values.map((value) => value.id));
+  for (const value of project.values) {
+    if (
+      typeof value.id !== "string" ||
+      typeof value.name !== "string" ||
+      value.name.trim().length < 1 ||
+      value.name.length > 100 ||
+      !["boolValue", "numberValue", "stringValue"].includes(value.type) ||
+      typeof value.parent !== "string" ||
+      (value.type === "boolValue" && typeof value.value !== "boolean") ||
+      (value.type === "numberValue" && !Number.isFinite(value.value)) ||
+      (value.type === "stringValue" &&
+        (typeof value.value !== "string" || value.value.length > 10_000)) ||
+      (!serviceParents.has(value.parent) &&
+        !scriptIds.has(value.parent) &&
+        !guiIds.has(value.parent) &&
+        !objectIds.has(value.parent) &&
+        !modelIds.has(value.parent) &&
+        !valueIds.has(value.parent))
+    ) {
+      throw new Error("Invalid Value object.");
+    }
+    const visited = new Set([value.id]);
+    let parentId = value.parent;
+    while (valueIds.has(parentId)) {
+      if (visited.has(parentId)) {
+        throw new Error("Value hierarchy contains a cycle.");
+      }
+      visited.add(parentId);
+      parentId =
+        project.values.find((candidate) => candidate.id === parentId)?.parent ??
+        "";
     }
   }
   if (
@@ -1456,6 +1533,7 @@ function pmxlProject(
     },
     leaderstats: [],
     animations: [],
+    values: [],
     publication: null,
     dataStores: {},
   };
@@ -1787,6 +1865,44 @@ async function importSound(): Promise<{
   };
 }
 
+async function importImage(): Promise<{
+  fileName: string;
+  dataUrl: string;
+  byteLength: number;
+} | null> {
+  requireAuth();
+  const result = await dialog.showOpenDialog({
+    title: "Import Image",
+    properties: ["openFile"],
+    filters: [
+      {
+        name: "Images",
+        extensions: ["png", "jpg", "jpeg", "webp", "gif"],
+      },
+    ],
+  });
+  if (result.canceled || !result.filePaths[0]) return null;
+  const filePath = result.filePaths[0];
+  const data = await readFile(filePath);
+  if (data.byteLength > 2 * 1024 * 1024) {
+    throw new Error("Images must be 2 MB or smaller.");
+  }
+  const extension = filePath.split(".").pop()?.toLowerCase() ?? "";
+  const mimeType: Record<string, string> = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    webp: "image/webp",
+    gif: "image/gif",
+  };
+  if (!mimeType[extension]) throw new Error("Unsupported image format.");
+  return {
+    fileName: filePath.split(/[\\/]/).pop() ?? `image.${extension}`,
+    dataUrl: `data:${mimeType[extension]};base64,${data.toString("base64")}`,
+    byteLength: data.byteLength,
+  };
+}
+
 async function listProjects(): Promise<ProjectSummary[]> {
   requireAuth();
   await mkdir(projectsRoot(), { recursive: true });
@@ -1970,6 +2086,7 @@ void app.whenReady().then(async () => {
           },
         ],
         animations: [],
+        values: [],
         publication: null,
         dataStores: {},
       };
@@ -2064,6 +2181,7 @@ void app.whenReady().then(async () => {
   );
   ipcMain.handle("animations:import", () => importPma());
   ipcMain.handle("sounds:import", () => importSound());
+  ipcMain.handle("images:import", () => importImage());
 
   createWindow();
   if (updater) {

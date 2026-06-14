@@ -143,6 +143,14 @@ type StudioAnimation = {
   }>;
 };
 
+type StudioValueObject = {
+  id: string;
+  name: string;
+  type: "boolValue" | "numberValue" | "stringValue";
+  parent: string;
+  value: string | number | boolean;
+};
+
 type StudioProject = {
   version: 2;
   id: string;
@@ -174,6 +182,7 @@ type StudioProject = {
     defaultValue: number | string;
   }>;
   animations: StudioAnimation[];
+  values: StudioValueObject[];
   publication: {
     gameId: string;
     slug: string;
@@ -248,6 +257,11 @@ interface Window {
       partNames: Record<string, string>;
     } | null>;
     importSound: () => Promise<{
+      fileName: string;
+      dataUrl: string;
+      byteLength: number;
+    } | null>;
+    importImage: () => Promise<{
       fileName: string;
       dataUrl: string;
       byteLength: number;
