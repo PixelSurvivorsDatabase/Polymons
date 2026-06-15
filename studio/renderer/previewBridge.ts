@@ -176,6 +176,18 @@ function createPreviewProject(
       fogEnd: 260,
       globalShadows: true,
       shadowSoftness: 0.25,
+      dayNightCycle: false,
+      dayLengthMinutes: 20,
+      sunEnabled: true,
+      moonEnabled: true,
+      sunTextureData: "",
+      moonTextureData: "",
+      sunBrightness: 1.35,
+      sunGlare: 0.45,
+      sunRays: true,
+      moonBrightness: 0.55,
+      moonPhases: true,
+      moonPhase: 1,
     },
     leaderstats: [
       {
@@ -186,6 +198,9 @@ function createPreviewProject(
       },
     ],
     animations: [],
+    badges: [],
+    gamePasses: [],
+    developerProducts: [],
     values: [],
     publication: null,
     dataStores: {},
@@ -219,8 +234,22 @@ if (isPreview && !window.polyStudio) {
       username: "lava",
       displayName: "lava",
       description: "",
+      tix: 840,
       avatarUrl: null,
       equippedShirtId: "polymon-shirt",
+      equippedPantsId: "classic-denim-pants",
+      avatarAppearance: {
+        face: "classic-smile",
+        bodyColors: {
+          head: "#e7bd91",
+          torso: "#7650d8",
+          leftArm: "#e7bd91",
+          rightArm: "#e7bd91",
+          leftLeg: "#313542",
+          rightLeg: "#313542",
+        },
+        accessories: [],
+      },
     },
     session: {
       accessToken: "preview",
@@ -264,6 +293,20 @@ if (isPreview && !window.polyStudio) {
       };
       projects.set(next.id, next);
       return next;
+    },
+    snapshotProject: async (project) => {
+      const next = {
+        ...structuredClone(project),
+        updatedAt: new Date().toISOString(),
+      };
+      projects.set(next.id, next);
+      return next;
+    },
+    listProjectBackups: async () => [],
+    restoreProjectBackup: async (id) => {
+      const project = projects.get(id);
+      if (!project) throw new Error("Project not found.");
+      return structuredClone(project);
     },
     publishProject: async (project, metadata) => {
       const next = {

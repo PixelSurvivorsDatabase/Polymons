@@ -9,6 +9,7 @@ import {
   type PolyProject,
   type PolyScript,
 } from "../../src/game/polyProject";
+import { queuePolyCodeTrainingSample } from "./studioSettings";
 
 self.MonacoEnvironment = {
   getWorker() {
@@ -69,6 +70,7 @@ function configureMonaco() {
       "ReplicatedStorage",
       "DataStoreService",
       "Lighting",
+      "Sky",
       "CollectionService",
       "Modules",
       "Module",
@@ -153,14 +155,67 @@ function markers(diagnostics: PolyDiagnostic[]): monaco.editor.IMarkerData[] {
   }));
 }
 
+function polyCodeInlineSuggestion(
+  model: monaco.editor.ITextModel,
+  position: monaco.Position,
+  language: StudioLanguage,
+): string | null {
+  const line = model
+    .getLineContent(position.lineNumber)
+    .slice(0, position.column - 1);
+  const trimmed = line.trim();
+  const indentation = line.match(/^\s*/)?.[0] ?? "";
+  if (!trimmed) return null;
+
+  if (language === "luau") {
+    if (/\.Activated:Connect\(function\(\)\s*$/.test(trimmed)) {
+      const source = model.getValueInRange({
+        startLineNumber: 1,
+        startColumn: 1,
+        endLineNumber: position.lineNumber,
+        endColumn: position.column,
+      });
+      const remotes = [
+        ...source.matchAll(
+          /local\s+([A-Za-z_]\w*)\s*=\s*ReplicatedStorage(?:\.[A-Za-z_]\w*|:FindFirstChild\([^)]*\))/g,
+        ),
+      ];
+      const remoteName = remotes.at(-1)?.[1];
+      return remoteName
+        ? `\n${indentation}\t${remoteName}:FireServer()\n${indentation}end)`
+        : `\n${indentation}\t\n${indentation}end)`;
+    }
+    if (/\.OnServerInvoke\s*=\s*function\([^)]*\)\s*$/.test(trimmed)) {
+      return `\n${indentation}\treturn nil\n${indentation}end`;
+    }
+    if (/:Connect\(function\([^)]*\)\s*$/.test(trimmed)) {
+      return `\n${indentation}\t\n${indentation}end)`;
+    }
+    if (/^if\b.+\bthen\s*$/.test(trimmed)) {
+      return `\n${indentation}\t\n${indentation}end`;
+    }
+    if (/^(?:local\s+)?function\b.*\)\s*$/.test(trimmed)) {
+      return `\n${indentation}\t\n${indentation}end`;
+    }
+    return null;
+  }
+
+  if (/\{\s*$/.test(trimmed)) {
+    return `\n${indentation}\t\n${indentation}}`;
+  }
+  return null;
+}
+
 export default function CodeEditor({
   script,
   project,
+  settings,
   onChange,
   onDiagnostics,
 }: {
   script: StudioScript;
   project: StudioProject;
+  settings: StudioSettings;
   onChange: (source: string) => void;
   onDiagnostics: (diagnostics: PolyDiagnostic[]) => void;
 }) {
@@ -169,13 +224,17 @@ export default function CodeEditor({
   const onDiagnosticsRef = useRef(onDiagnostics);
   const projectRef = useRef(project);
   const scriptRef = useRef(script);
+  const settingsRef = useRef(settings);
+  const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const modelRef = useRef<monaco.editor.ITextModel | null>(null);
+  const trainingTimerRef = useRef<number | null>(null);
   const externalUpdate = useRef(false);
   const scriptId = script.id;
   onChangeRef.current = onChange;
   onDiagnosticsRef.current = onDiagnostics;
   projectRef.current = project;
   scriptRef.current = script;
+  settingsRef.current = settings;
 
   useEffect(() => {
     configureMonaco();
@@ -215,20 +274,33 @@ export default function CodeEditor({
         preview: true,
         selectionMode: "always",
       },
-      quickSuggestions: { other: true, comments: false, strings: false },
-      suggestOnTriggerCharacters: true,
+      quickSuggestions: settingsRef.current.autoSuggestEnabled
+        ? { other: true, comments: false, strings: false }
+        : false,
+      suggestOnTriggerCharacters: settingsRef.current.autoSuggestEnabled,
       tabCompletion: "on",
       snippetSuggestions: "top",
       wordBasedSuggestions: "off",
       acceptSuggestionOnEnter: "on",
       acceptSuggestionOnCommitCharacter: true,
       parameterHints: { enabled: true, cycle: true },
-      inlineSuggest: { enabled: true },
+      inlineSuggest: { enabled: settingsRef.current.autoSuggestEnabled },
     });
+    editorRef.current = editor;
     editor.addCommand(
       monaco.KeyCode.Tab,
       () => editor.trigger("keyboard", "acceptSelectedSuggestion", {}),
       "suggestWidgetVisible",
+    );
+    editor.addCommand(
+      monaco.KeyCode.Tab,
+      () =>
+        editor.trigger(
+          "polycode",
+          "editor.action.inlineSuggest.commit",
+          undefined,
+        ),
+      "inlineSuggestionVisible && !suggestWidgetVisible",
     );
 
     const updateDiagnostics = (source: string) => {
@@ -246,13 +318,30 @@ export default function CodeEditor({
       const source = model.getValue();
       if (!externalUpdate.current) onChangeRef.current(source);
       updateDiagnostics(source);
+      if (trainingTimerRef.current !== null) {
+        window.clearTimeout(trainingTimerRef.current);
+      }
+      if (settingsRef.current.polyCodeTrainingEnabled) {
+        trainingTimerRef.current = window.setTimeout(() => {
+          queuePolyCodeTrainingSample({
+            language: projectRef.current.language,
+            scriptKind: scriptRef.current.kind,
+            source,
+          });
+        }, 2_000);
+      }
     });
     const completionSubscription = monaco.languages.registerCompletionItemProvider(
       language,
       {
         triggerCharacters: [".", ":", '"'],
         provideCompletionItems(currentModel, position) {
-          if (currentModel !== model) return { suggestions: [] };
+          if (
+            currentModel !== model ||
+            !settingsRef.current.autoSuggestEnabled
+          ) {
+            return { suggestions: [] };
+          }
           const word = currentModel.getWordUntilPosition(position);
           const range = {
             startLineNumber: position.lineNumber,
@@ -318,6 +407,16 @@ export default function CodeEditor({
             "FogEnd",
             "GlobalShadows",
             "ShadowSoftness",
+            "DayNightCycle",
+            "DayLengthMinutes",
+            "SunEnabled",
+            "MoonEnabled",
+            "SunBrightness",
+            "SunGlare",
+            "SunRays",
+            "MoonBrightness",
+            "MoonPhases",
+            "MoonPhase",
             "OnServerEvent",
             "OnServerInvoke",
             "OnClientEvent",
@@ -479,6 +578,32 @@ export default function CodeEditor({
             : isCpp
               ? 'auto sound = Workspace.Find("${1:Sound}");\nsound.Play();'
               : 'var sound = Workspace.Find("${1:Sound}");\nsound.Play();';
+          const randomSuggestions = isLuau
+            ? [
+                {
+                  label: "math.random",
+                  insertText: "math.random(${1:minimum}, ${2:maximum})",
+                  detail: "Generate a random integer in an inclusive range",
+                },
+                {
+                  label: "math.randomseed",
+                  insertText: "math.randomseed(${1:seed})",
+                  detail: "Seed math.random for repeatable results",
+                },
+                {
+                  label: "Random.new",
+                  insertText:
+                    "local rng = Random.new(${1:seed})\nlocal value = rng:NextInteger(${2:minimum}, ${3:maximum})",
+                  detail: "Create an independent seeded random generator",
+                },
+                {
+                  label: "Random NextNumber",
+                  insertText:
+                    "local rng = Random.new(${1:seed})\nlocal value = rng:NextNumber(${2:minimum}, ${3:maximum})",
+                  detail: "Generate a decimal value in a range",
+                },
+              ]
+            : [];
           return {
             suggestions: [
               ...names.map((name) => ({
@@ -503,6 +628,16 @@ export default function CodeEditor({
                   monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
                 detail: method.detail,
                 documentation: `${method.detail}. Press Tab to fill each argument.`,
+                range,
+              })),
+              ...randomSuggestions.map((suggestion) => ({
+                label: suggestion.label,
+                kind: monaco.languages.CompletionItemKind.Snippet,
+                insertText: suggestion.insertText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: suggestion.detail,
+                documentation: `${suggestion.detail}. Press Tab to fill each argument.`,
                 range,
               })),
               {
@@ -692,16 +827,62 @@ export default function CodeEditor({
         },
       },
     );
+    const inlineCompletionSubscription =
+      monaco.languages.registerInlineCompletionsProvider(language, {
+        provideInlineCompletions(currentModel, position) {
+          if (
+            currentModel !== model ||
+            !settingsRef.current.autoSuggestEnabled
+          ) {
+            return { items: [] };
+          }
+          const insertText = polyCodeInlineSuggestion(
+            currentModel,
+            position,
+            projectRef.current.language,
+          );
+          if (!insertText) return { items: [] };
+          return {
+            items: [
+              {
+                insertText,
+                range: new monaco.Range(
+                  position.lineNumber,
+                  position.column,
+                  position.lineNumber,
+                  position.column,
+                ),
+              },
+            ],
+          };
+        },
+        freeInlineCompletions() {},
+      });
 
     return () => {
+      if (trainingTimerRef.current !== null) {
+        window.clearTimeout(trainingTimerRef.current);
+      }
       changeSubscription.dispose();
       completionSubscription.dispose();
+      inlineCompletionSubscription.dispose();
       monaco.editor.setModelMarkers(model, "poly-script-analysis", []);
       editor.dispose();
+      editorRef.current = null;
       modelRef.current = null;
       model.dispose();
     };
   }, [project.language, scriptId]);
+
+  useEffect(() => {
+    editorRef.current?.updateOptions({
+      quickSuggestions: settings.autoSuggestEnabled
+        ? { other: true, comments: false, strings: false }
+        : false,
+      suggestOnTriggerCharacters: settings.autoSuggestEnabled,
+      inlineSuggest: { enabled: settings.autoSuggestEnabled },
+    });
+  }, [settings.autoSuggestEnabled]);
 
   useEffect(() => {
     const model = modelRef.current;

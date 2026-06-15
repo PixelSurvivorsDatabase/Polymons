@@ -11,3 +11,9 @@ studio-dist/
 studio-release/
 admin-dist/
 admin-release/
+polycode/data/generated/
+polycode/artifacts/
+polycode/checkpoints/
+polycode/checkpoints-28m/
+__pycache__/
+*.pyc

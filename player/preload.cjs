@@ -8,9 +8,21 @@ contextBridge.exposeInMainWorld("polymons", {
     ipcRenderer.invoke("auth:signup", { username, password, displayName }),
   logout: () => ipcRenderer.invoke("auth:logout"),
   listGames: () => ipcRenderer.invoke("games:list"),
+  getGameLibrary: () => ipcRenderer.invoke("games:library"),
   listFriends: () => ipcRenderer.invoke("friends:list"),
+  listFriendServers: () => ipcRenderer.invoke("servers:friends"),
+  listGameServers: (gameId) =>
+    ipcRenderer.invoke("servers:game", { gameId }),
   play: (gameId) => ipcRenderer.invoke("game:play", { gameId }),
   getGame: (gameId) => ipcRenderer.invoke("game:get", { gameId }),
+  awardBadge: (gameId, badgeName) =>
+    ipcRenderer.invoke("badges:award", { gameId, badgeName }),
+  getGameEntitlements: (gameId) =>
+    ipcRenderer.invoke("game:entitlements", { gameId }),
+  purchaseGamePass: (gameId, passId) =>
+    ipcRenderer.invoke("gamepasses:purchase", { gameId, passId }),
+  purchaseDeveloperProduct: (gameId, productId) =>
+    ipcRenderer.invoke("products:purchase", { gameId, productId }),
   sendFriendRequest: (username) =>
     ipcRenderer.invoke("friends:request", { username }),
   loadStudioProject: (id) => ipcRenderer.invoke("studio:project", { id }),

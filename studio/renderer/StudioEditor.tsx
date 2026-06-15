@@ -1,5 +1,6 @@
 import { Canvas, useThree } from "@react-three/fiber";
 import {
+  Award,
   Box,
   Boxes,
   Cable,
@@ -13,6 +14,7 @@ import {
   Folder,
   FolderOpen,
   Grid3X3,
+  Image,
   LayoutPanelTop,
   Monitor,
   Package,
@@ -26,6 +28,7 @@ import {
   Server,
   Settings2,
   Square,
+  Tickets,
   Trash2,
   Type,
   Undo2,
@@ -44,7 +47,14 @@ import {
   useRef,
   useState,
 } from "react";
-import { Color, Euler, Object3D, Vector3 } from "three";
+import {
+  ACESFilmicToneMapping,
+  Color,
+  Euler,
+  Object3D,
+  PCFSoftShadowMap,
+  Vector3,
+} from "three";
 import { TransformControls as ThreeTransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import {
   analyzePolyScript,
@@ -341,10 +351,12 @@ function scriptParentOptions(
 export default function StudioEditor({
   auth,
   initialProject,
+  settings,
   onExit,
 }: {
   auth: StudioAuth;
   initialProject: StudioProject;
+  settings: StudioSettings;
   onExit: () => void;
 }) {
   const [project, setProject] = useState(initialProject);
@@ -368,6 +380,12 @@ export default function StudioEditor({
   const [playing, setPlaying] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [publishDialog, setPublishDialog] = useState(false);
+  const [badgeDialog, setBadgeDialog] = useState(false);
+  const [monetizationDialog, setMonetizationDialog] = useState(false);
+  const [historyDialog, setHistoryDialog] = useState(false);
+  const [backups, setBackups] = useState<
+    Array<{ id: string; name: string; savedAt: string }>
+  >([]);
   const [openMenu, setOpenMenu] = useState<"file" | "project" | null>(null);
   const [message, setMessage] = useState("Ready");
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -463,6 +481,56 @@ export default function StudioEditor({
       setSaving(false);
     }
   }, [project]);
+
+  async function saveVersion() {
+    setSaving(true);
+    setMessage("Saving version...");
+    try {
+      const next = await window.polyStudio.snapshotProject(project);
+      setProject(next);
+      setDirty(false);
+      setMessage("Version saved");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Version save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function openHistory() {
+    setOpenMenu(null);
+    setMessage("Loading version history...");
+    try {
+      setBackups(await window.polyStudio.listProjectBackups(project.id));
+      setHistoryDialog(true);
+      setMessage("Ready");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not load history");
+    }
+  }
+
+  async function restoreBackup(backupId: string) {
+    setSaving(true);
+    setMessage("Restoring version...");
+    try {
+      const restored = await window.polyStudio.restoreProjectBackup(
+        project.id,
+        backupId,
+      );
+      setProject(restored);
+      setSelection(null);
+      setSelectedPartIds([]);
+      undoStack.current = [];
+      redoStack.current = [];
+      setDirty(false);
+      setHistoryDialog(false);
+      setMessage("Version restored");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Restore failed");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   useEffect(() => {
     if (!dirty || saving || playing || publishing) return;
@@ -1901,7 +1969,11 @@ end)
     setPublishDialog(true);
   }
 
-  async function publish(metadata: { title: string; description: string }) {
+  async function publish(metadata: {
+    title: string;
+    description: string;
+    thumbnailData?: string;
+  }) {
     setPublishing(true);
     setMessage(project.publication ? "Updating..." : "Publishing...");
     try {
@@ -1972,6 +2044,12 @@ end)
               <button onClick={() => void save()}>
                 <Save size={14} /> Save game
               </button>
+              <button onClick={() => void saveVersion()}>
+                <Save size={14} /> Save version
+              </button>
+              <button onClick={() => void openHistory()}>
+                <FolderOpen size={14} /> Version history
+              </button>
               <button onClick={() => void importGame()}>
                 <Upload size={14} /> Import game
               </button>
@@ -1996,6 +2074,22 @@ end)
               <button onClick={openPublishDialog}>
                 <Upload size={14} />
                 {project.publication ? "Update game" : "Publish game"}
+              </button>
+              <button
+                onClick={() => {
+                  setOpenMenu(null);
+                  setBadgeDialog(true);
+                }}
+              >
+                <Award size={14} /> Badges
+              </button>
+              <button
+                onClick={() => {
+                  setOpenMenu(null);
+                  setMonetizationDialog(true);
+                }}
+              >
+                <Tickets size={14} /> Monetization
               </button>
             </div>
           )}
@@ -2148,6 +2242,7 @@ end)
               key={selectedScript.id}
               project={project}
               script={selectedScript}
+              settings={settings}
               diagnostics={diagnostics[selectedScript.id] ?? []}
               onDiagnostics={(next) =>
                 setDiagnostics((current) => ({
@@ -2343,6 +2438,37 @@ end)
           onPublish={(metadata) => void publish(metadata)}
         />
       )}
+      {badgeDialog && (
+        <BadgeDialog
+          badges={project.badges}
+          onClose={() => setBadgeDialog(false)}
+          onChange={(badges) =>
+            updateProject((current) => ({ ...current, badges }))
+          }
+        />
+      )}
+      {monetizationDialog && (
+        <MonetizationDialog
+          gamePasses={project.gamePasses}
+          developerProducts={project.developerProducts}
+          onClose={() => setMonetizationDialog(false)}
+          onChange={(gamePasses, developerProducts) =>
+            updateProject((current) => ({
+              ...current,
+              gamePasses,
+              developerProducts,
+            }))
+          }
+        />
+      )}
+      {historyDialog && (
+        <VersionHistoryDialog
+          backups={backups}
+          busy={saving}
+          onClose={() => setHistoryDialog(false)}
+          onRestore={(backupId) => void restoreBackup(backupId)}
+        />
+      )}
 
       {showHealth && (
         <StudioInfoDialog title="Project health" onClose={() => setShowHealth(false)}>
@@ -2447,6 +2573,349 @@ function StudioInfoDialog({
   );
 }
 
+function VersionHistoryDialog({
+  backups,
+  busy,
+  onClose,
+  onRestore,
+}: {
+  backups: Array<{ id: string; name: string; savedAt: string }>;
+  busy: boolean;
+  onClose: () => void;
+  onRestore: (backupId: string) => void;
+}) {
+  return (
+    <StudioInfoDialog title="Version history" onClose={onClose}>
+      <p className="dialog-copy">
+        Poly Studio keeps up to 25 local recovery points. Restoring one first
+        saves the version you have open now.
+      </p>
+      <div className="version-history-list">
+        {backups.map((backup) => (
+          <article key={backup.id}>
+            <div>
+              <strong>{backup.name}</strong>
+              <span>{new Date(backup.savedAt).toLocaleString()}</span>
+            </div>
+            <button disabled={busy} onClick={() => onRestore(backup.id)}>
+              Restore
+            </button>
+          </article>
+        ))}
+        {backups.length === 0 && (
+          <p className="muted-copy">
+            No older versions yet. Use Save version to create one immediately.
+          </p>
+        )}
+      </div>
+    </StudioInfoDialog>
+  );
+}
+
+function BadgeDialog({
+  badges,
+  onClose,
+  onChange,
+}: {
+  badges: StudioProject["badges"];
+  onClose: () => void;
+  onChange: (badges: StudioProject["badges"]) => void;
+}) {
+  function updateBadge(
+    badgeId: string,
+    patch: Partial<StudioProject["badges"][number]>,
+  ) {
+    onChange(
+      badges.map((badge) =>
+        badge.id === badgeId ? { ...badge, ...patch } : badge,
+      ),
+    );
+  }
+
+  return (
+    <StudioInfoDialog title="Game badges" onClose={onClose}>
+      <p className="dialog-copy">
+        Create achievements here, then award one from a server script with
+        <code> Badges:Award(player, "Badge Name")</code>.
+      </p>
+      <div className="badge-editor-list">
+        {badges.map((badge) => (
+          <article key={badge.id}>
+            <button
+              className="badge-icon-picker"
+              onClick={() =>
+                document.getElementById(`badge-icon-${badge.id}`)?.click()
+              }
+            >
+              {badge.iconData ? (
+                <img src={badge.iconData} alt="" />
+              ) : (
+                <Award size={24} />
+              )}
+            </button>
+            <input
+              id={`badge-icon-${badge.id}`}
+              hidden
+              type="file"
+              accept="image/png"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (!file) return;
+                if (file.type !== "image/png" || file.size > 1_000_000) {
+                  window.alert("Badge icons must be PNG files up to 1 MB.");
+                  return;
+                }
+                const reader = new FileReader();
+                reader.addEventListener("load", () => {
+                  if (typeof reader.result === "string") {
+                    updateBadge(badge.id, { iconData: reader.result });
+                  }
+                });
+                reader.readAsDataURL(file);
+              }}
+            />
+            <div className="badge-editor-fields">
+              <input
+                value={badge.name}
+                maxLength={64}
+                placeholder="Badge name"
+                onChange={(event) =>
+                  updateBadge(badge.id, { name: event.target.value })
+                }
+              />
+              <textarea
+                value={badge.description}
+                maxLength={500}
+                placeholder="What did the player accomplish?"
+                onChange={(event) =>
+                  updateBadge(badge.id, { description: event.target.value })
+                }
+              />
+            </div>
+            <button
+              className="danger-button"
+              onClick={() =>
+                onChange(badges.filter((item) => item.id !== badge.id))
+              }
+            >
+              <Trash2 size={15} />
+            </button>
+          </article>
+        ))}
+      </div>
+      <button
+        className="primary-button"
+        disabled={badges.length >= 50}
+        onClick={() =>
+          onChange([
+            ...badges,
+            {
+              id: crypto.randomUUID(),
+              name: `Badge ${badges.length + 1}`,
+              description: "",
+              iconData: "",
+            },
+          ])
+        }
+      >
+        <Plus size={15} /> Add badge
+      </button>
+    </StudioInfoDialog>
+  );
+}
+
+function MonetizationDialog({
+  gamePasses,
+  developerProducts,
+  onClose,
+  onChange,
+}: {
+  gamePasses: StudioProject["gamePasses"];
+  developerProducts: StudioProject["developerProducts"];
+  onClose: () => void;
+  onChange: (
+    gamePasses: StudioProject["gamePasses"],
+    developerProducts: StudioProject["developerProducts"],
+  ) => void;
+}) {
+  const updatePass = (
+    id: string,
+    patch: Partial<StudioProject["gamePasses"][number]>,
+  ) => onChange(
+    gamePasses.map((pass) => (pass.id === id ? { ...pass, ...patch } : pass)),
+    developerProducts,
+  );
+  const updateProduct = (
+    id: string,
+    patch: Partial<StudioProject["developerProducts"][number]>,
+  ) => onChange(
+    gamePasses,
+    developerProducts.map((product) =>
+      product.id === id ? { ...product, ...patch } : product,
+    ),
+  );
+  return (
+    <StudioInfoDialog title="Monetization" onClose={onClose}>
+      <p>
+        Gamepasses are one-time purchases. Developer products can be bought
+        repeatedly and may add to playerdata.
+      </p>
+      <div className="badge-list">
+        <h3>Gamepasses</h3>
+        {gamePasses.map((pass) => (
+          <article key={pass.id} className="badge-row">
+            <div className="badge-fields">
+              <input
+                value={pass.name}
+                placeholder="Gamepass name"
+                onChange={(event) => updatePass(pass.id, { name: event.target.value })}
+              />
+              <input
+                type="number"
+                min="0"
+                value={pass.priceTix}
+                onChange={(event) =>
+                  updatePass(pass.id, {
+                    priceTix: Math.max(0, Math.floor(Number(event.target.value) || 0)),
+                  })
+                }
+              />
+              <textarea
+                value={pass.description}
+                placeholder="Description"
+                onChange={(event) =>
+                  updatePass(pass.id, { description: event.target.value })
+                }
+              />
+            </div>
+            <button
+              className="studio-icon-button danger"
+              onClick={() =>
+                onChange(
+                  gamePasses.filter((item) => item.id !== pass.id),
+                  developerProducts,
+                )
+              }
+            >
+              <Trash2 size={14} />
+            </button>
+          </article>
+        ))}
+        <button
+          className="studio-secondary"
+          disabled={gamePasses.length >= 50}
+          onClick={() =>
+            onChange(
+              [
+                ...gamePasses,
+                {
+                  id: crypto.randomUUID(),
+                  name: `Gamepass ${gamePasses.length + 1}`,
+                  description: "",
+                  priceTix: 0,
+                },
+              ],
+              developerProducts,
+            )
+          }
+        >
+          <Plus size={14} /> Add gamepass
+        </button>
+      </div>
+      <div className="badge-list">
+        <h3>Developer products</h3>
+        {developerProducts.map((product) => (
+          <article key={product.id} className="badge-row">
+            <div className="badge-fields">
+              <input
+                value={product.name}
+                placeholder="Product name"
+                onChange={(event) =>
+                  updateProduct(product.id, { name: event.target.value })
+                }
+              />
+              <input
+                type="number"
+                min="0"
+                value={product.priceTix}
+                onChange={(event) =>
+                  updateProduct(product.id, {
+                    priceTix: Math.max(0, Math.floor(Number(event.target.value) || 0)),
+                  })
+                }
+              />
+              <input
+                value={product.effectKey ?? ""}
+                placeholder="PlayerData key, ex: Coins"
+                onChange={(event) =>
+                  updateProduct(product.id, {
+                    effectKey: event.target.value.trim() || null,
+                  })
+                }
+              />
+              <input
+                type="number"
+                value={product.effectAmount}
+                onChange={(event) =>
+                  updateProduct(product.id, {
+                    effectAmount: Number(event.target.value) || 0,
+                  })
+                }
+              />
+              <textarea
+                value={product.description}
+                placeholder="Description"
+                onChange={(event) =>
+                  updateProduct(product.id, { description: event.target.value })
+                }
+              />
+            </div>
+            <button
+              className="studio-icon-button danger"
+              onClick={() =>
+                onChange(
+                  gamePasses,
+                  developerProducts.filter((item) => item.id !== product.id),
+                )
+              }
+            >
+              <Trash2 size={14} />
+            </button>
+          </article>
+        ))}
+        <button
+          className="studio-secondary"
+          disabled={developerProducts.length >= 50}
+          onClick={() =>
+            onChange(
+              gamePasses,
+              [
+                ...developerProducts,
+                {
+                  id: crypto.randomUUID(),
+                  name: `Product ${developerProducts.length + 1}`,
+                  description: "",
+                  priceTix: 0,
+                  effectKey: null,
+                  effectAmount: 0,
+                },
+              ],
+            )
+          }
+        >
+          <Plus size={14} /> Add developer product
+        </button>
+      </div>
+      <p>
+        Scripts can use <code>GamePasses:Owns(player, "VIP")</code>,{" "}
+        <code>GamePasses:PromptPurchase(player, "VIP")</code>, and{" "}
+        <code>DeveloperProducts:PromptPurchase(player, "Coins")</code>.
+      </p>
+    </StudioInfoDialog>
+  );
+}
+
 function PublishDialog({
   project,
   publishing,
@@ -2456,10 +2925,16 @@ function PublishDialog({
   project: StudioProject;
   publishing: boolean;
   onClose: () => void;
-  onPublish: (metadata: { title: string; description: string }) => void;
+  onPublish: (metadata: {
+    title: string;
+    description: string;
+    thumbnailData?: string;
+  }) => void;
 }) {
   const [title, setTitle] = useState(project.name);
   const [description, setDescription] = useState(project.description);
+  const [thumbnailData, setThumbnailData] = useState("");
+  const thumbnailInput = useRef<HTMLInputElement>(null);
   return (
     <div className="studio-modal-layer">
       <button className="studio-modal-backdrop" onClick={onClose} />
@@ -2467,7 +2942,11 @@ function PublishDialog({
         className="publish-game-dialog"
         onSubmit={(event) => {
           event.preventDefault();
-          onPublish({ title, description });
+          onPublish({
+            title,
+            description,
+            thumbnailData: thumbnailData || undefined,
+          });
         }}
       >
         <button type="button" className="dialog-close" onClick={onClose}>
@@ -2502,6 +2981,55 @@ function PublishDialog({
           />
           <small>{description.length}/2000</small>
         </label>
+        <div className="publish-thumbnail-field">
+          <span>Game thumbnail</span>
+          <button
+            type="button"
+            className="publish-thumbnail-preview"
+            onClick={() => thumbnailInput.current?.click()}
+          >
+            {thumbnailData ? (
+              <img src={thumbnailData} alt="Game thumbnail preview" />
+            ) : (
+              <span>
+                <Image size={22} />
+                Upload PNG, JPG, or WebP
+                <small>Recommended: 16:9, up to 2 MB</small>
+              </span>
+            )}
+          </button>
+          <input
+            ref={thumbnailInput}
+            hidden
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (!file) return;
+              if (file.size > 2_000_000) {
+                window.alert("Game thumbnails must be 2 MB or smaller.");
+                return;
+              }
+              const reader = new FileReader();
+              reader.addEventListener("load", () => {
+                if (typeof reader.result === "string") {
+                  setThumbnailData(reader.result);
+                }
+              });
+              reader.readAsDataURL(file);
+            }}
+          />
+          {thumbnailData && (
+            <button
+              type="button"
+              className="studio-secondary publish-thumbnail-clear"
+              onClick={() => setThumbnailData("")}
+            >
+              Remove selected thumbnail
+            </button>
+          )}
+        </div>
         {project.publication && (
           <div className="publication-summary">
             Current version {project.publication.version}
@@ -2791,6 +3319,12 @@ function Explorer({
             onContextMenu({ type: "service", id: "Workspace" }, event)
           }
         >
+          <TreeItem
+            active={selection?.type === "service" && selection.id === "Sky"}
+            icon={<Sun size={14} />}
+            label="Sky"
+            onClick={() => onSelect({ type: "service", id: "Sky" })}
+          />
           {project.models.map((model) => (
             <ModelTree
               key={model.id}
@@ -3672,8 +4206,16 @@ function SceneViewport({
   return (
     <div className="scene-viewport">
       <Canvas
-        shadows
+        shadows="soft"
         camera={{ position: [16, 13, 18], fov: 48, near: 0.1, far: 300 }}
+        gl={{
+          antialias: true,
+          toneMapping: ACESFilmicToneMapping,
+          toneMappingExposure: 1.08,
+        }}
+        onCreated={({ gl }) => {
+          gl.shadowMap.type = PCFSoftShadowMap;
+        }}
         onPointerMissed={(event) => {
           if (
             event.button === 0 &&
@@ -4549,6 +5091,99 @@ function Properties({
             />
           </PropertySection>
         </div>
+      ) : selection.type === "service" && selection.id === "Sky" ? (
+        <div className="properties-content">
+          <ReadOnlyField label="Name" value="Sky" />
+          <PropertySection title="Day and night">
+            <ToggleField
+              label="DayNightCycle"
+              value={project.lighting.dayNightCycle}
+              onChange={(dayNightCycle) => onLightingChange({ dayNightCycle })}
+            />
+            <NumberField
+              label="DayLengthMinutes"
+              value={project.lighting.dayLengthMinutes}
+              minimum={0.5}
+              maximum={240}
+              step={0.5}
+              onChange={(dayLengthMinutes) =>
+                onLightingChange({ dayLengthMinutes })
+              }
+            />
+          </PropertySection>
+          <PropertySection title="Sun">
+            <ToggleField
+              label="SunEnabled"
+              value={project.lighting.sunEnabled}
+              onChange={(sunEnabled) => onLightingChange({ sunEnabled })}
+            />
+            <ImageUploadField
+              label="Sun PNG"
+              value={project.lighting.sunTextureData}
+              onChange={(sunTextureData) =>
+                onLightingChange({ sunTextureData })
+              }
+            />
+            <NumberField
+              label="SunBrightness"
+              value={project.lighting.sunBrightness}
+              minimum={0}
+              maximum={8}
+              step={0.1}
+              onChange={(sunBrightness) => onLightingChange({ sunBrightness })}
+            />
+            <NumberField
+              label="SunGlare"
+              value={project.lighting.sunGlare}
+              minimum={0}
+              maximum={2}
+              step={0.05}
+              onChange={(sunGlare) => onLightingChange({ sunGlare })}
+            />
+            <ToggleField
+              label="SunRays"
+              value={project.lighting.sunRays}
+              onChange={(sunRays) => onLightingChange({ sunRays })}
+            />
+          </PropertySection>
+          <PropertySection title="Moon">
+            <ToggleField
+              label="MoonEnabled"
+              value={project.lighting.moonEnabled}
+              onChange={(moonEnabled) => onLightingChange({ moonEnabled })}
+            />
+            <ImageUploadField
+              label="Moon PNG"
+              value={project.lighting.moonTextureData}
+              onChange={(moonTextureData) =>
+                onLightingChange({ moonTextureData })
+              }
+            />
+            <NumberField
+              label="MoonBrightness"
+              value={project.lighting.moonBrightness}
+              minimum={0}
+              maximum={4}
+              step={0.05}
+              onChange={(moonBrightness) =>
+                onLightingChange({ moonBrightness })
+              }
+            />
+            <ToggleField
+              label="MoonPhases"
+              value={project.lighting.moonPhases}
+              onChange={(moonPhases) => onLightingChange({ moonPhases })}
+            />
+            <NumberField
+              label="MoonPhase"
+              value={project.lighting.moonPhase}
+              minimum={0}
+              maximum={1}
+              step={0.05}
+              onChange={(moonPhase) => onLightingChange({ moonPhase })}
+            />
+          </PropertySection>
+        </div>
       ) : selection.type === "service" && selection.id === "Lighting" ? (
         <div className="properties-content">
           <ReadOnlyField label="Name" value="Lighting" />
@@ -4668,6 +5303,14 @@ const PROPERTY_HELP: Record<string, string> = {
   "Max distance": "Distance where a 3D sound can no longer be heard.",
   Health: "The object's current health.",
   MaxHealth: "The highest health value this object can have.",
+  DayNightCycle: "Moves the sun and moon automatically while the game runs.",
+  DayLengthMinutes: "Real minutes required for one complete in-game day.",
+  SunBrightness: "Strength of direct sunlight and its highlights.",
+  SunGlare: "Size and opacity of the glow around the sun.",
+  SunRays: "Adds stronger directional sunlight and contrast.",
+  MoonBrightness: "Strength of moonlight during nighttime.",
+  MoonPhases: "Automatically varies the visible moon phase.",
+  MoonPhase: "Manual moon phase from 0 (new moon) to 1 (full moon).",
 };
 
 function PropertyLabel({ label }: { label: string }) {
@@ -4992,6 +5635,50 @@ function ColorField({ label, value, onChange }: { label: string; value: string; 
   );
 }
 
+function ImageUploadField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  return (
+    <div className="property-image-upload">
+      <PropertyLabel label={label} />
+      {value && <img src={value} alt="" />}
+      <div>
+        <button type="button" onClick={() => input.current?.click()}>
+          {value ? "Replace" : "Upload"}
+        </button>
+        {value && (
+          <button type="button" onClick={() => onChange("")}>
+            Clear
+          </button>
+        )}
+      </div>
+      <input
+        ref={input}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        hidden
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          event.target.value = "";
+          if (!file || file.size > 1_000_000) return;
+          const reader = new FileReader();
+          reader.addEventListener("load", () => {
+            if (typeof reader.result === "string") onChange(reader.result);
+          });
+          reader.readAsDataURL(file);
+        }}
+      />
+    </div>
+  );
+}
+
 function DeleteButton({ onClick }: { onClick: () => void }) {
   return (
     <button className="delete-object" onClick={onClick}>
@@ -5077,12 +5764,14 @@ function Vector2Field({
 function ScriptWorkspace({
   project,
   script,
+  settings,
   diagnostics,
   onDiagnostics,
   onChange,
 }: {
   project: StudioProject;
   script: StudioScript;
+  settings: StudioSettings;
   diagnostics: PolyDiagnostic[];
   onDiagnostics: (diagnostics: PolyDiagnostic[]) => void;
   onChange: (source: string) => void;
@@ -5112,6 +5801,7 @@ function ScriptWorkspace({
       <CodeEditor
         script={script}
         project={project}
+        settings={settings}
         onChange={onChange}
         onDiagnostics={onDiagnostics}
       />

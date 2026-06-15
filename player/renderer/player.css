@@ -72,6 +72,107 @@ button {
   font-weight: 700;
 }
 
+.player-account small {
+  color: #ad83ff;
+  font-size: 11px;
+}
+
+.player-rejoin {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: fit-content;
+  margin-top: 10px;
+  border: 0;
+  border-radius: 8px;
+  background: #7045bf;
+  color: white;
+  padding: 9px 13px;
+  font-weight: 700;
+}
+
+.player-friend-servers {
+  margin-bottom: 24px;
+}
+
+.player-friend-server-row {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 5px;
+}
+
+.player-friend-server-row button {
+  min-width: 270px;
+  display: flex;
+  gap: 11px;
+  align-items: center;
+  border: 1px solid #30283d;
+  border-radius: 11px;
+  background: #121018;
+  color: #f5f1fb;
+  padding: 10px;
+  text-align: left;
+}
+
+.player-friend-server-row button > span {
+  width: 82px;
+  height: 52px;
+  flex: 0 0 82px;
+  border-radius: 7px;
+  background: linear-gradient(135deg, #24183a, #693fa7);
+  background-position: center;
+  background-size: cover;
+}
+
+.player-friend-server-row button div {
+  display: grid;
+  gap: 3px;
+}
+
+.player-friend-server-row small,
+.player-friend-server-row em {
+  color: #948b9f;
+  font-size: 11px;
+  font-style: normal;
+}
+
+.player-performance-hud {
+  position: absolute;
+  z-index: 30;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.player-performance-hud span {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(10, 9, 14, 0.76);
+  color: #d9d2e3;
+  padding: 5px 7px;
+  font-size: 11px;
+  backdrop-filter: blur(8px);
+}
+
+.player-game {
+  position: relative;
+}
+
+.player-game-loading-art {
+  background-position: center;
+  background-size: cover;
+}
+
+.player-game-loading-art span {
+  border-radius: 8px;
+  background: rgba(7, 7, 10, 0.75);
+  padding: 12px 16px;
+  backdrop-filter: blur(8px);
+}
+
 .player-home,
 .game-screen {
   min-height: 100vh;

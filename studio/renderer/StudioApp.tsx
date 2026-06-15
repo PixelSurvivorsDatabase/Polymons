@@ -6,6 +6,7 @@ import {
   Play,
   Plus,
   Search,
+  Settings,
   Upload,
   UserRound,
   X,
@@ -18,6 +19,10 @@ import {
 } from "react";
 import logo from "../../assets/studio/poly-studio-logo-dark.png";
 import StudioEditor from "./StudioEditor";
+import {
+  loadStudioSettings,
+  saveStudioSettings,
+} from "./studioSettings";
 
 const languageInfo: Record<
   StudioLanguage,
@@ -57,6 +62,8 @@ export default function StudioApp() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [project, setProject] = useState<StudioProject | null>(null);
   const [creating, setCreating] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settings, setSettings] = useState(loadStudioSettings);
   const [error, setError] = useState("");
 
   const reloadProjects = useCallback(async () => {
@@ -91,6 +98,7 @@ export default function StudioApp() {
       <StudioEditor
         auth={auth}
         initialProject={project}
+        settings={settings}
         onExit={async () => {
           setProject(null);
           await reloadProjects();
@@ -135,6 +143,7 @@ export default function StudioApp() {
           );
         }
       }}
+      onSettings={() => setSettingsOpen(true)}
       onCreated={(next) => {
         setCreating(false);
         setProject(next);
@@ -145,6 +154,19 @@ export default function StudioApp() {
         setAuth(null);
         setProjects([]);
       }}
+      settingsDialog={
+        settingsOpen ? (
+          <StudioSettingsDialog
+            settings={settings}
+            onClose={() => setSettingsOpen(false)}
+            onSave={(next) => {
+              saveStudioSettings(next);
+              setSettings(next);
+              setSettingsOpen(false);
+            }}
+          />
+        ) : null
+      }
     />
   );
 }
@@ -236,9 +258,11 @@ function Launcher({
   onCloseCreate,
   onOpen,
   onImport,
+  onSettings,
   onCreated,
   onError,
   onLogout,
+  settingsDialog,
 }: {
   auth: StudioAuth;
   projects: ProjectSummary[];
@@ -248,9 +272,11 @@ function Launcher({
   onCloseCreate: () => void;
   onOpen: (id: string) => void;
   onImport: () => void;
+  onSettings: () => void;
   onCreated: (project: StudioProject) => void;
   onError: (message: string) => void;
   onLogout: () => void;
+  settingsDialog: React.ReactNode;
 }) {
   const [query, setQuery] = useState("");
   const visibleProjects = projects.filter((project) =>
@@ -287,6 +313,10 @@ function Launcher({
             <p>Create a new game or keep working on one you started.</p>
           </div>
           <div className="launcher-actions">
+            <button className="studio-secondary" onClick={onSettings}>
+              <Settings size={17} />
+              Studio settings
+            </button>
             <button className="studio-secondary" onClick={onImport}>
               <Upload size={17} />
               Import game
@@ -355,7 +385,92 @@ function Launcher({
           onError={onError}
         />
       )}
+      {settingsDialog}
     </main>
+  );
+}
+
+function StudioSettingsDialog({
+  settings,
+  onClose,
+  onSave,
+}: {
+  settings: StudioSettings;
+  onClose: () => void;
+  onSave: (settings: StudioSettings) => void;
+}) {
+  const [draft, setDraft] = useState(settings);
+
+  return (
+    <div className="studio-modal-layer">
+      <button className="studio-modal-backdrop" onClick={onClose} />
+      <form
+        className="studio-settings-dialog"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSave(draft);
+        }}
+      >
+        <button type="button" className="dialog-close" onClick={onClose}>
+          <X size={18} />
+        </button>
+        <span className="studio-eyebrow">Preferences</span>
+        <h2>Studio settings</h2>
+        <p>Control how Poly Studio helps while you write scripts.</p>
+
+        <div className="studio-setting-list">
+          <label className="studio-setting-row">
+            <span>
+              <strong>Enable auto-suggest</strong>
+              <small>
+                Shows code completions and PolyCode suggestions. Press Tab to
+                insert the selected suggestion.
+              </small>
+            </span>
+            <input
+              type="checkbox"
+              checked={draft.autoSuggestEnabled}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  autoSuggestEnabled: event.target.checked,
+                }))
+              }
+            />
+          </label>
+
+          <label className="studio-setting-row">
+            <span>
+              <strong>Enable PolyCode training</strong>
+              <small>
+                Uses the scripts you write to help train PolyCode, the
+                auto-suggest model. This option is completely optional.
+              </small>
+              <em>
+                For now, opted-in samples are queued only on this device.
+              </em>
+            </span>
+            <input
+              type="checkbox"
+              checked={draft.polyCodeTrainingEnabled}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  polyCodeTrainingEnabled: event.target.checked,
+                }))
+              }
+            />
+          </label>
+        </div>
+
+        <div className="studio-settings-actions">
+          <button type="button" className="studio-secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="studio-primary">Save settings</button>
+        </div>
+      </form>
+    </div>
   );
 }
 

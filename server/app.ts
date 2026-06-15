@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import cors from "cors";
+import { randomUUID } from "crypto";
 import express, { type Request } from "express";
 import { rateLimit } from "express-rate-limit";
 import helmet from "helmet";
@@ -23,16 +24,25 @@ import {
 import {
   createAuthClient,
   loadProfile,
+  normalizeAvatarAppearance,
   publicSession,
   syncAvatarUnlocks,
 } from "./supabase.js";
 import { isLoginDisabled } from "./official-account.js";
 import type { PresenceSnapshot } from "./websocket.js";
 import {
+  adminCatalogReviewSchema,
+  adminTixSchema,
   adminInventorySchema,
+  avatarUploadSchema,
+  avatarAppearanceSchema,
+  awardBadgeSchema,
   friendRequestSchema,
   equipAvatarItemSchema,
+  equipAvatarPantsSchema,
   favoriteGameSchema,
+  followCreatorSchema,
+  hasBadgeSchema,
   loginSchema,
   playerAccountLinkSchema,
   playSessionSchema,
@@ -53,6 +63,226 @@ function gameSlug(title: string, projectId: string): string {
       .replace(/^-+|-+$/g, "")
       .slice(0, 48) || "game";
   return `${base}-${projectId.replace(/-/g, "").slice(0, 8)}`;
+}
+
+function contentSlug(value: string): string {
+  return (
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 42) || "item"
+  );
+}
+
+async function uploadAvatarItemTexture(
+  admin: SupabaseClient,
+  creatorId: string,
+  itemId: string,
+  textureData: string,
+): Promise<string> {
+  const match = textureData.match(/^data:image\/png;base64,([A-Za-z0-9+/=]+)$/);
+  if (!match) throw new HttpError(400, "Avatar clothing textures must be PNG files.");
+  const bytes = Buffer.from(match[1], "base64");
+  if (bytes.length > 2_000_000) {
+    throw new HttpError(413, "Avatar clothing textures must be 2 MB or smaller.");
+  }
+  const path = `${creatorId}/${itemId}.png`;
+  const { error } = await admin.storage
+    .from("avatar-item-textures")
+    .upload(path, bytes, {
+      contentType: "image/png",
+      cacheControl: "3600",
+      upsert: true,
+    });
+  if (error) throw error;
+  return admin.storage.from("avatar-item-textures").getPublicUrl(path).data.publicUrl;
+}
+
+async function uploadGameThumbnail(
+  admin: SupabaseClient,
+  gameId: string,
+  thumbnailData: string,
+): Promise<string> {
+  const match = thumbnailData.match(
+    /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$/,
+  );
+  if (!match) throw new HttpError(400, "Invalid game thumbnail.");
+  const bytes = Buffer.from(match[2], "base64");
+  if (bytes.length > 2_000_000) {
+    throw new HttpError(413, "Game thumbnails must be 2 MB or smaller.");
+  }
+  const extension = match[1] === "jpeg" ? "jpg" : match[1];
+  const path = `${gameId}/thumbnail-${Date.now()}.${extension}`;
+  const { error } = await admin.storage
+    .from("game-thumbnails")
+    .upload(path, bytes, {
+      contentType: `image/${match[1]}`,
+      cacheControl: "3600",
+      upsert: true,
+    });
+  if (error) throw error;
+  return admin.storage.from("game-thumbnails").getPublicUrl(path).data.publicUrl;
+}
+
+async function uploadBadgeIcon(
+  admin: SupabaseClient,
+  gameId: string,
+  badgeId: string,
+  iconData: string,
+): Promise<string> {
+  const match = iconData.match(/^data:image\/png;base64,([A-Za-z0-9+/=]+)$/);
+  if (!match) throw new HttpError(400, "Badge icons must be PNG files.");
+  const bytes = Buffer.from(match[1], "base64");
+  if (bytes.length > 1_000_000) {
+    throw new HttpError(413, "Badge icons must be 1 MB or smaller.");
+  }
+  const path = `${gameId}/${badgeId}.png`;
+  const { error } = await admin.storage
+    .from("badge-icons")
+    .upload(path, bytes, {
+      contentType: "image/png",
+      cacheControl: "3600",
+      upsert: true,
+    });
+  if (error) throw error;
+  return admin.storage.from("badge-icons").getPublicUrl(path).data.publicUrl;
+}
+
+async function syncGameBadges(
+  admin: SupabaseClient,
+  gameId: string,
+  creatorId: string,
+  badges: Array<{
+    id: string;
+    name: string;
+    description: string;
+    iconData?: string;
+  }>,
+) {
+  const { data: existing, error: existingError } = await admin
+    .from("game_badges")
+    .select("id, icon_url")
+    .eq("game_id", gameId);
+  if (existingError) throw existingError;
+  const existingById = new Map(
+    (existing ?? []).map((badge) => [badge.id, badge]),
+  );
+  const rows = [];
+  for (const badge of badges) {
+    const iconUrl = badge.iconData
+      ? await uploadBadgeIcon(admin, gameId, badge.id, badge.iconData)
+      : existingById.get(badge.id)?.icon_url ?? null;
+    rows.push({
+      id: badge.id,
+      game_id: gameId,
+      creator_id: creatorId,
+      name: badge.name,
+      description: badge.description,
+      icon_url: iconUrl,
+    });
+  }
+  if (rows.length > 0) {
+    const { error } = await admin
+      .from("game_badges")
+      .upsert(rows, { onConflict: "id" });
+    if (error) throw error;
+  }
+  const retained = new Set(rows.map((badge) => badge.id));
+  const removed = (existing ?? [])
+    .map((badge) => badge.id)
+    .filter((badgeId) => !retained.has(badgeId));
+  if (removed.length > 0) {
+    const { error } = await admin.from("game_badges").delete().in("id", removed);
+    if (error) throw error;
+  }
+  return rows;
+}
+
+async function syncGameMonetization(
+  admin: SupabaseClient,
+  gameId: string,
+  creatorId: string,
+  gamePasses: Array<{
+    id: string;
+    name: string;
+    description: string;
+    priceTix: number;
+  }>,
+  developerProducts: Array<{
+    id: string;
+    name: string;
+    description: string;
+    priceTix: number;
+    effectKey: string | null;
+    effectAmount: number;
+  }>,
+) {
+  const passRows = gamePasses.map((pass) => ({
+    id: pass.id,
+    game_id: gameId,
+    creator_id: creatorId,
+    name: pass.name,
+    description: pass.description,
+    price_tix: pass.priceTix,
+    is_active: true,
+  }));
+  if (passRows.length > 0) {
+    const { error } = await admin
+      .from("game_passes")
+      .upsert(passRows, { onConflict: "id" });
+    if (error) throw error;
+  }
+  const retainedPasses = new Set(passRows.map((pass) => pass.id));
+  const { data: existingPasses, error: existingPassError } = await admin
+    .from("game_passes")
+    .select("id")
+    .eq("game_id", gameId);
+  if (existingPassError) throw existingPassError;
+  const removedPasses = (existingPasses ?? [])
+    .map((pass) => pass.id)
+    .filter((passId) => !retainedPasses.has(passId));
+  if (removedPasses.length > 0) {
+    const { error } = await admin
+      .from("game_passes")
+      .update({ is_active: false })
+      .in("id", removedPasses);
+    if (error) throw error;
+  }
+
+  const productRows = developerProducts.map((product) => ({
+    id: product.id,
+    game_id: gameId,
+    creator_id: creatorId,
+    name: product.name,
+    description: product.description,
+    price_tix: product.priceTix,
+    effect_key: product.effectKey || null,
+    effect_amount: product.effectAmount,
+    is_active: true,
+  }));
+  if (productRows.length > 0) {
+    const { error } = await admin
+      .from("developer_products")
+      .upsert(productRows, { onConflict: "id" });
+    if (error) throw error;
+  }
+  const retainedProducts = new Set(productRows.map((product) => product.id));
+  const { data: existingProducts, error: existingProductError } = await admin
+    .from("developer_products")
+    .select("id")
+    .eq("game_id", gameId);
+  if (existingProductError) throw existingProductError;
+  const removedProducts = (existingProducts ?? [])
+    .map((product) => product.id)
+    .filter((productId) => !retainedProducts.has(productId));
+  if (removedProducts.length > 0) {
+    const { error } = await admin
+      .from("developer_products")
+      .update({ is_active: false })
+      .in("id", removedProducts);
+    if (error) throw error;
+  }
 }
 
 function websocketUrl(request: Request, ticket: string): string {
@@ -104,7 +334,11 @@ function integerQuery(
 export function createApp(
   config: ServerConfig,
   admin: SupabaseClient,
-  presence: () => PresenceSnapshot = () => ({ counts: {}, players: [] }),
+  presence: () => PresenceSnapshot = () => ({
+    counts: {},
+    players: [],
+    servers: [],
+  }),
 ) {
   const app = express();
   app.disable("x-powered-by");
@@ -286,14 +520,15 @@ export function createApp(
     ] = await Promise.all([
       admin
         .from("profiles")
-        .select("equipped_shirt_id")
+        .select("equipped_shirt_id, equipped_pants_id, avatar_appearance, tix")
         .eq("id", user.id)
         .single(),
       admin
         .from("avatar_items")
         .select(
-          "id, name, description, unlock_type, unlock_threshold, sort_order",
+          "id, name, description, item_type, unlock_type, unlock_threshold, price_tix, bundle_key, sort_order, texture_url, creator_id, created_from_upload",
         )
+        .eq("review_status", "approved")
         .order("sort_order"),
       admin
         .from("user_avatar_items")
@@ -307,16 +542,121 @@ export function createApp(
     const owned = new Set((inventory ?? []).map((item) => item.item_id));
     response.json({
       equippedShirtId: profile.equipped_shirt_id,
+      equippedPantsId: profile.equipped_pants_id,
+      avatarAppearance: normalizeAvatarAppearance(profile.avatar_appearance),
+      tix: Number(profile.tix ?? 0),
       totalCreatorVisits,
       items: (items ?? []).map((item) => ({
         id: item.id,
+        itemType: item.item_type,
         name: item.name,
         description: item.description,
         unlockType: item.unlock_type,
         unlockThreshold: item.unlock_threshold,
+        priceTix: Number(item.price_tix ?? 0),
+        bundleKey: item.bundle_key,
+        textureUrl: item.texture_url ?? null,
+        creatorId: item.creator_id ?? null,
+        createdFromUpload: item.created_from_upload === true,
         owned: owned.has(item.id),
-        equipped: profile.equipped_shirt_id === item.id,
+        equipped:
+          item.item_type === "pants"
+            ? profile.equipped_pants_id === item.id
+            : profile.equipped_shirt_id === item.id,
       })),
+    });
+  });
+
+  app.get("/v1/avatar/uploads", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const { data, error } = await admin
+      .from("avatar_items")
+      .select(
+        "id, name, description, item_type, unlock_type, price_tix, texture_url, review_status, rejection_reason, created_at, reviewed_at",
+      )
+      .eq("creator_id", user.id)
+      .eq("created_from_upload", true)
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    response.json({
+      submissions: (data ?? []).map((item) => ({
+        id: item.id,
+        name: item.name,
+        description: item.description,
+        itemType: item.item_type,
+        unlockType: item.unlock_type,
+        priceTix: Number(item.price_tix ?? 0),
+        textureUrl: item.texture_url,
+        reviewStatus: item.review_status,
+        rejectionReason: item.rejection_reason ?? "",
+        createdAt: item.created_at,
+        reviewedAt: item.reviewed_at,
+      })),
+    });
+  });
+
+  app.post("/v1/avatar/uploads", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const input = parseBody(avatarUploadSchema, request.body);
+    const startOfDay = new Date();
+    startOfDay.setUTCHours(0, 0, 0, 0);
+    const { count, error: countError } = await admin
+      .from("avatar_items")
+      .select("id", { count: "exact", head: true })
+      .eq("creator_id", user.id)
+      .eq("created_from_upload", true)
+      .gte("created_at", startOfDay.toISOString());
+    if (countError) throw countError;
+    if ((count ?? 0) >= 5) {
+      throw new HttpError(429, "You can upload 5 catalog items per day.");
+    }
+    const { data: profile, error: profileError } = await admin
+      .from("profiles")
+      .select("username")
+      .eq("id", user.id)
+      .single();
+    if (profileError) throw profileError;
+    const itemId = `${profile.username}-${contentSlug(input.name)}-${randomUUID().slice(0, 8)}`;
+    const textureUrl = await uploadAvatarItemTexture(
+      admin,
+      user.id,
+      itemId,
+      input.textureData,
+    );
+    const { data: item, error } = await admin
+      .from("avatar_items")
+      .insert({
+        id: itemId,
+        name: input.name,
+        description: input.description,
+        item_type: input.itemType,
+        unlock_type: input.priceTix > 0 ? "tix" : "free",
+        price_tix: input.priceTix,
+        creator_id: user.id,
+        texture_url: textureUrl,
+        review_status: "pending",
+        created_from_upload: true,
+        sort_order: 10_000,
+      })
+      .select(
+        "id, name, description, item_type, unlock_type, price_tix, texture_url, review_status, rejection_reason, created_at, reviewed_at",
+      )
+      .single();
+    if (error) throw error;
+    response.status(201).json({
+      submission: {
+        id: item.id,
+        name: item.name,
+        description: item.description,
+        itemType: item.item_type,
+        unlockType: item.unlock_type,
+        priceTix: Number(item.price_tix ?? 0),
+        textureUrl: item.texture_url,
+        reviewStatus: item.review_status,
+        rejectionReason: item.rejection_reason ?? "",
+        createdAt: item.created_at,
+        reviewedAt: item.reviewed_at,
+      },
     });
   });
 
@@ -325,20 +665,50 @@ export function createApp(
     const itemId = request.params.itemId;
     const { data: item, error: itemError } = await admin
       .from("avatar_items")
-      .select("id, unlock_type")
+      .select("id, unlock_type, review_status")
       .eq("id", itemId)
       .maybeSingle();
     if (itemError) throw itemError;
     if (!item) throw new HttpError(404, "Avatar item not found.");
-    if (item.unlock_type !== "free") {
+    if (item.review_status !== "approved") {
+      throw new HttpError(403, "This avatar item is still under review.");
+    }
+    if (item.unlock_type === "creator_visits") {
       throw new HttpError(403, "This item must be unlocked.");
+    }
+    if (item.unlock_type === "tix") {
+      const { data, error } = await admin.rpc(
+        "purchase_avatar_item_with_tix",
+        {
+          target_user_id: user.id,
+          target_item_id: item.id,
+        },
+      );
+      if (error?.message.includes("not enough tix")) {
+        throw new HttpError(403, "You do not have enough Tix.");
+      }
+      if (error) throw error;
+      const purchase = Array.isArray(data) ? data[0] : data;
+      response.status(201).json({
+        itemId: item.id,
+        itemIds: purchase?.purchased_item_ids ?? [item.id],
+        owned: true,
+        tix: Number(purchase?.balance ?? 0),
+      });
+      return;
     }
     const { error } = await admin.from("user_avatar_items").upsert(
       { user_id: user.id, item_id: item.id },
       { onConflict: "user_id,item_id", ignoreDuplicates: true },
     );
     if (error) throw error;
-    response.status(201).json({ itemId: item.id, owned: true });
+    const profile = await loadProfile(admin, user.id);
+    response.status(201).json({
+      itemId: item.id,
+      itemIds: [item.id],
+      owned: true,
+      tix: profile.tix,
+    });
   });
 
   app.post("/v1/avatar/equip", async (request, response) => {
@@ -366,6 +736,45 @@ export function createApp(
     });
   });
 
+  app.post("/v1/avatar/equip-pants", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const input = parseBody(equipAvatarPantsSchema, request.body);
+    if (input.pantsId) {
+      await syncAvatarUnlocks(admin, user.id);
+      const { data: owned, error: ownedError } = await admin
+        .from("user_avatar_items")
+        .select("item_id")
+        .eq("user_id", user.id)
+        .eq("item_id", input.pantsId)
+        .maybeSingle();
+      if (ownedError) throw ownedError;
+      if (!owned) throw new HttpError(403, "You do not own these pants.");
+    }
+    const { error } = await admin
+      .from("profiles")
+      .update({ equipped_pants_id: input.pantsId })
+      .eq("id", user.id);
+    if (error) throw error;
+    response.json({
+      equippedPantsId: input.pantsId,
+      user: await loadProfile(admin, user.id),
+    });
+  });
+
+  app.post("/v1/avatar/appearance", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const appearance = parseBody(avatarAppearanceSchema, request.body);
+    const { error } = await admin
+      .from("profiles")
+      .update({ avatar_appearance: appearance })
+      .eq("id", user.id);
+    if (error) throw error;
+    response.json({
+      avatarAppearance: appearance,
+      user: await loadProfile(admin, user.id),
+    });
+  });
+
   app.get("/v1/admin/accounts", async (request, response) => {
     await ownerUser(request, admin);
     const page = integerQuery(request.query.page, 1, 1, 10_000);
@@ -386,7 +795,7 @@ export function createApp(
         ? admin
             .from("profiles")
             .select(
-              "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, created_at",
+              "id, polymons_id, username, display_name, bio, tix, avatar_url, equipped_shirt_id, equipped_pants_id, created_at",
             )
             .in("id", userIds)
         : Promise.resolve({ data: [], error: null }),
@@ -403,7 +812,7 @@ export function createApp(
         : Promise.resolve({ data: [], error: null }),
       admin
         .from("avatar_items")
-        .select("id, name, description, item_type, unlock_type, unlock_threshold, sort_order")
+        .select("id, name, description, item_type, unlock_type, unlock_threshold, price_tix, bundle_key, sort_order, texture_url, review_status, creator_id, created_from_upload")
         .order("sort_order"),
     ]);
     if (profilesResult.error) throw profilesResult.error;
@@ -461,8 +870,10 @@ export function createApp(
           polymonsId: Number(profile?.polymons_id ?? 0),
           displayName: profile?.display_name ?? "Unknown player",
           description: profile?.bio ?? "",
+          tix: Number(profile?.tix ?? 0),
           avatarUrl: profile?.avatar_url ?? null,
           equippedShirtId: profile?.equipped_shirt_id ?? null,
+          equippedPantsId: profile?.equipped_pants_id ?? null,
           joinedAt: profile?.created_at ?? authUser.created_at,
           lastSignInAt: authUser.last_sign_in_at ?? null,
           role: isOwnerAccount(authUser) ? "owner" : "player",
@@ -502,7 +913,111 @@ export function createApp(
         itemType: item.item_type,
         unlockType: item.unlock_type,
         unlockThreshold: item.unlock_threshold,
+        priceTix: Number(item.price_tix ?? 0),
+        bundleKey: item.bundle_key,
+        textureUrl: item.texture_url ?? null,
+        reviewStatus: item.review_status,
+        creatorId: item.creator_id ?? null,
+        createdFromUpload: item.created_from_upload === true,
       })),
+    });
+  });
+
+  app.get("/v1/admin/catalog-submissions", async (request, response) => {
+    await ownerUser(request, admin);
+    const { data, error } = await admin
+      .from("avatar_items")
+      .select(
+        "id, name, description, item_type, unlock_type, price_tix, texture_url, review_status, rejection_reason, created_at, reviewed_at, creator_id",
+      )
+      .eq("created_from_upload", true)
+      .order("created_at", { ascending: false })
+      .limit(100);
+    if (error) throw error;
+    const creatorIds = [
+      ...new Set((data ?? []).flatMap((item) => item.creator_id ? [item.creator_id] : [])),
+    ];
+    const { data: creators, error: creatorsError } = creatorIds.length
+      ? await admin
+          .from("profiles")
+          .select("id, username, display_name")
+          .in("id", creatorIds)
+      : { data: [], error: null };
+    if (creatorsError) throw creatorsError;
+    const creatorById = new Map((creators ?? []).map((creator) => [creator.id, creator]));
+    response.json({
+      submissions: (data ?? []).map((item) => {
+        const creator = item.creator_id ? creatorById.get(item.creator_id) : null;
+        return {
+          id: item.id,
+          name: item.name,
+          description: item.description,
+          itemType: item.item_type,
+          unlockType: item.unlock_type,
+          priceTix: Number(item.price_tix ?? 0),
+          textureUrl: item.texture_url,
+          reviewStatus: item.review_status,
+          rejectionReason: item.rejection_reason ?? "",
+          createdAt: item.created_at,
+          reviewedAt: item.reviewed_at,
+          creator: creator
+            ? {
+                id: creator.id,
+                username: creator.username,
+                displayName: creator.display_name,
+              }
+            : null,
+        };
+      }),
+    });
+  });
+
+  app.post("/v1/admin/catalog-submissions/:itemId/review", async (request, response) => {
+    const owner = await ownerUser(request, admin);
+    const itemId = request.params.itemId;
+    if (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(itemId)) {
+      throw new HttpError(400, "Invalid catalog item ID.");
+    }
+    const input = parseBody(adminCatalogReviewSchema, request.body);
+    const { data, error } = await admin
+      .from("avatar_items")
+      .update({
+        review_status: input.status,
+        rejection_reason: input.status === "rejected" ? input.reason : "",
+        reviewed_by: owner.id,
+        reviewed_at: new Date().toISOString(),
+      })
+      .eq("id", itemId)
+      .eq("created_from_upload", true)
+      .select("id, review_status, rejection_reason")
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw new HttpError(404, "Catalog submission not found.");
+    response.json({
+      itemId: data.id,
+      reviewStatus: data.review_status,
+      rejectionReason: data.rejection_reason ?? "",
+    });
+  });
+
+  app.post("/v1/admin/accounts/:userId/tix", async (request, response) => {
+    await ownerUser(request, admin);
+    const userId = request.params.userId;
+    if (!UUID_PATTERN.test(userId)) {
+      throw new HttpError(400, "Invalid account ID.");
+    }
+    const input = parseBody(adminTixSchema, request.body);
+    const { data, error } = await admin.rpc("adjust_profile_tix", {
+      target_user_id: userId,
+      adjustment: input.amount,
+      set_balance: input.mode === "set",
+    });
+    if (error) throw error;
+    response.json({
+      userId,
+      tix: Number(data ?? 0),
+      mode: input.mode,
+      amount: input.amount,
     });
   });
 
@@ -517,7 +1032,7 @@ export function createApp(
       const input = parseBody(adminInventorySchema, request.body);
       const { data: item, error: itemError } = await admin
         .from("avatar_items")
-        .select("id")
+        .select("id, item_type")
         .eq("id", input.itemId)
         .maybeSingle();
       if (itemError) throw itemError;
@@ -530,9 +1045,13 @@ export function createApp(
         );
         if (error) throw error;
         if (input.equip) {
+          const equippedColumn =
+            item.item_type === "pants"
+              ? "equipped_pants_id"
+              : "equipped_shirt_id";
           const { error: equipError } = await admin
             .from("profiles")
-            .update({ equipped_shirt_id: input.itemId })
+            .update({ [equippedColumn]: input.itemId })
             .eq("id", userId);
           if (equipError) throw equipError;
         }
@@ -543,11 +1062,15 @@ export function createApp(
           .eq("user_id", userId)
           .eq("item_id", input.itemId);
         if (error) throw error;
+        const equippedColumn =
+          item.item_type === "pants"
+            ? "equipped_pants_id"
+            : "equipped_shirt_id";
         const { error: unequipError } = await admin
           .from("profiles")
-          .update({ equipped_shirt_id: null })
+          .update({ [equippedColumn]: null })
           .eq("id", userId)
-          .eq("equipped_shirt_id", input.itemId);
+          .eq(equippedColumn, input.itemId);
         if (unequipError) throw unequipError;
       }
 
@@ -645,7 +1168,7 @@ export function createApp(
     let query = admin
       .from("games")
       .select(
-        "id, slug, title, description, visibility, genre, thumbnail_url, platform_owned, owner_id, visit_count, updated_at",
+        "id, slug, title, description, visibility, genre, thumbnail_url, platform_owned, owner_id, visit_count, created_at, updated_at",
       )
       .eq("visibility", "public");
 
@@ -676,6 +1199,35 @@ export function createApp(
       .order("version_number", { ascending: false })
       .limit(1)
       .maybeSingle();
+    const { count: favorites } = await admin
+      .from("game_favorites")
+      .select("game_id", { count: "exact", head: true })
+      .eq("game_id", data.id);
+    const { data: badges, error: badgesError } = await admin
+      .from("game_badges")
+      .select("id, name, description, icon_url")
+      .eq("game_id", data.id)
+      .order("created_at");
+    if (badgesError) throw badgesError;
+    const [
+      { data: gamePasses, error: gamePassesError },
+      { data: developerProducts, error: developerProductsError },
+    ] = await Promise.all([
+      admin
+        .from("game_passes")
+        .select("id, name, description, price_tix")
+        .eq("game_id", data.id)
+        .eq("is_active", true)
+        .order("created_at"),
+      admin
+        .from("developer_products")
+        .select("id, name, description, price_tix, effect_key, effect_amount")
+        .eq("game_id", data.id)
+        .eq("is_active", true)
+        .order("created_at"),
+    ]);
+    if (gamePassesError) throw gamePassesError;
+    if (developerProductsError) throw developerProductsError;
     response.json({
       game: {
         id: data.id,
@@ -690,10 +1242,177 @@ export function createApp(
         creatorUsername: owner?.username ?? "polymons",
         activePlayers: presence().counts[data.id] ?? 0,
         visits: Number(data.visit_count ?? 0),
+        favorites: favorites ?? 0,
+        createdAt: data.created_at,
         updatedAt: data.updated_at,
         manifest: version?.manifest ?? null,
         version: version?.version_number ?? null,
+        badges: (badges ?? []).map((badge) => ({
+          id: badge.id,
+          name: badge.name,
+          description: badge.description,
+          iconUrl: badge.icon_url,
+        })),
+        gamePasses: (gamePasses ?? []).map((pass) => ({
+          id: pass.id,
+          name: pass.name,
+          description: pass.description,
+          priceTix: Number(pass.price_tix ?? 0),
+        })),
+        developerProducts: (developerProducts ?? []).map((product) => ({
+          id: product.id,
+          name: product.name,
+          description: product.description,
+          priceTix: Number(product.price_tix ?? 0),
+          effectKey: product.effect_key ?? null,
+          effectAmount: Number(product.effect_amount ?? 0),
+        })),
       },
+    });
+  });
+
+  app.post("/v1/games/:gameId/badges/award", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const input = parseBody(awardBadgeSchema, request.body);
+    const gameId = request.params.gameId;
+    const activePlayer = presence().players.find(
+      (player) => player.userId === user.id && player.gameId === gameId,
+    );
+    if (!activePlayer) {
+      throw new HttpError(403, "Join this game before earning its badges.");
+    }
+    const { data, error } = await admin.rpc("award_game_badge", {
+      target_user_id: user.id,
+      target_game_id: gameId,
+      target_badge_name: input.badgeName,
+    });
+    if (error?.message.includes("badge not found")) {
+      throw new HttpError(404, "Badge not found.");
+    }
+    if (error) throw error;
+    response.status(201).json({ badgeId: data, awarded: true });
+  });
+
+  app.post("/v1/games/:gameId/badges/check", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const input = parseBody(hasBadgeSchema, request.body);
+    const gameId = request.params.gameId;
+    if (!UUID_PATTERN.test(gameId)) {
+      throw new HttpError(400, "Invalid game ID.");
+    }
+    const { data, error } = await admin.rpc("player_has_game_badge", {
+      target_user_id: user.id,
+      target_game_id: gameId,
+      target_badge_name: input.badgeName,
+    });
+    if (error) throw error;
+    response.json({ gameId, badgeName: input.badgeName, owned: data === true });
+  });
+
+  app.get("/v1/games/:gameId/entitlements", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const gameId = request.params.gameId;
+    if (!UUID_PATTERN.test(gameId)) {
+      throw new HttpError(400, "Invalid game ID.");
+    }
+    const [
+      { data: ownedPasses, error: passesError },
+      { data: playerData, error: playerDataError },
+      { data: playerBadges, error: playerBadgesError },
+    ] = await Promise.all([
+      admin
+        .from("user_game_passes")
+        .select("game_pass_id, game_passes!inner(game_id, name)")
+        .eq("user_id", user.id)
+        .eq("game_passes.game_id", gameId),
+      admin
+        .from("game_player_data")
+        .select("data")
+        .eq("game_id", gameId)
+        .eq("user_id", user.id)
+        .maybeSingle(),
+      admin
+        .from("player_badges")
+        .select("game_badges!inner(game_id, name)")
+        .eq("user_id", user.id)
+        .eq("game_badges.game_id", gameId),
+    ]);
+    if (passesError) throw passesError;
+    if (playerDataError) throw playerDataError;
+    if (playerBadgesError) throw playerBadgesError;
+    response.json({
+      gamePasses: (ownedPasses ?? []).map((pass) => pass.game_pass_id),
+      gamePassNames: (ownedPasses ?? []).flatMap((pass) => {
+        const gamePass = Array.isArray(pass.game_passes)
+          ? pass.game_passes[0]
+          : pass.game_passes;
+        return gamePass?.name ? [gamePass.name] : [];
+      }),
+      badges: (playerBadges ?? []).flatMap((badge) => {
+        const gameBadge = Array.isArray(badge.game_badges)
+          ? badge.game_badges[0]
+          : badge.game_badges;
+        return gameBadge?.name ? [gameBadge.name] : [];
+      }),
+      playerData: playerData?.data ?? {},
+    });
+  });
+
+  app.post("/v1/games/:gameId/gamepasses/:passId/purchase", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const { data: pass, error: passError } = await admin
+      .from("game_passes")
+      .select("id, game_id")
+      .eq("id", request.params.passId)
+      .eq("game_id", request.params.gameId)
+      .eq("is_active", true)
+      .maybeSingle();
+    if (passError) throw passError;
+    if (!pass) throw new HttpError(404, "Gamepass not found.");
+    const { data, error } = await admin.rpc("purchase_game_pass_with_tix", {
+      target_user_id: user.id,
+      target_game_pass_id: pass.id,
+    });
+    if (error?.message.includes("not enough tix")) {
+      throw new HttpError(403, "You do not have enough Tix.");
+    }
+    if (error) throw error;
+    const purchase = Array.isArray(data) ? data[0] : data;
+    response.status(201).json({
+      passId: pass.id,
+      owned: true,
+      tix: Number(purchase?.balance ?? 0),
+    });
+  });
+
+  app.post("/v1/games/:gameId/products/:productId/purchase", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const { data: product, error: productError } = await admin
+      .from("developer_products")
+      .select("id, game_id")
+      .eq("id", request.params.productId)
+      .eq("game_id", request.params.gameId)
+      .eq("is_active", true)
+      .maybeSingle();
+    if (productError) throw productError;
+    if (!product) throw new HttpError(404, "Developer product not found.");
+    const { data, error } = await admin.rpc(
+      "purchase_developer_product_with_tix",
+      {
+        target_user_id: user.id,
+        target_product_id: product.id,
+      },
+    );
+    if (error?.message.includes("not enough tix")) {
+      throw new HttpError(403, "You do not have enough Tix.");
+    }
+    if (error) throw error;
+    const purchase = Array.isArray(data) ? data[0] : data;
+    response.status(201).json({
+      productId: product.id,
+      purchaseId: purchase?.purchase_id,
+      tix: Number(purchase?.balance ?? 0),
+      playerData: purchase?.player_data ?? {},
     });
   });
 
@@ -708,7 +1427,7 @@ export function createApp(
     let gameQuery = admin
       .from("games")
       .select(
-        "id, slug, title, description, genre, thumbnail_url, owner_id, visit_count, updated_at",
+        "id, slug, title, description, genre, thumbnail_url, owner_id, visit_count, created_at, updated_at",
       )
       .eq("visibility", "public");
     if (search) {
@@ -733,6 +1452,17 @@ export function createApp(
           .in("id", ownerIds)
       : { data: [] };
     const ownerById = new Map((owners ?? []).map((owner) => [owner.id, owner]));
+    const gameIds = (data ?? []).map((game) => game.id);
+    const { data: favoriteRows } = gameIds.length
+      ? await admin.from("game_favorites").select("game_id").in("game_id", gameIds)
+      : { data: [] };
+    const favoritesByGame = new Map<string, number>();
+    for (const favorite of favoriteRows ?? []) {
+      favoritesByGame.set(
+        favorite.game_id,
+        (favoritesByGame.get(favorite.game_id) ?? 0) + 1,
+      );
+    }
     const counts = presence().counts;
     response.json({
       games: (data ?? []).map((game) => {
@@ -748,6 +1478,8 @@ export function createApp(
           creatorUsername: owner?.username ?? "polymons",
           activePlayers: counts[game.id] ?? 0,
           visits: Number(game.visit_count ?? 0),
+          favorites: favoritesByGame.get(game.id) ?? 0,
+          createdAt: game.created_at,
           updatedAt: game.updated_at,
         };
       }),
@@ -825,7 +1557,7 @@ export function createApp(
       admin
         .from("profiles")
         .select(
-          "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, created_at",
+          "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, equipped_pants_id, avatar_appearance, created_at",
         )
         .ilike("username", pattern)
         .order("username")
@@ -833,7 +1565,7 @@ export function createApp(
       admin
         .from("profiles")
         .select(
-          "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, created_at",
+          "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, equipped_pants_id, avatar_appearance, created_at",
         )
         .ilike("display_name", pattern)
         .order("username")
@@ -845,7 +1577,7 @@ export function createApp(
       ? await admin
           .from("profiles")
           .select(
-            "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, created_at",
+            "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, equipped_pants_id, avatar_appearance, created_at",
           )
           .eq("polymons_id", Number(query))
           .limit(1)
@@ -866,6 +1598,8 @@ export function createApp(
           description: player.bio ?? "",
           avatarUrl: player.avatar_url,
           equippedShirtId: player.equipped_shirt_id,
+          equippedPantsId: player.equipped_pants_id,
+          avatarAppearance: normalizeAvatarAppearance(player.avatar_appearance),
           joinedAt: player.created_at,
         },
       ]),
@@ -881,19 +1615,24 @@ export function createApp(
     const { data: player, error: playerError } = await admin
       .from("profiles")
       .select(
-        "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, created_at",
+        "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, equipped_pants_id, avatar_appearance, created_at",
       )
       .eq("username", username)
       .maybeSingle();
     if (playerError) throw playerError;
     if (!player) throw new HttpError(404, "Player not found.");
 
-    const [{ data: games, error: gamesError }, { count: friends, error: friendsError }] =
+    const [
+      { data: games, error: gamesError },
+      { count: friends, error: friendsError },
+      { count: followers, error: followersError },
+      { data: playerBadges, error: playerBadgesError },
+    ] =
       await Promise.all([
         admin
           .from("games")
           .select(
-            "id, slug, title, description, genre, thumbnail_url, visit_count, updated_at",
+            "id, slug, title, description, genre, thumbnail_url, visit_count, created_at, updated_at",
           )
           .eq("owner_id", player.id)
           .eq("visibility", "public")
@@ -903,9 +1642,32 @@ export function createApp(
           .select("id", { count: "exact", head: true })
           .eq("status", "accepted")
           .or(`requester_id.eq.${player.id},addressee_id.eq.${player.id}`),
+        admin
+          .from("creator_follows")
+          .select("creator_id", { count: "exact", head: true })
+          .eq("creator_id", player.id),
+        admin
+          .from("player_badges")
+          .select("badge_id, awarded_at")
+          .eq("user_id", player.id)
+          .order("awarded_at", { ascending: false })
+          .limit(100),
       ]);
     if (gamesError) throw gamesError;
     if (friendsError) throw friendsError;
+    if (followersError) throw followersError;
+    if (playerBadgesError) throw playerBadgesError;
+    const badgeIds = (playerBadges ?? []).map((badge) => badge.badge_id);
+    const { data: badgeDetails, error: badgeDetailsError } = badgeIds.length
+      ? await admin
+          .from("game_badges")
+          .select("id, game_id, name, description, icon_url")
+          .in("id", badgeIds)
+      : { data: [], error: null };
+    if (badgeDetailsError) throw badgeDetailsError;
+    const badgeById = new Map(
+      (badgeDetails ?? []).map((badge) => [badge.id, badge]),
+    );
     const counts = presence().counts;
     const publicGames = (games ?? []).map((game) => ({
       id: game.id,
@@ -918,6 +1680,8 @@ export function createApp(
       creatorUsername: player.username,
       activePlayers: counts[game.id] ?? 0,
       visits: Number(game.visit_count ?? 0),
+      favorites: 0,
+      createdAt: game.created_at,
       updatedAt: game.updated_at,
     }));
     response.json({
@@ -929,21 +1693,167 @@ export function createApp(
         description: player.bio ?? "",
         avatarUrl: player.avatar_url,
         equippedShirtId: player.equipped_shirt_id,
+        equippedPantsId: player.equipped_pants_id,
+        avatarAppearance: normalizeAvatarAppearance(player.avatar_appearance),
         joinedAt: player.created_at,
       },
       stats: {
         friends: friends ?? 0,
         games: publicGames.length,
         gameVisits: publicGames.reduce((total, game) => total + game.visits, 0),
+        followers: followers ?? 0,
       },
       games: publicGames,
+      badges: (playerBadges ?? []).flatMap((earned) => {
+        const badge = badgeById.get(earned.badge_id);
+        return badge
+          ? [{
+              id: badge.id,
+              gameId: badge.game_id,
+              name: badge.name,
+              description: badge.description,
+              iconUrl: badge.icon_url,
+              awardedAt: earned.awarded_at,
+            }]
+          : [];
+      }),
+    });
+  });
+
+  app.post("/v1/players/:username/follow", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const input = parseBody(followCreatorSchema, request.body);
+    const username = request.params.username.trim().toLowerCase();
+    const { data: creator, error: creatorError } = await admin
+      .from("profiles")
+      .select("id, username")
+      .eq("username", username)
+      .maybeSingle();
+    if (creatorError) throw creatorError;
+    if (!creator) throw new HttpError(404, "Creator not found.");
+    if (creator.id === user.id) {
+      throw new HttpError(400, "You cannot follow yourself.");
+    }
+    const result = input.following
+      ? await admin.from("creator_follows").upsert(
+          { follower_id: user.id, creator_id: creator.id },
+          { onConflict: "follower_id,creator_id", ignoreDuplicates: true },
+        )
+      : await admin
+          .from("creator_follows")
+          .delete()
+          .eq("follower_id", user.id)
+          .eq("creator_id", creator.id);
+    if (result.error) throw result.error;
+    response.json({ username: creator.username, following: input.following });
+  });
+
+  app.get("/v1/follows", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const { data: follows, error } = await admin
+      .from("creator_follows")
+      .select("creator_id, created_at")
+      .eq("follower_id", user.id)
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    const creatorIds = (follows ?? []).map((follow) => follow.creator_id);
+    const { data: creators, error: creatorError } = creatorIds.length
+      ? await admin
+          .from("profiles")
+          .select("id, username, display_name, avatar_url")
+          .in("id", creatorIds)
+      : { data: [], error: null };
+    if (creatorError) throw creatorError;
+    const creatorById = new Map(
+      (creators ?? []).map((creator) => [creator.id, creator]),
+    );
+    response.json({
+      creators: (follows ?? []).flatMap((follow) => {
+        const creator = creatorById.get(follow.creator_id);
+        return creator
+          ? [{
+              id: creator.id,
+              username: creator.username,
+              displayName: creator.display_name,
+              avatarUrl: creator.avatar_url,
+              followedAt: follow.created_at,
+            }]
+          : [];
+      }),
+    });
+  });
+
+  app.get("/v1/creator/analytics", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const { data: games, error } = await admin
+      .from("games")
+      .select("id, slug, title, visit_count, updated_at")
+      .eq("owner_id", user.id)
+      .order("updated_at", { ascending: false });
+    if (error) throw error;
+    const gameIds = (games ?? []).map((game) => game.id);
+    const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const [{ data: sessions, error: sessionsError }, { data: favorites, error: favoritesError }] =
+      gameIds.length
+        ? await Promise.all([
+            admin
+              .from("play_sessions")
+              .select("game_id, created_at")
+              .in("game_id", gameIds)
+              .gte("created_at", since),
+            admin.from("game_favorites").select("game_id").in("game_id", gameIds),
+          ])
+        : [
+            { data: [], error: null },
+            { data: [], error: null },
+          ];
+    if (sessionsError) throw sessionsError;
+    if (favoritesError) throw favoritesError;
+    const weeklyByGame = new Map<string, number>();
+    const favoritesByGame = new Map<string, number>();
+    for (const session of sessions ?? []) {
+      weeklyByGame.set(
+        session.game_id,
+        (weeklyByGame.get(session.game_id) ?? 0) + 1,
+      );
+    }
+    for (const favorite of favorites ?? []) {
+      favoritesByGame.set(
+        favorite.game_id,
+        (favoritesByGame.get(favorite.game_id) ?? 0) + 1,
+      );
+    }
+    const counts = presence().counts;
+    response.json({
+      totals: {
+        games: gameIds.length,
+        visits: (games ?? []).reduce(
+          (total, game) => total + Number(game.visit_count ?? 0),
+          0,
+        ),
+        activePlayers: gameIds.reduce(
+          (total, gameId) => total + (counts[gameId] ?? 0),
+          0,
+        ),
+        playsLast7Days: (sessions ?? []).length,
+      },
+      games: (games ?? []).map((game) => ({
+        id: game.id,
+        slug: game.slug,
+        title: game.title,
+        visits: Number(game.visit_count ?? 0),
+        activePlayers: counts[game.id] ?? 0,
+        favorites: favoritesByGame.get(game.id) ?? 0,
+        playsLast7Days: weeklyByGame.get(game.id) ?? 0,
+        updatedAt: game.updated_at,
+      })),
     });
   });
 
   app.post("/v1/games/publish", async (request, response) => {
     const user = await authenticatedUser(request, admin);
     const input = parseBody(publishGameSchema, request.body);
-    if (Buffer.byteLength(JSON.stringify(input.manifest), "utf8") > 1_500_000) {
+    if (Buffer.byteLength(JSON.stringify(input.manifest), "utf8") > 8_000_000) {
       throw new HttpError(413, "This game is too large to publish.");
     }
     const { data: existing, error: lookupError } = await admin
@@ -986,6 +1896,26 @@ export function createApp(
       if (error) throw error;
       game = data;
     }
+    if (input.thumbnailData) {
+      const thumbnailUrl = await uploadGameThumbnail(
+        admin,
+        game.id,
+        input.thumbnailData,
+      );
+      const { error: thumbnailError } = await admin
+        .from("games")
+        .update({ thumbnail_url: thumbnailUrl })
+        .eq("id", game.id);
+      if (thumbnailError) throw thumbnailError;
+    }
+    await syncGameBadges(admin, game.id, user.id, input.badges);
+    await syncGameMonetization(
+      admin,
+      game.id,
+      user.id,
+      input.gamePasses,
+      input.developerProducts,
+    );
     const { data: latest } = await admin
       .from("game_versions")
       .select("version_number")
@@ -1019,6 +1949,80 @@ export function createApp(
     });
   });
 
+  app.get("/v1/games/:gameId/servers", async (request, response) => {
+    const gameReference = request.params.gameId;
+    let query = admin
+      .from("games")
+      .select("id, slug, title")
+      .eq("visibility", "public");
+    query = UUID_PATTERN.test(gameReference)
+      ? query.eq("id", gameReference)
+      : query.eq("slug", gameReference);
+    const { data: game, error } = await query.maybeSingle();
+    if (error) throw error;
+    if (!game) throw new HttpError(404, "Game not found.");
+    response.json({
+      game,
+      servers: presence().servers
+        .filter((server) => server.gameId === game.id)
+        .map((server) => ({
+          id: server.id,
+          playerCount: server.playerCount,
+          players: server.players,
+        })),
+    });
+  });
+
+  app.get("/v1/servers/friends", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const { data: friendships, error } = await admin
+      .from("friendships")
+      .select("requester_id, addressee_id")
+      .eq("status", "accepted")
+      .or(`requester_id.eq.${user.id},addressee_id.eq.${user.id}`);
+    if (error) throw error;
+    const friendIds = new Set(
+      (friendships ?? []).map((friendship) =>
+        friendship.requester_id === user.id
+          ? friendship.addressee_id
+          : friendship.requester_id,
+      ),
+    );
+    const servers = presence().servers
+      .map((server) => ({
+        ...server,
+        friends: server.players.filter((player) => friendIds.has(player.userId)),
+      }))
+      .filter((server) => server.friends.length > 0);
+    const gameIds = [...new Set(servers.map((server) => server.gameId))];
+    const { data: games, error: gamesError } = gameIds.length
+      ? await admin
+          .from("games")
+          .select("id, slug, title, thumbnail_url")
+          .in("id", gameIds)
+      : { data: [], error: null };
+    if (gamesError) throw gamesError;
+    const gameById = new Map((games ?? []).map((game) => [game.id, game]));
+    response.json({
+      servers: servers.flatMap((server) => {
+        const game = gameById.get(server.gameId);
+        return game
+          ? [{
+              id: server.id,
+              playerCount: server.playerCount,
+              friends: server.friends,
+              game: {
+                id: game.id,
+                slug: game.slug,
+                title: game.title,
+                thumbnailUrl: game.thumbnail_url,
+              },
+            }]
+          : [];
+      }),
+    });
+  });
+
   app.get("/v1/friends", async (request, response) => {
     const user = await authenticatedUser(request, admin);
     const { data, error } = await admin
@@ -1040,7 +2044,7 @@ export function createApp(
       ? await admin
           .from("profiles")
           .select(
-            "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id",
+            "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, equipped_pants_id, avatar_appearance",
           )
           .in("id", profileIds)
       : { data: [] };
@@ -1076,6 +2080,10 @@ export function createApp(
                 description: profile.bio ?? "",
                 avatarUrl: profile.avatar_url,
                 equippedShirtId: profile.equipped_shirt_id,
+                equippedPantsId: profile.equipped_pants_id,
+                avatarAppearance: normalizeAvatarAppearance(
+                  profile.avatar_appearance,
+                ),
               }
             : null,
           gameId: online ? gameSlugById.get(online.gameId) ?? null : null,
@@ -1181,15 +2189,10 @@ export function createApp(
     if (visitError) {
       console.error("Could not increment game visits:", visitError.message);
     }
-    const { error: recentError } = await admin.from("recent_games").upsert(
-      {
-        user_id: user.id,
-        game_id: game.id,
-        last_played_at: new Date().toISOString(),
-        play_count: 1,
-      },
-      { onConflict: "user_id,game_id" },
-    );
+    const { error: recentError } = await admin.rpc("record_recent_game", {
+      target_user_id: user.id,
+      target_game_id: game.id,
+    });
     if (recentError) {
       console.error("Could not update recent games:", recentError.message);
     }

@@ -7,7 +7,7 @@ import {
   Search,
   Users,
 } from "lucide-react";
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import logo from "../../assets/polymons-logo.png";
 import { useMultiplayer } from "../../src/game/multiplayer";
 import {
@@ -21,6 +21,7 @@ import {
   type PolyRuntimeResult,
   runPolyProject,
 } from "../../src/game/polyProject";
+import { usePolyRuntimeScheduler } from "../../src/game/usePolyRuntimeScheduler";
 
 const BaseplateGame = lazy(
   () => import("../../src/game/BaseplateGame"),
@@ -28,12 +29,16 @@ const BaseplateGame = lazy(
 
 function runtimePlayerData(
   user: PlayerUser | null | undefined,
+  entitlements?: Awaited<ReturnType<typeof window.polymons.getGameEntitlements>>,
 ): PolyPlayerData | undefined {
   return user
     ? {
         userId: user.polymonsId,
         username: user.username,
         displayName: user.displayName,
+        gamePasses: entitlements?.gamePassNames ?? [],
+        badges: entitlements?.badges ?? [],
+        playerData: entitlements?.playerData ?? {},
       }
     : undefined;
 }
@@ -61,6 +66,20 @@ function mergeRuntimeResults(
     soundRequests: [...current.soundRequests, ...activated.soundRequests],
     soundVersion:
       current.soundVersion + (activated.soundRequests.length > 0 ? 1 : 0),
+    scheduledScripts: [
+      ...current.scheduledScripts,
+      ...activated.scheduledScripts,
+    ],
+    badgeAwards: [
+      ...new Set([
+        ...(current.badgeAwards ?? []),
+        ...(activated.badgeAwards ?? []),
+      ]),
+    ],
+    purchaseRequests: [
+      ...(current.purchaseRequests ?? []),
+      ...(activated.purchaseRequests ?? []),
+    ],
   };
 }
 
@@ -73,6 +92,10 @@ export default function PlayerApp() {
   const [gamesLoading, setGamesLoading] = useState(true);
   const [startingGameId, setStartingGameId] = useState<string | null>(null);
   const [friends, setFriends] = useState<PlayerFriendship[]>([]);
+  const [friendServers, setFriendServers] = useState<
+    Awaited<ReturnType<typeof window.polymons.listFriendServers>>["servers"]
+  >([]);
+  const [recentGames, setRecentGames] = useState<PlayerGameSummary[]>([]);
   const [query, setQuery] = useState("");
 
   useEffect(() => {
@@ -103,10 +126,25 @@ export default function PlayerApp() {
     void Promise.allSettled([
       window.polymons.listGames(),
       window.polymons.listFriends(),
+      window.polymons.getGameLibrary(),
+      window.polymons.listFriendServers(),
     ])
-      .then(([gameResult, friendResult]) => {
+      .then(([gameResult, friendResult, libraryResult, serverResult]) => {
         if (gameResult.status === "fulfilled") {
           setGames(gameResult.value.games);
+          if (libraryResult.status === "fulfilled") {
+            const recentIds = libraryResult.value.recentGames.map(
+              (recent) => recent.game_id,
+            );
+            setRecentGames(
+              recentIds.flatMap((gameId) => {
+                const game = gameResult.value.games.find(
+                  (candidate) => candidate.id === gameId,
+                );
+                return game ? [game] : [];
+              }),
+            );
+          }
         } else {
           setError(
             gameResult.reason instanceof Error
@@ -121,6 +159,9 @@ export default function PlayerApp() {
                 friendship.status === "accepted" && friendship.user,
             ),
           );
+        }
+        if (serverResult.status === "fulfilled") {
+          setFriendServers(serverResult.value.servers);
         }
       })
       .finally(() => setGamesLoading(false));
@@ -218,6 +259,7 @@ export default function PlayerApp() {
               {auth.user.displayName.slice(0, 1).toUpperCase()}
             </span>
             <span>{auth.user.displayName}</span>
+            <small>{(auth.user.tix ?? 0).toLocaleString()} Tix</small>
             <button
               onClick={() => {
                 void window.polymons.logout();
@@ -233,7 +275,53 @@ export default function PlayerApp() {
           <div className="player-heading">
             <span>Home</span>
             <h1>Welcome back, {auth.user.displayName}.</h1>
+            {recentGames[0] && (
+              <button
+                className="player-rejoin"
+                disabled={startingGameId !== null}
+                onClick={() => void playGame(recentGames[0].id)}
+              >
+                <Play size={15} fill="currentColor" />
+                Rejoin {recentGames[0].title}
+              </button>
+            )}
           </div>
+          {friendServers.length > 0 && (
+            <section className="player-friend-servers">
+              <div className="player-section-title">
+                <h2>Servers your friends are in</h2>
+                <span>{friendServers.length}</span>
+              </div>
+              <div className="player-friend-server-row">
+                {friendServers.map((server) => (
+                  <button
+                    key={server.id}
+                    disabled={startingGameId !== null}
+                    onClick={() => void playGame(server.game.id)}
+                  >
+                    <span
+                      style={
+                        server.game.thumbnailUrl
+                          ? {
+                              backgroundImage: `url("${server.game.thumbnailUrl}")`,
+                            }
+                          : undefined
+                      }
+                    />
+                    <div>
+                      <strong>{server.game.title}</strong>
+                      <small>
+                        {server.friends
+                          .map((friend) => friend.displayName)
+                          .join(", ")}
+                      </small>
+                      <em>{server.playerCount} players</em>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
           <section className="player-friends-strip">
             <div className="player-section-title">
               <h2>Friends</h2>
@@ -335,6 +423,39 @@ function PlayerGame({
   return <OnlinePlayerGame launch={launch} auth={auth} onLeave={onLeave} />;
 }
 
+function PerformanceHud({
+  latency,
+  tixBalance,
+}: {
+  latency: number | null;
+  tixBalance: number | null;
+}) {
+  const [fps, setFps] = useState(0);
+  useEffect(() => {
+    let frame = 0;
+    let startedAt = performance.now();
+    let request = 0;
+    const tick = (now: number) => {
+      frame += 1;
+      if (now - startedAt >= 1_000) {
+        setFps(Math.round((frame * 1_000) / (now - startedAt)));
+        frame = 0;
+        startedAt = now;
+      }
+      request = requestAnimationFrame(tick);
+    };
+    request = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(request);
+  }, []);
+  return (
+    <div className="player-performance-hud">
+      <span>{fps || "--"} FPS</span>
+      <span>{latency === null ? "--" : latency} ms</span>
+      {tixBalance !== null && <span>{tixBalance.toLocaleString()} Tix</span>}
+    </div>
+  );
+}
+
 function OnlinePlayerGame({
   launch,
   auth,
@@ -346,30 +467,100 @@ function OnlinePlayerGame({
 }) {
   const {
     connection,
+    latency,
+    tixBalance,
     remotePlayers,
     localPlayer: sessionPlayer,
     chatMessages,
     chatError,
     sendState,
     sendChat,
+    sendLeaderstats,
   } = useMultiplayer(launch.websocketUrl, launch.game);
   const [runtime, setRuntime] = useState<PolyRuntimeResult | null>(null);
+  const submittedBadges = useRef(new Set<string>());
+  const submittedPurchases = useRef(new Set<string>());
+  usePolyRuntimeScheduler(runtime, setRuntime);
+  useEffect(() => {
+    if (connection !== "Connected") return;
+    for (const badgeName of runtime?.badgeAwards ?? []) {
+      if (submittedBadges.current.has(badgeName)) continue;
+      submittedBadges.current.add(badgeName);
+      void window.polymons
+        .awardBadge(launch.game, badgeName)
+        .catch(() => submittedBadges.current.delete(badgeName));
+    }
+  }, [connection, launch.game, runtime?.badgeAwards]);
+  useEffect(() => {
+    if (!runtime) return;
+    const passes = new Map(
+      (runtime.project.gamePasses ?? []).map((pass) => [
+        pass.name.toLowerCase(),
+        pass,
+      ]),
+    );
+    const products = new Map(
+      (runtime.project.developerProducts ?? []).map((product) => [
+        product.name.toLowerCase(),
+        product,
+      ]),
+    );
+    for (const request of runtime.purchaseRequests ?? []) {
+      const key = `${request.kind}:${request.name}`;
+      if (submittedPurchases.current.has(key)) continue;
+      submittedPurchases.current.add(key);
+      const action =
+        request.kind === "gamePass"
+          ? (() => {
+              const pass = passes.get(request.name.toLowerCase());
+              return pass
+                ? window.polymons.purchaseGamePass(launch.game, pass.id)
+                : Promise.reject(new Error("Gamepass not found."));
+            })()
+          : (() => {
+              const product = products.get(request.name.toLowerCase());
+              return product
+                ? window.polymons.purchaseDeveloperProduct(launch.game, product.id)
+                : Promise.reject(new Error("Developer product not found."));
+            })();
+      void action.catch(() => submittedPurchases.current.delete(key));
+    }
+  }, [launch.game, runtime]);
+  useEffect(() => {
+    sendLeaderstats(
+      Object.fromEntries(
+        (runtime?.project.leaderstats ?? []).map((stat) => [
+          stat.name,
+          stat.defaultValue,
+        ]),
+      ),
+    );
+  }, [launch.game, runtime?.project.leaderstats, sendLeaderstats]);
   const [gameLoading, setGameLoading] = useState(true);
   const [gameError, setGameError] = useState("");
+  const [gameThumbnail, setGameThumbnail] = useState<string | null>(null);
   useEffect(() => {
     setGameLoading(true);
     setGameError("");
-    void window.polymons
-      .getGame(launch.game)
-      .then((result) => {
+    void (async () => {
+      const result = await window.polymons.getGame(launch.game);
         if (result.game.id !== launch.game) {
           throw new Error("Polymons returned the wrong game.");
         }
+        let entitlements:
+          | Awaited<ReturnType<typeof window.polymons.getGameEntitlements>>
+          | undefined;
+        try {
+          entitlements = await window.polymons.getGameEntitlements(launch.game);
+        } catch {
+          entitlements = undefined;
+        }
         if (result.game.manifest) {
+          setGameThumbnail(result.game.thumbnailUrl);
           setRuntime(
             runPolyProject(
               result.game.manifest,
-              runtimePlayerData(auth?.user),
+              runtimePlayerData(auth?.user, entitlements),
             ),
           );
         } else if (result.game.slug === "baseplate") {
@@ -377,7 +568,7 @@ function OnlinePlayerGame({
         } else {
           throw new Error("This game does not have a published world.");
         }
-      })
+    })()
       .catch((loadError: unknown) => {
         setRuntime(null);
         setGameError(
@@ -397,11 +588,20 @@ function OnlinePlayerGame({
           <strong>Polymons Player</strong>
         </div>
         <span className="player-connection">{connection}</span>
-        <button onClick={onLeave}>Leave game</button>
       </header>
       <section className="player-game">
+        <PerformanceHud latency={latency} tixBalance={tixBalance ?? auth?.user.tix ?? null} />
         {gameLoading ? (
-          <div className="player-loading">Loading game...</div>
+          <div
+            className="player-loading player-game-loading-art"
+            style={
+              gameThumbnail
+                ? { backgroundImage: `url("${gameThumbnail}")` }
+                : undefined
+            }
+          >
+            <span>Loading game...</span>
+          </div>
         ) : gameError ? (
           <div className="player-loading">{gameError}</div>
         ) : (
@@ -496,6 +696,7 @@ function OnlinePlayerGame({
                   : current,
               );
             }}
+            onLeave={onLeave}
           />
           </Suspense>
         )}
@@ -537,6 +738,7 @@ function StudioPlayerGame({
     [auth?.user, project],
   );
   const [runtime, setRuntime] = useState<PolyRuntimeResult | null>(null);
+  usePolyRuntimeScheduler(runtime, setRuntime);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalTab, setTerminalTab] = useState<"output" | "command" | "data">(
     "output",
@@ -564,7 +766,6 @@ function StudioPlayerGame({
           <strong>{project?.name ?? "Studio playtest"}</strong>
         </div>
         <span className="player-connection">Local playtest</span>
-        <button onClick={onLeave}>Stop</button>
       </header>
       <section className="player-game">
         {error ? (
@@ -665,6 +866,7 @@ function StudioPlayerGame({
                     : current,
                 );
               }}
+              onLeave={onLeave}
             />
             <aside className={`playtest-console ${terminalOpen ? "open" : ""}`}>
               <header>

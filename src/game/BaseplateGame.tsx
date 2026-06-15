@@ -21,8 +21,7 @@ import {
   useState,
 } from "react";
 import {
-  AudioListener,
-  AudioLoader,
+  ACESFilmicToneMapping,
   CanvasTexture,
   Color,
   Euler,
@@ -31,14 +30,24 @@ import {
   MeshStandardMaterial,
   Quaternion,
   SRGBColorSpace,
-  PositionalAudio as ThreePositionalAudio,
-  Vector2,
+  PCFSoftShadowMap,
   Vector3,
 } from "three";
-import { ShirtMaterials } from "./AvatarPreview";
-import type { ShirtId } from "./avatarCatalog";
+import type { PantsId, ShirtId } from "./avatarCatalog";
+import {
+  normalizeAvatarAppearance,
+  type AvatarAppearance,
+} from "./avatarAppearance";
 import { chatUsernameColor } from "./chat";
 import defaultDeathSoundUrl from "../../assets/audio/polymons-oof-remix.mp3";
+import {
+  R6Avatar,
+  R6AvatarPlayer,
+  R6Head,
+  PantsMaterials,
+  ShirtMaterials,
+} from "./R6Avatar";
+import { R6_AVATAR_SCALE } from "./r6Geometry";
 import type {
   ChatMessage,
   PlayerTransform,
@@ -71,6 +80,12 @@ type InputState = {
   zoomDistance: number;
 };
 
+type GameCameraSettings = {
+  inverted: boolean;
+  shiftLockEnabled: boolean;
+  shiftLockActive: boolean;
+};
+
 type Telemetry = {
   grounded: boolean;
   speed: number;
@@ -89,20 +104,13 @@ const cameraTarget = new Vector3();
 const desiredCameraPosition = new Vector3();
 const cameraRayDirection = new Vector3();
 const CAMERA_DISTANCE_SCALE = 0.37;
-const AVATAR_SCALE = 0.8;
-const AVATAR_VISUAL_OFFSET = -0.2;
-const HEAD_PROFILE = [
-  new Vector2(0, -0.72),
-  new Vector2(0.64, -0.72),
-  new Vector2(0.76, -0.67),
-  new Vector2(0.83, -0.56),
-  new Vector2(0.85, -0.42),
-  new Vector2(0.85, 0.42),
-  new Vector2(0.83, 0.56),
-  new Vector2(0.76, 0.67),
-  new Vector2(0.64, 0.72),
-  new Vector2(0, 0.72),
-];
+const CAMERA_MIN_PITCH = -0.82;
+const CAMERA_MAX_PITCH = 1.12;
+
+function clampCameraPitch(value: number): number {
+  return MathUtils.clamp(value, CAMERA_MIN_PITCH, CAMERA_MAX_PITCH);
+}
+
 function createInputState(): InputState {
   return {
     forward: false,
@@ -174,29 +182,26 @@ function keyCodeName(code: string): string {
 
 function useKeyboard(
   input: MutableRefObject<InputState>,
+  controlsEnabled: boolean,
   onKeyInput?: (keyCode: string, event: "InputBegan" | "InputEnded") => void,
 ) {
   useEffect(() => {
     const setKey = (code: string, pressed: boolean, repeat = false) => {
       switch (code) {
         case "KeyW":
-        case "ArrowUp":
           input.current.forward = pressed;
           break;
         case "KeyS":
-        case "ArrowDown":
           input.current.backward = pressed;
           break;
         case "KeyA":
-        case "ArrowLeft":
           input.current.left = pressed;
           break;
         case "KeyD":
-        case "ArrowRight":
           input.current.right = pressed;
           break;
-        case "ShiftLeft":
-        case "ShiftRight":
+        case "ControlLeft":
+        case "ControlRight":
           input.current.sprint = pressed;
           break;
         case "Space":
@@ -219,6 +224,7 @@ function useKeyboard(
       ) {
         return;
       }
+      if (!controlsEnabled) return;
       if (
         ["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(
           event.code,
@@ -249,17 +255,23 @@ function useKeyboard(
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", clearKeys);
     };
-  }, [input, onKeyInput]);
+  }, [controlsEnabled, input, onKeyInput]);
 }
 
 function MouseLook({
   input,
   onPointerLock,
   playerSettings,
+  cameraSettings,
+  controlsEnabled,
+  onShiftLockChange,
 }: {
   input: MutableRefObject<InputState>;
   onPointerLock: (locked: boolean) => void;
   playerSettings: PolyPlayerSettings;
+  cameraSettings: GameCameraSettings;
+  controlsEnabled: boolean;
+  onShiftLockChange: (active: boolean) => void;
 }) {
   const { gl } = useThree();
 
@@ -270,6 +282,11 @@ function MouseLook({
     let lastTouchX = 0;
     let lastTouchY = 0;
     let pinchDistance: number | null = null;
+    let mouseLooking = false;
+    let mousePointer: number | null = null;
+    let lastMouseX = 0;
+    let lastMouseY = 0;
+    const lookDirection = cameraSettings.inverted ? -1 : 1;
     const setZoom = (value: number) => {
       const bounds = cameraZoomBounds(playerSettings);
       input.current.zoomDistance = MathUtils.clamp(
@@ -288,11 +305,17 @@ function MouseLook({
     };
     const onPointerDown = (event: PointerEvent) => {
       if (event.pointerType !== "touch") {
-        if (document.pointerLockElement !== canvas) {
-          void canvas.requestPointerLock();
-        }
+        if (!controlsEnabled || event.button !== 2) return;
+        event.preventDefault();
+        mouseLooking = true;
+        mousePointer = event.pointerId;
+        lastMouseX = event.clientX;
+        lastMouseY = event.clientY;
+        canvas.setPointerCapture(event.pointerId);
+        canvas.style.cursor = "grabbing";
         return;
       }
+      if (!controlsEnabled) return;
       touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
       canvas.setPointerCapture(event.pointerId);
       if (touchPoints.size === 1) {
@@ -319,16 +342,26 @@ function MouseLook({
         return;
       }
       if (event.pointerId !== touchPointer) return;
-      input.current.yaw -= (event.clientX - lastTouchX) * 0.006;
-      input.current.pitch = MathUtils.clamp(
-        input.current.pitch - (event.clientY - lastTouchY) * 0.0045,
-        -0.22,
-        0.62,
+      input.current.yaw -=
+        (event.clientX - lastTouchX) * 0.006 * lookDirection;
+      input.current.pitch = clampCameraPitch(
+        input.current.pitch -
+          (event.clientY - lastTouchY) * 0.0045 * lookDirection,
       );
       lastTouchX = event.clientX;
       lastTouchY = event.clientY;
     };
     const onPointerUp = (event: PointerEvent) => {
+      if (event.pointerType !== "touch") {
+        if (event.pointerId !== mousePointer) return;
+        if (canvas.hasPointerCapture(event.pointerId)) {
+          canvas.releasePointerCapture(event.pointerId);
+        }
+        mouseLooking = false;
+        mousePointer = null;
+        canvas.style.cursor = "";
+        return;
+      }
       touchPoints.delete(event.pointerId);
       if (canvas.hasPointerCapture(event.pointerId)) {
         canvas.releasePointerCapture(event.pointerId);
@@ -345,41 +378,121 @@ function MouseLook({
         touchPointer = null;
       }
     };
+    const onCanvasMouseMove = (event: PointerEvent) => {
+      if (
+        !controlsEnabled ||
+        event.pointerType === "touch" ||
+        !mouseLooking ||
+        event.pointerId !== mousePointer
+      ) {
+        return;
+      }
+      const deltaX = event.clientX - lastMouseX;
+      const deltaY = event.clientY - lastMouseY;
+      lastMouseX = event.clientX;
+      lastMouseY = event.clientY;
+      input.current.yaw -= deltaX * 0.0042 * lookDirection;
+      input.current.pitch = clampCameraPitch(
+        input.current.pitch - deltaY * 0.0036 * lookDirection,
+      );
+    };
     const onMouseMove = (event: MouseEvent) => {
       if (document.pointerLockElement !== canvas) return;
-      input.current.yaw -= event.movementX * 0.0024;
-      input.current.pitch = MathUtils.clamp(
-        input.current.pitch - event.movementY * 0.0018,
-        -0.22,
-        0.62,
+      input.current.yaw -= event.movementX * 0.0024 * lookDirection;
+      input.current.pitch = clampCameraPitch(
+        input.current.pitch - event.movementY * 0.0018 * lookDirection,
       );
     };
     const onLockChange = () => {
-      onPointerLock(document.pointerLockElement === canvas);
+      const locked = document.pointerLockElement === canvas;
+      onPointerLock(locked);
+      if (!locked && cameraSettings.shiftLockActive) {
+        onShiftLockChange(false);
+      }
     };
     const onWheel = (event: WheelEvent) => {
+      if (!controlsEnabled) return;
       event.preventDefault();
       const scale = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 1.2 : 0.03;
       setZoom(input.current.zoomDistance + event.deltaY * scale);
     };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        controlsEnabled &&
+        ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(
+          event.code,
+        )
+      ) {
+        event.preventDefault();
+        const direction = cameraSettings.inverted ? -1 : 1;
+        const step = event.repeat ? 0.035 : 0.07;
+        if (event.code === "ArrowLeft") {
+          input.current.yaw += step * direction;
+        } else if (event.code === "ArrowRight") {
+          input.current.yaw -= step * direction;
+        } else if (event.code === "ArrowUp") {
+          input.current.pitch = clampCameraPitch(
+            input.current.pitch + step * direction,
+          );
+        } else {
+          input.current.pitch = clampCameraPitch(
+            input.current.pitch - step * direction,
+          );
+        }
+      }
+      if (
+        !controlsEnabled ||
+        !cameraSettings.shiftLockEnabled ||
+        event.repeat ||
+        !["ShiftLeft", "ShiftRight"].includes(event.code)
+      ) {
+        return;
+      }
+      const next = !cameraSettings.shiftLockActive;
+      onShiftLockChange(next);
+      if (next) {
+        void canvas.requestPointerLock();
+      } else if (document.pointerLockElement === canvas) {
+        void document.exitPointerLock();
+      }
+    };
+    const onContextMenu = (event: MouseEvent) => event.preventDefault();
 
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointermove", onPointerMove);
+    canvas.addEventListener("pointermove", onCanvasMouseMove);
     canvas.addEventListener("pointerup", onPointerUp);
     canvas.addEventListener("pointercancel", onPointerUp);
     canvas.addEventListener("wheel", onWheel, { passive: false });
+    canvas.addEventListener("contextmenu", onContextMenu);
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("pointerlockchange", onLockChange);
+    window.addEventListener("keydown", onKeyDown);
     return () => {
+      canvas.style.cursor = "";
+      if (mousePointer !== null && canvas.hasPointerCapture(mousePointer)) {
+        canvas.releasePointerCapture(mousePointer);
+      }
       canvas.removeEventListener("pointerdown", onPointerDown);
       canvas.removeEventListener("pointermove", onPointerMove);
+      canvas.removeEventListener("pointermove", onCanvasMouseMove);
       canvas.removeEventListener("pointerup", onPointerUp);
       canvas.removeEventListener("pointercancel", onPointerUp);
       canvas.removeEventListener("wheel", onWheel);
+      canvas.removeEventListener("contextmenu", onContextMenu);
       document.removeEventListener("mousemove", onMouseMove);
       document.removeEventListener("pointerlockchange", onLockChange);
+      window.removeEventListener("keydown", onKeyDown);
     };
-  }, [gl, input, onPointerLock, playerSettings]);
+  }, [
+    cameraSettings,
+    controlsEnabled,
+    gl,
+    input,
+    onPointerLock,
+    onShiftLockChange,
+    playerSettings,
+  ]);
 
   return null;
 }
@@ -398,7 +511,7 @@ function BlockPart({
   return (
     <mesh position={position} castShadow={castShadow} receiveShadow>
       <boxGeometry args={size} />
-      <meshStandardMaterial color={color} roughness={0.72} />
+      <meshStandardMaterial color={color} roughness={0.58} metalness={0.015} />
     </mesh>
   );
 }
@@ -406,131 +519,31 @@ function BlockPart({
 function BlockAvatar({
   moving,
   grounded,
+  verticalVelocity,
   facing,
   player,
 }: {
   moving: MutableRefObject<number>;
   grounded: MutableRefObject<boolean>;
+  verticalVelocity?: MutableRefObject<number>;
   facing: MutableRefObject<number>;
-  player?: {
-    username: string;
-    displayName: string;
-    equippedShirtId?: ShirtId | null;
-  };
+  player?: R6AvatarPlayer;
 }) {
-  const root = useRef<Group>(null);
-  const leftArm = useRef<Group>(null);
-  const rightArm = useRef<Group>(null);
-  const leftLeg = useRef<Group>(null);
-  const rightLeg = useRef<Group>(null);
-
-  useFrame((state, delta) => {
-    if (!root.current) return;
-
-    const speedFactor = MathUtils.clamp(moving.current / 6.2, 0, 1);
-    const walk = Math.sin(state.clock.elapsedTime * 10.5) * 0.5 * speedFactor;
-    const targetFacing = facing.current;
-    const currentFacing = root.current.rotation.y;
-    const angleDelta = Math.atan2(
-      Math.sin(targetFacing - currentFacing),
-      Math.cos(targetFacing - currentFacing),
-    );
-    root.current.rotation.y += angleDelta * Math.min(1, delta * 14);
-
-    if (leftArm.current && rightArm.current) {
-      const airArm = grounded.current ? 0 : -0.24;
-      leftArm.current.rotation.x = MathUtils.lerp(
-        leftArm.current.rotation.x,
-        grounded.current ? walk : airArm,
-        Math.min(1, delta * 16),
-      );
-      rightArm.current.rotation.x = MathUtils.lerp(
-        rightArm.current.rotation.x,
-        grounded.current ? -walk : airArm,
-        Math.min(1, delta * 16),
-      );
-    }
-    if (leftLeg.current && rightLeg.current) {
-      const airLeg = grounded.current ? 0 : 0.16;
-      leftLeg.current.rotation.x = MathUtils.lerp(
-        leftLeg.current.rotation.x,
-        grounded.current ? -walk : airLeg,
-        Math.min(1, delta * 16),
-      );
-      rightLeg.current.rotation.x = MathUtils.lerp(
-        rightLeg.current.rotation.x,
-        grounded.current ? walk : airLeg,
-        Math.min(1, delta * 16),
-      );
-    }
-    root.current.position.y =
-      grounded.current && speedFactor > 0.05
-        ? AVATAR_VISUAL_OFFSET +
-          Math.abs(Math.sin(state.clock.elapsedTime * 10.5)) * 0.055
-        : MathUtils.lerp(
-            root.current.position.y,
-            AVATAR_VISUAL_OFFSET,
-            Math.min(1, delta * 10),
-          );
-  });
-
   return (
-    <group
-      ref={root}
-      position={[0, AVATAR_VISUAL_OFFSET, 0]}
-      scale={AVATAR_SCALE}
+    <R6Avatar
+      moving={moving}
+      grounded={grounded}
+      verticalVelocity={verticalVelocity}
+      facing={facing}
+      player={player}
     >
-      <group position={[0, 2.28, 0]}>
-        <mesh castShadow receiveShadow>
-          <latheGeometry args={[HEAD_PROFILE, 32]} />
-          <meshStandardMaterial color="#e7bd91" roughness={0.72} />
-        </mesh>
-        <mesh position={[-0.28, 0.08, -0.852]}>
-          <boxGeometry args={[0.15, 0.2, 0.035]} />
-          <meshStandardMaterial color="#24202b" roughness={0.85} />
-        </mesh>
-        <mesh position={[0.28, 0.08, -0.852]}>
-          <boxGeometry args={[0.15, 0.2, 0.035]} />
-          <meshStandardMaterial color="#24202b" roughness={0.85} />
-        </mesh>
-        <mesh position={[0, -0.28, -0.852]}>
-          <boxGeometry args={[0.4, 0.075, 0.035]} />
-          <meshStandardMaterial color="#8e5b52" roughness={0.9} />
-        </mesh>
-      </group>
-
       {player && (
         <PlayerNameTag
           username={player.username}
           displayName={player.displayName}
         />
       )}
-
-      <mesh position={[0, 0.5, 0]} castShadow receiveShadow>
-        <boxGeometry args={[2.2, 2, 1.2]} />
-        <ShirtMaterials shirtId={player?.equippedShirtId ?? null} />
-      </mesh>
-
-      <group ref={leftArm} position={[-1.6, 1.5, 0]}>
-        <mesh position={[0, -1.05, 0]} castShadow receiveShadow>
-          <boxGeometry args={[1, 2.1, 1.05]} />
-          <ShirtMaterials shirtId={player?.equippedShirtId ?? null} sleeve />
-        </mesh>
-      </group>
-      <group ref={rightArm} position={[1.6, 1.5, 0]}>
-        <mesh position={[0, -1.05, 0]} castShadow receiveShadow>
-          <boxGeometry args={[1, 2.1, 1.05]} />
-          <ShirtMaterials shirtId={player?.equippedShirtId ?? null} sleeve />
-        </mesh>
-      </group>
-
-      <group ref={leftLeg} position={[-0.58, -0.5, 0]}>
-        <BlockPart size={[1.1, 2, 1.1]} position={[0, -1, 0]} color="#313542" />
-      </group>
-      <group ref={rightLeg} position={[0.58, -0.5, 0]}>
-        <BlockPart size={[1.1, 2, 1.1]} position={[0, -1, 0]} color="#313542" />
-      </group>
-    </group>
+    </R6Avatar>
   );
 }
 
@@ -580,6 +593,8 @@ function DeathPart({
   color,
   velocity,
   shirtId,
+  pantsId,
+  fallbackColor,
   sleeve = false,
   head = false,
 }: {
@@ -588,6 +603,8 @@ function DeathPart({
   color: string;
   velocity: [number, number, number];
   shirtId?: ShirtId | null;
+  pantsId?: PantsId | null;
+  fallbackColor?: string;
   sleeve?: boolean;
   head?: boolean;
 }) {
@@ -622,29 +639,23 @@ function DeathPart({
         mass={Math.max(0.25, size[0] * size[1] * size[2] * 0.35)}
       />
       {head ? (
-        <group scale={AVATAR_SCALE}>
-          <mesh castShadow receiveShadow>
-            <latheGeometry args={[HEAD_PROFILE, 32]} />
-            <meshStandardMaterial color={color} roughness={0.72} />
-          </mesh>
-          <mesh position={[-0.28, 0.08, -0.852]}>
-            <boxGeometry args={[0.15, 0.2, 0.035]} />
-            <meshStandardMaterial color="#24202b" roughness={0.85} />
-          </mesh>
-          <mesh position={[0.28, 0.08, -0.852]}>
-            <boxGeometry args={[0.15, 0.2, 0.035]} />
-            <meshStandardMaterial color="#24202b" roughness={0.85} />
-          </mesh>
-          <mesh position={[0, -0.28, -0.852]}>
-            <boxGeometry args={[0.4, 0.075, 0.035]} />
-            <meshStandardMaterial color="#8e5b52" roughness={0.9} />
-          </mesh>
+        <group scale={R6_AVATAR_SCALE}>
+          <R6Head color={color} />
         </group>
       ) : (
         <mesh castShadow receiveShadow>
           <boxGeometry args={size} />
-          {shirtId !== undefined ? (
-            <ShirtMaterials shirtId={shirtId} sleeve={sleeve} />
+          {pantsId !== undefined ? (
+            <PantsMaterials
+              pantsId={pantsId}
+              fallbackColor={fallbackColor ?? color}
+            />
+          ) : shirtId !== undefined ? (
+            <ShirtMaterials
+              shirtId={shirtId}
+              sleeve={sleeve}
+              fallbackColor={fallbackColor ?? color}
+            />
           ) : (
             <meshStandardMaterial color={color} roughness={0.72} />
           )}
@@ -661,6 +672,8 @@ function DeathParts({
   origin: [number, number, number];
   player?: {
     equippedShirtId?: ShirtId | null;
+    equippedPantsId?: PantsId | null;
+    avatarAppearance?: AvatarAppearance;
   };
 }) {
   const at = (
@@ -669,49 +682,58 @@ function DeathParts({
     z: number,
   ): [number, number, number] => [origin[0] + x, origin[1] + y, origin[2] + z];
   const shirtId = player?.equippedShirtId ?? null;
+  const pantsId = player?.equippedPantsId ?? null;
+  const colors = normalizeAvatarAppearance(player?.avatarAppearance).bodyColors;
   return (
     <>
       <DeathPart
         position={at(0, 0.24, 0)}
         size={[1.76, 1.6, 0.96]}
-        color="#5635B8"
+        color={colors.torso}
         velocity={[0.5, 4.8, -1.1]}
         shirtId={shirtId}
+        fallbackColor={colors.torso}
       />
       <DeathPart
         position={at(0, 1.66, 0)}
         size={[1.36, 1.16, 1.36]}
-        color="#e7bd91"
+        color={colors.head}
         velocity={[-0.4, 6.4, 0.8]}
         head
       />
       <DeathPart
         position={at(-1.28, 0.2, 0)}
         size={[0.8, 1.68, 0.84]}
-        color="#e7bd91"
+        color={colors.leftArm}
         velocity={[-5.2, 4.3, 1.8]}
         shirtId={shirtId}
         sleeve
+        fallbackColor={colors.leftArm}
       />
       <DeathPart
         position={at(1.28, 0.2, 0)}
         size={[0.8, 1.68, 0.84]}
-        color="#e7bd91"
+        color={colors.rightArm}
         velocity={[5.2, 4.6, -1.5]}
         shirtId={shirtId}
         sleeve
+        fallbackColor={colors.rightArm}
       />
       <DeathPart
         position={at(-0.46, -1.36, 0)}
         size={[0.88, 1.6, 0.88]}
-        color="#313542"
+        color={colors.leftLeg}
         velocity={[-2.8, 3.2, -2.2]}
+        pantsId={pantsId}
+        fallbackColor={colors.leftLeg}
       />
       <DeathPart
         position={at(0.46, -1.36, 0)}
         size={[0.88, 1.6, 0.88]}
-        color="#313542"
+        color={colors.rightLeg}
         velocity={[2.8, 3.5, 2.2]}
+        pantsId={pantsId}
+        fallbackColor={colors.rightLeg}
       />
     </>
   );
@@ -745,18 +767,16 @@ function DeathCamera({
 
 function ProjectSound({
   object,
-  listener,
   requests,
   requestVersion,
   audioUnlockVersion,
 }: {
   object: PolyWorldObject;
-  listener: AudioListener;
   requests: PolySoundRequest[];
   requestVersion: number;
   audioUnlockVersion: number;
 }) {
-  const sound = useMemo(() => new ThreePositionalAudio(listener), [listener]);
+  const audio = useMemo(() => document.createElement("audio"), []);
   const [loaded, setLoaded] = useState(false);
   const lastHandledRequestId = useRef<string | null>(null);
   const processingRequestId = useRef<string | null>(null);
@@ -769,50 +789,53 @@ function ProjectSound({
     [object.id, requests],
   );
   useEffect(() => {
-    sound.position.set(...object.position);
-    sound.setVolume(object.volume ?? 0.7);
-    sound.setLoop(object.looped ?? false);
-    sound.setPlaybackRate(object.playbackSpeed ?? 1);
-    sound.setRefDistance(object.rolloffMinDistance ?? 5);
-    sound.setMaxDistance(object.rolloffMaxDistance ?? 60);
-    sound.setRolloffFactor(1);
-  }, [object, sound]);
+    audio.volume = object.volume ?? 0.7;
+    audio.loop = object.looped ?? false;
+    audio.playbackRate = object.playbackSpeed ?? 1;
+  }, [audio, object.looped, object.playbackSpeed, object.volume]);
   useEffect(() => {
     setLoaded(false);
     autoplayStarted.current = false;
     lastHandledRequestId.current = null;
     processingRequestId.current = null;
+    audio.pause();
+    audio.removeAttribute("src");
+    audio.load();
     if (!object.soundData) return;
-    let active = true;
-    new AudioLoader().load(
-      object.soundData,
-      (buffer) => {
-        if (!active) return;
-        if (sound.isPlaying) sound.stop();
-        sound.setBuffer(buffer);
-        setLoaded(true);
-      },
-      undefined,
-      () => {
-        if (active) setLoaded(false);
-      },
-    );
+    audio.preload = "auto";
+    audio.src = object.soundData;
+    audio.load();
+    setLoaded(true);
     return () => {
-      active = false;
-      if (sound.isPlaying) sound.stop();
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
     };
-  }, [object.soundData, sound]);
+  }, [audio, object.soundData]);
+  const runAction = useCallback(
+    async (action: PolySoundRequest["action"]): Promise<boolean> => {
+      if (action === "play") {
+        audio.pause();
+        audio.currentTime = 0;
+        await audio.play();
+      } else if (action === "pause") {
+        audio.pause();
+      } else {
+        audio.pause();
+        audio.currentTime = 0;
+      }
+      return true;
+    },
+    [audio],
+  );
   useEffect(() => {
     if (!loaded || !object.autoplay || autoplayStarted.current) return;
-    void listener.context
-      .resume()
-      .then(() => {
-        if (listener.context.state !== "running") return;
-        if (!sound.isPlaying) sound.play();
-        autoplayStarted.current = true;
+    void runAction("play")
+      .then((played) => {
+        if (played) autoplayStarted.current = true;
       })
       .catch(() => undefined);
-  }, [audioUnlockVersion, listener, loaded, object.autoplay, sound]);
+  }, [audioUnlockVersion, loaded, object.autoplay, runAction]);
   useEffect(() => {
     if (!loaded) return;
     const request = latestRequest;
@@ -824,19 +847,9 @@ function ProjectSound({
       return;
     }
     processingRequestId.current = request.id;
-    void listener.context
-      .resume()
-      .then(() => {
-        if (listener.context.state !== "running") return;
-        if (request.action === "play") {
-          if (sound.isPlaying) sound.stop();
-          sound.play();
-        } else if (request.action === "pause") {
-          if (sound.isPlaying) sound.pause();
-        } else if (sound.isPlaying) {
-          sound.stop();
-        }
-        lastHandledRequestId.current = request.id;
+    void runAction(request.action)
+      .then((played) => {
+        if (played) lastHandledRequestId.current = request.id;
       })
       .catch(() => undefined)
       .finally(() => {
@@ -847,12 +860,11 @@ function ProjectSound({
   }, [
     audioUnlockVersion,
     latestRequest,
-    listener,
     loaded,
     requestVersion,
-    sound,
+    runAction,
   ]);
-  return <primitive object={sound} />;
+  return null;
 }
 
 function ProjectSounds({
@@ -864,43 +876,23 @@ function ProjectSounds({
   requests: PolySoundRequest[];
   requestVersion: number;
 }) {
-  const { camera } = useThree();
-  const listener = useMemo(() => new AudioListener(), []);
   const [audioUnlockVersion, setAudioUnlockVersion] = useState(0);
   useEffect(() => {
-    camera.add(listener);
-    return () => {
-      camera.remove(listener);
-    };
-  }, [camera, listener]);
-  useEffect(() => {
-    let active = true;
-    const unlockAudio = () => {
-      void listener.context
-        .resume()
-        .then(() => {
-          if (!active || listener.context.state !== "running") return;
-          setAudioUnlockVersion((version) => version + 1);
-          window.removeEventListener("pointerdown", unlockAudio, true);
-          window.removeEventListener("keydown", unlockAudio, true);
-        })
-        .catch(() => undefined);
-    };
+    const unlockAudio = () =>
+      setAudioUnlockVersion((version) => version + 1);
     window.addEventListener("pointerdown", unlockAudio, true);
     window.addEventListener("keydown", unlockAudio, true);
     return () => {
-      active = false;
       window.removeEventListener("pointerdown", unlockAudio, true);
       window.removeEventListener("keydown", unlockAudio, true);
     };
-  }, [listener]);
+  }, []);
   return objects
     .filter((object) => object.type === "sound")
     .map((object) => (
       <ProjectSound
         key={object.id}
         object={object}
-        listener={listener}
         requests={requests}
         requestVersion={requestVersion}
         audioUnlockVersion={audioUnlockVersion}
@@ -958,10 +950,13 @@ function RemoteBlockAvatar({ player }: { player: RemotePlayer }) {
   const target = useRef(new Vector3(...player.state.position));
   const moving = useRef(0);
   const grounded = useRef(true);
+  const verticalVelocity = useRef(0);
   const facing = useRef(player.state.rotationY);
 
   useEffect(() => {
     const next = new Vector3(...player.state.position);
+    verticalVelocity.current = (next.y - target.current.y) / 0.15;
+    grounded.current = Math.abs(verticalVelocity.current) < 0.35;
     moving.current = Math.min(
       9.5,
       next.distanceTo(target.current) / 0.15,
@@ -993,6 +988,7 @@ function RemoteBlockAvatar({ player }: { player: RemotePlayer }) {
       <BlockAvatar
         moving={moving}
         grounded={grounded}
+        verticalVelocity={verticalVelocity}
         facing={facing}
         player={player}
       />
@@ -1006,6 +1002,7 @@ function PlayerController({
   onPlayerState,
   spawn,
   playerSettings,
+  shiftLockActive,
   localPlayer,
   onDeath,
 }: {
@@ -1014,10 +1011,13 @@ function PlayerController({
   onPlayerState?: (state: Omit<PlayerTransform, "sequence">) => void;
   spawn: { x: number; y: number; z: number };
   playerSettings: PolyPlayerSettings;
+  shiftLockActive: boolean;
   localPlayer?: {
     username: string;
     displayName: string;
     equippedShirtId?: ShirtId | null;
+    equippedPantsId?: PantsId | null;
+    avatarAppearance?: AvatarAppearance;
   };
   onDeath: (origin: [number, number, number]) => void;
 }) {
@@ -1025,15 +1025,19 @@ function PlayerController({
   const groundContacts = useRef(0);
   const grounded = useRef(false);
   const moving = useRef(0);
+  const verticalVelocity = useRef(0);
   const facing = useRef(0);
   const lastTelemetry = useRef(0);
   const jumpCooldown = useRef(0);
+  const jumpBuffer = useRef(0);
+  const coyoteTime = useRef(0);
   const lastPosition = useRef<[number, number, number]>([
     spawn.x,
     spawn.y,
     spawn.z,
   ]);
   const deathTriggered = useRef(false);
+  const cameraCollisionDistance = useRef<number | null>(null);
   const { camera } = useThree();
   const { rapier, world } = useRapier();
 
@@ -1054,9 +1058,15 @@ function PlayerController({
   useFrame((state, delta) => {
     const rigidBody = body.current;
     if (!rigidBody) return;
+    const frameDelta = Math.min(delta, 1 / 30);
 
-    jumpCooldown.current = Math.max(0, jumpCooldown.current - delta);
+    jumpCooldown.current = Math.max(0, jumpCooldown.current - frameDelta);
     grounded.current = groundContacts.current > 0;
+    coyoteTime.current = grounded.current
+      ? 0.11
+      : Math.max(0, coyoteTime.current - frameDelta);
+    if (input.current.jumpQueued) jumpBuffer.current = 0.14;
+    else jumpBuffer.current = Math.max(0, jumpBuffer.current - frameDelta);
 
     const axisForward =
       Number(input.current.forward) - Number(input.current.backward);
@@ -1075,13 +1085,21 @@ function PlayerController({
     if (movement.lengthSq() > 1) movement.normalize();
 
     const velocity = rigidBody.linvel();
+    verticalVelocity.current = velocity.y;
     const walkSpeed = Math.max(1, playerSettings.walkSpeed / 3);
     const targetSpeed =
       input.current.sprint && playerSettings.sprintEnabled
         ? walkSpeed * playerSettings.sprintMultiplier
         : walkSpeed;
-    const acceleration = grounded.current ? 15 : 4.5;
-    const smoothing = 1 - Math.exp(-acceleration * delta);
+    const accelerating = movement.lengthSq() > 0.001;
+    const acceleration = grounded.current
+      ? accelerating
+        ? 24
+        : 34
+      : accelerating
+        ? 7
+        : 2.5;
+    const smoothing = 1 - Math.exp(-acceleration * frameDelta);
     const targetX = movement.x * targetSpeed;
     const targetZ = movement.z * targetSpeed;
     const nextVelocity = {
@@ -1091,12 +1109,14 @@ function PlayerController({
     };
 
     if (
-      input.current.jumpQueued &&
-      grounded.current &&
+      jumpBuffer.current > 0 &&
+      coyoteTime.current > 0 &&
       jumpCooldown.current === 0
     ) {
-      nextVelocity.y = Math.max(2, playerSettings.jumpPower * 0.78);
-      jumpCooldown.current = 0.2;
+      nextVelocity.y = Math.max(8.5, playerSettings.jumpPower * 0.95);
+      jumpCooldown.current = 0.18;
+      jumpBuffer.current = 0;
+      coyoteTime.current = 0;
       groundContacts.current = 0;
     }
     input.current.jumpQueued = false;
@@ -1105,7 +1125,9 @@ function PlayerController({
 
     const horizontalSpeed = Math.hypot(nextVelocity.x, nextVelocity.z);
     moving.current = horizontalSpeed;
-    if (movement.lengthSq() > 0.02) {
+    if (shiftLockActive) {
+      facing.current = input.current.yaw;
+    } else if (movement.lengthSq() > 0.02) {
       facing.current = Math.atan2(-movement.x, -movement.z);
     }
 
@@ -1126,10 +1148,15 @@ function PlayerController({
     );
     const distance = input.current.zoomDistance * CAMERA_DISTANCE_SCALE;
     const horizontalDistance = Math.cos(input.current.pitch) * distance;
+    const shoulderOffset = shiftLockActive ? 1.15 : 0;
     desiredCameraPosition.set(
-      position.x + Math.sin(input.current.yaw) * horizontalDistance,
+      position.x +
+        Math.sin(input.current.yaw) * horizontalDistance +
+        Math.cos(input.current.yaw) * shoulderOffset,
       position.y + 2.5 + Math.sin(input.current.pitch) * distance,
-      position.z + Math.cos(input.current.yaw) * horizontalDistance,
+      position.z +
+        Math.cos(input.current.yaw) * horizontalDistance -
+        Math.sin(input.current.yaw) * shoulderOffset,
     );
     cameraRayDirection
       .copy(desiredCameraPosition)
@@ -1146,15 +1173,22 @@ function PlayerController({
       rigidBody,
     );
     if (cameraHit) {
+      cameraCollisionDistance.current = Math.max(
+        0.65,
+        cameraHit.timeOfImpact - 0.42,
+      );
       desiredCameraPosition
         .copy(cameraTarget)
         .addScaledVector(
           cameraRayDirection,
-          Math.max(0.65, cameraHit.timeOfImpact - 0.35),
+          cameraCollisionDistance.current,
         );
+      camera.position.copy(desiredCameraPosition);
+    } else {
+      cameraCollisionDistance.current = null;
+      const cameraSmoothing = 1 - Math.exp(-10.5 * frameDelta);
+      camera.position.lerp(desiredCameraPosition, cameraSmoothing);
     }
-    const cameraSmoothing = 1 - Math.exp(-9 * delta);
-    camera.position.lerp(desiredCameraPosition, cameraSmoothing);
     camera.lookAt(cameraTarget);
 
     if (state.clock.elapsedTime - lastTelemetry.current > 0.15) {
@@ -1182,7 +1216,7 @@ function PlayerController({
       position={[spawn.x, spawn.y, spawn.z]}
       colliders={false}
       lockRotations
-      linearDamping={0.2}
+      linearDamping={0.12}
       friction={0}
       ccd
       enabledRotations={[false, false, false]}
@@ -1203,6 +1237,7 @@ function PlayerController({
         <BlockAvatar
           moving={moving}
           grounded={grounded}
+          verticalVelocity={verticalVelocity}
           facing={facing}
           player={localPlayer}
         />
@@ -1452,7 +1487,7 @@ function ProjectBlock({
             key={`${object.material}-${object.surfaceTexture}`}
             color={object.color}
             map={surfaceTexture}
-            roughness={material.roughness}
+            roughness={Math.max(0.18, material.roughness - 0.08)}
             metalness={material.metalness}
             emissive={object.material === "neon" ? object.color : "#000000"}
             emissiveIntensity={material.emissiveIntensity}
@@ -1487,6 +1522,8 @@ function ProjectBlock({
       position={object.position}
       rotation={object.rotation}
       ccd={!object.anchored}
+      linearDamping={object.anchored ? 0 : 0.08}
+      angularDamping={object.anchored ? 0 : 0.12}
     >
       <ProjectPartCollider
         object={object}
@@ -1600,6 +1637,9 @@ function Scene({
   soundRequests,
   soundVersion,
   playerSettings,
+  cameraSettings,
+  controlsEnabled,
+  onShiftLockChange,
   lighting,
   shadows,
   spawn,
@@ -1623,6 +1663,9 @@ function Scene({
   soundRequests: PolySoundRequest[];
   soundVersion: number;
   playerSettings: PolyPlayerSettings;
+  cameraSettings: GameCameraSettings;
+  controlsEnabled: boolean;
+  onShiftLockChange: (active: boolean) => void;
   lighting: PolyLightingSettings;
   shadows: boolean;
   spawn: { x: number; y: number; z: number };
@@ -1632,6 +1675,8 @@ function Scene({
     username: string;
     displayName: string;
     equippedShirtId?: ShirtId | null;
+    equippedPantsId?: PantsId | null;
+    avatarAppearance?: AvatarAppearance;
   };
   onPlayerDeath: () => void;
   onPlayerRespawn?: () => void;
@@ -1668,9 +1713,17 @@ function Scene({
         input={input}
         onPointerLock={onPointerLock}
         playerSettings={playerSettings}
+        cameraSettings={cameraSettings}
+        controlsEnabled={controlsEnabled}
+        onShiftLockChange={onShiftLockChange}
       />
       <LightingRig lighting={lighting} shadows={shadows} />
-      <Physics gravity={[0, -24, 0]} timeStep="vary" colliders={false}>
+      <Physics
+        gravity={[0, -28, 0]}
+        timeStep={1 / 60}
+        interpolate
+        colliders={false}
+      >
         {death ? (
           <>
             <DeathCamera origin={death.origin} input={input} />
@@ -1683,6 +1736,7 @@ function Scene({
             onPlayerState={onPlayerState}
             spawn={spawn}
             playerSettings={playerSettings}
+            shiftLockActive={cameraSettings.shiftLockActive}
             localPlayer={localPlayer}
             onDeath={beginDeath}
           />
@@ -2070,6 +2124,7 @@ export default function BaseplateGame({
   onWorldTouchEnded,
   onKeyInput,
   onPlayerRespawn,
+  onLeave,
 }: {
   remotePlayers?: RemotePlayer[];
   onPlayerState?: (state: Omit<PlayerTransform, "sequence">) => void;
@@ -2090,6 +2145,8 @@ export default function BaseplateGame({
     username: string;
     displayName: string;
     equippedShirtId?: ShirtId | null;
+    equippedPantsId?: PantsId | null;
+    avatarAppearance?: AvatarAppearance;
   };
   onFriendRequest?: (username: string) => Promise<void>;
   chatMessages?: ChatMessage[];
@@ -2104,6 +2161,7 @@ export default function BaseplateGame({
     event: "InputBegan" | "InputEnded",
   ) => void;
   onPlayerRespawn?: () => void;
+  onLeave?: () => void;
 }) {
   const [dead, setDead] = useState(false);
   const visibleLeaderstats = leaderstats.filter(
@@ -2124,6 +2182,16 @@ export default function BaseplateGame({
   const input = useRef<InputState>(createInputState());
   const tools = worldObjects?.filter((object) => object.type === "tool") ?? [];
   const [pointerLocked, setPointerLocked] = useState(false);
+  const [gameMenuOpen, setGameMenuOpen] = useState(false);
+  const [gameMenuTab, setGameMenuTab] = useState<"players" | "settings">(
+    "players",
+  );
+  const [cameraInverted, setCameraInverted] = useState(false);
+  const [shiftLockEnabled, setShiftLockEnabled] = useState(true);
+  const [shiftLockActive, setShiftLockActive] = useState(false);
+  const [menuFriendStatus, setMenuFriendStatus] = useState<
+    Record<string, string>
+  >({});
   const [playerListOpen, setPlayerListOpen] = useState(false);
   const [selectedPlayer, setSelectedPlayer] = useState<{
     username: string;
@@ -2148,7 +2216,15 @@ export default function BaseplateGame({
     z: spawn.z,
     rotationY: 0,
   });
-  useKeyboard(input, onKeyInput);
+  const cameraSettings = useMemo<GameCameraSettings>(
+    () => ({
+      inverted: cameraInverted,
+      shiftLockEnabled,
+      shiftLockActive,
+    }),
+    [cameraInverted, shiftLockActive, shiftLockEnabled],
+  );
+  useKeyboard(input, !gameMenuOpen && !dead, onKeyInput);
   useEffect(() => {
     const media = window.matchMedia("(pointer: coarse)");
     const update = () => {
@@ -2187,6 +2263,25 @@ export default function BaseplateGame({
   }, []);
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code === "Escape") {
+        if (gameMenuOpen) {
+          event.preventDefault();
+          setGameMenuOpen(false);
+          return;
+        }
+        const target = event.target;
+        if (
+          target instanceof HTMLInputElement ||
+          target instanceof HTMLTextAreaElement ||
+          (target instanceof HTMLElement && target.isContentEditable)
+        ) {
+          target.blur();
+          return;
+        }
+        event.preventDefault();
+        setGameMenuOpen(true);
+        return;
+      }
       if (event.code !== "Tab") return;
       const target = event.target;
       if (
@@ -2197,6 +2292,7 @@ export default function BaseplateGame({
         return;
       }
       event.preventDefault();
+      if (gameMenuOpen) return;
       setPlayerListOpen((open) => {
         const next = !open;
         if (next && document.pointerLockElement) {
@@ -2207,7 +2303,24 @@ export default function BaseplateGame({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [gameMenuOpen]);
+  useEffect(() => {
+    if (!gameMenuOpen) return;
+    input.current.forward = false;
+    input.current.backward = false;
+    input.current.left = false;
+    input.current.right = false;
+    input.current.sprint = false;
+    setPlayerListOpen(false);
+    setSelectedPlayer(null);
+    setShiftLockActive(false);
+    if (document.pointerLockElement) void document.exitPointerLock();
+  }, [gameMenuOpen]);
+  useEffect(() => {
+    if (shiftLockEnabled) return;
+    setShiftLockActive(false);
+    if (document.pointerLockElement) void document.exitPointerLock();
+  }, [shiftLockEnabled]);
 
   const setMove = (
     key: "forward" | "backward" | "left" | "right" | "sprint",
@@ -2276,9 +2389,11 @@ export default function BaseplateGame({
       data-landscape={landscape ? "true" : undefined}
       data-graphics={graphicsMode}
       data-dead={dead ? "true" : undefined}
+      data-shift-lock={shiftLockActive ? "true" : undefined}
+      data-pointer-locked={pointerLocked ? "true" : undefined}
     >
       <Canvas
-        shadows={graphicsMode === "high" ? "basic" : false}
+        shadows={graphicsMode === "high" ? "soft" : false}
         dpr={graphicsMode === "high" ? [1, 1.5] : [0.65, 1]}
         camera={{
           position: [0, 5.5, 12],
@@ -2286,7 +2401,14 @@ export default function BaseplateGame({
           near: 0.1,
           far: Math.max(300, lighting.fogEnd + 50),
         }}
-        gl={{ antialias: true }}
+        gl={{
+          antialias: true,
+          toneMapping: ACESFilmicToneMapping,
+          toneMappingExposure: 1,
+        }}
+        onCreated={({ gl }) => {
+          gl.shadowMap.type = PCFSoftShadowMap;
+        }}
       >
         <Suspense fallback={null}>
           <Scene
@@ -2304,6 +2426,9 @@ export default function BaseplateGame({
             soundRequests={[...soundRequests, ...localSoundRequests]}
             soundVersion={soundVersion + localSoundVersion}
             playerSettings={playerSettings}
+            cameraSettings={cameraSettings}
+            controlsEnabled={!gameMenuOpen && !dead}
+            onShiftLockChange={setShiftLockActive}
             lighting={lighting}
             shadows={graphicsMode === "high"}
             spawn={spawn}
@@ -2315,6 +2440,207 @@ export default function BaseplateGame({
           />
         </Suspense>
       </Canvas>
+
+      <button
+        className="game-menu-button"
+        type="button"
+        onClick={() => setGameMenuOpen(true)}
+        aria-label="Open game menu"
+      >
+        <span />
+        <span />
+        <span />
+      </button>
+      {shiftLockActive && !gameMenuOpen && (
+        <span className="shift-lock-reticle" aria-hidden="true" />
+      )}
+
+      {gameMenuOpen && (
+        <div className="game-menu-layer" role="dialog" aria-modal="true">
+          <section className="game-menu-panel">
+            <header className="game-menu-tabs">
+              <button
+                className={gameMenuTab === "players" ? "active" : ""}
+                onClick={() => setGameMenuTab("players")}
+              >
+                Players
+              </button>
+              <button
+                className={gameMenuTab === "settings" ? "active" : ""}
+                onClick={() => setGameMenuTab("settings")}
+              >
+                Settings
+              </button>
+            </header>
+
+            <div className="game-menu-content">
+              {gameMenuTab === "players" ? (
+                <>
+                  <div className="game-menu-heading">
+                    <div>
+                      <strong>Players</strong>
+                      <span>{remotePlayers.length + 1} in this game</span>
+                    </div>
+                  </div>
+                  <div className="game-menu-players">
+                    <article>
+                      <span>
+                        {(localPlayer?.displayName ?? "L").slice(0, 1)}
+                      </span>
+                      <div>
+                        <strong>
+                          {localPlayer?.displayName ?? "LocalPlayer"}
+                        </strong>
+                        <small>
+                          @{localPlayer?.username ?? "localplayer"} - You
+                        </small>
+                      </div>
+                    </article>
+                    {remotePlayers.map((player) => (
+                      <article key={player.id}>
+                        <span>{player.displayName.slice(0, 1)}</span>
+                        <div>
+                          <strong>{player.displayName}</strong>
+                          <small>@{player.username}</small>
+                        </div>
+                        {onFriendRequest && (
+                          <button
+                            disabled={
+                              menuFriendStatus[player.username] === "Sent"
+                            }
+                            onClick={async () => {
+                              setMenuFriendStatus((current) => ({
+                                ...current,
+                                [player.username]: "Sending...",
+                              }));
+                              try {
+                                await onFriendRequest(player.username);
+                                setMenuFriendStatus((current) => ({
+                                  ...current,
+                                  [player.username]: "Sent",
+                                }));
+                              } catch (error) {
+                                setMenuFriendStatus((current) => ({
+                                  ...current,
+                                  [player.username]:
+                                    error instanceof Error
+                                      ? error.message
+                                      : "Try again",
+                                }));
+                              }
+                            }}
+                          >
+                            {menuFriendStatus[player.username] || "Add friend"}
+                          </button>
+                        )}
+                      </article>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="game-menu-heading">
+                    <div>
+                      <strong>Settings</strong>
+                      <span>Changes apply immediately</span>
+                    </div>
+                  </div>
+                  <div className="game-menu-settings">
+                    <label>
+                      <div>
+                        <strong>Camera inverted</strong>
+                        <small>
+                          Reverse mouse, touch, and arrow-key camera movement.
+                        </small>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={cameraInverted}
+                        onChange={(event) =>
+                          setCameraInverted(event.target.checked)
+                        }
+                      />
+                    </label>
+                    <label>
+                      <div>
+                        <strong>Shift lock</strong>
+                        <small>
+                          Press Shift to lock the mouse and face the camera.
+                        </small>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={shiftLockEnabled}
+                        onChange={(event) =>
+                          setShiftLockEnabled(event.target.checked)
+                        }
+                      />
+                    </label>
+                    <label>
+                      <div>
+                        <strong>Graphics</strong>
+                        <small>
+                          High enables stronger shadows and resolution.
+                        </small>
+                      </div>
+                      <button
+                        onClick={() =>
+                          setGraphicsMode((current) =>
+                            current === "low" ? "high" : "low",
+                          )
+                        }
+                      >
+                        {graphicsMode === "high" ? "High" : "Low"}
+                      </button>
+                    </label>
+                    {mobileDevice && (
+                      <label>
+                        <div>
+                          <strong>Fullscreen</strong>
+                          <small>Use the full landscape display.</small>
+                        </div>
+                        <button
+                          onClick={() => {
+                            if (document.fullscreenElement) {
+                              void document.exitFullscreen();
+                            } else {
+                              void enterMobileFullscreen();
+                            }
+                          }}
+                        >
+                          {fullscreen ? "Exit" : "Enter"}
+                        </button>
+                      </label>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+
+            <footer className="game-menu-actions">
+              <button
+                onClick={() => {
+                  input.current.resetQueued = true;
+                  setGameMenuOpen(false);
+                }}
+              >
+                Reset character
+              </button>
+              {onLeave && (
+                <button className="danger" onClick={onLeave}>
+                  Leave game
+                </button>
+              )}
+              <button
+                className="primary"
+                onClick={() => setGameMenuOpen(false)}
+              >
+                Resume
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
 
       <div className="game-hud game-hud-left">
         <span className="game-build-label">{projectName.toUpperCase()}</span>
@@ -2423,7 +2749,11 @@ export default function BaseplateGame({
                 <small>@{player.username}</small>
               </div>
               {visibleLeaderstats.map((stat) => (
-                <b key={stat.id}>{String(stat.defaultValue)}</b>
+                <b key={stat.id}>
+                  {player.leaderstats[stat.name] === undefined
+                    ? "-"
+                    : String(player.leaderstats[stat.name])}
+                </b>
               ))}
             </button>
           ))}
@@ -2461,66 +2791,22 @@ export default function BaseplateGame({
 
       <div className="game-hud game-hud-right">
         <span>WASD Move</span>
+        <span>Arrows Camera</span>
         <span>Space Jump</span>
-        <span>Shift Sprint</span>
+        <span>Ctrl Sprint</span>
+        {shiftLockEnabled && <span>Shift Lock</span>}
         <span>R Reset</span>
       </div>
 
-      {mobileDevice && (
-        <div className="mobile-game-menu">
-          <button onClick={() => setPlayerListOpen((open) => !open)}>
-            Players
-          </button>
-          <button
-            onClick={() =>
-              setGraphicsMode((current) =>
-                current === "low" ? "high" : "low",
-              )
-            }
-          >
-            Graphics: {graphicsMode}
-          </button>
-          <button
-            onClick={() => {
-              if (document.fullscreenElement) {
-                void document.exitFullscreen();
-              } else {
-                void enterMobileFullscreen();
-              }
-            }}
-          >
-            {fullscreen ? "Exit full" : "Fullscreen"}
-          </button>
-        </div>
-      )}
-
-      {mobileDevice && (!landscape || !fullscreen) && (
+      {mobileDevice && !landscape && (
         <div className="mobile-landscape-gate" role="dialog" aria-modal="true">
           <div className="mobile-landscape-card">
             <span className="mobile-landscape-icon" aria-hidden="true">
               90
             </span>
-            <strong>
-              {landscape ? "Play in fullscreen" : "Rotate to landscape"}
-            </strong>
-            <p>
-              {landscape
-                ? "Polymons mobile play is built for fullscreen landscape."
-                : "Turn your phone sideways to continue playing."}
-            </p>
-            {landscape && (
-              <button onClick={() => void enterMobileFullscreen()}>
-                Enter fullscreen
-              </button>
-            )}
+            <strong>Rotate to landscape</strong>
+            <p>Turn your phone sideways to continue playing.</p>
           </div>
-        </div>
-      )}
-
-      {!pointerLocked && (
-        <div className="mouse-capture-hint">
-          <strong>Click the game to control the camera</strong>
-          <span>Scroll to zoom. Press Escape to release the mouse.</span>
         </div>
       )}
 

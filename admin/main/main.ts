@@ -200,6 +200,45 @@ if (!hasLock) {
           },
         ),
     );
+    ipcMain.handle(
+      "accounts:tix",
+      (
+        _event,
+        input: {
+          userId: string;
+          mode: "add" | "set";
+          amount: number;
+        },
+      ) =>
+        ownerPost(
+          `/v1/admin/accounts/${encodeURIComponent(input.userId)}/tix`,
+          {
+            mode: input.mode,
+            amount: input.amount,
+          },
+        ),
+    );
+    ipcMain.handle("catalog:list", () =>
+      ownerRequest("/v1/admin/catalog-submissions"),
+    );
+    ipcMain.handle(
+      "catalog:review",
+      (
+        _event,
+        input: {
+          itemId: string;
+          status: "approved" | "rejected";
+          reason?: string;
+        },
+      ) =>
+        ownerPost(
+          `/v1/admin/catalog-submissions/${encodeURIComponent(input.itemId)}/review`,
+          {
+            status: input.status,
+            reason: input.reason ?? "",
+          },
+        ),
+    );
 
     createWindow();
   });

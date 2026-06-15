@@ -24,12 +24,35 @@ type PlayerUser = {
   username: string;
   displayName: string;
   description: string;
+  tix: number;
   avatarUrl: string | null;
   equippedShirtId:
     | "polymon-shirt"
     | "beta-tester-shirt"
     | "creators-shirt"
+    | "orange-polymons-shirt"
+    | "polymons-varsity-jacket"
     | null;
+  equippedPantsId:
+    | "classic-denim-pants"
+    | "polymon-pants"
+    | "beta-tester-pants"
+    | "creators-pants"
+    | "orange-polymons-pants"
+    | "polymons-varsity-pants"
+    | null;
+  avatarAppearance: {
+    face: "classic-smile";
+    bodyColors: {
+      head: string;
+      torso: string;
+      leftArm: string;
+      rightArm: string;
+      leftLeg: string;
+      rightLeg: string;
+    };
+    accessories: string[];
+  };
 };
 
 type PlayerSession = {
@@ -221,6 +244,26 @@ async function refreshAuth(): Promise<StoredAuth | null> {
     return next;
   } catch {
     return current;
+  }
+}
+
+async function authenticatedApiRequest<T>(
+  path: string,
+  options: { method?: "GET" | "POST"; body?: unknown } = {},
+): Promise<T> {
+  if (!auth) throw new Error("Sign in to continue.");
+  try {
+    return await apiRequest<T>(path, {
+      ...options,
+      accessToken: auth.session.accessToken,
+    });
+  } catch {
+    const renewed = await refreshAuth();
+    if (!renewed) throw new Error("Sign in again to continue.");
+    return apiRequest<T>(path, {
+      ...options,
+      accessToken: renewed.session.accessToken,
+    });
   }
 }
 
@@ -459,6 +502,15 @@ if (!hasLock) {
       await saveAuth(null);
     });
     ipcMain.handle("games:list", () => apiRequest("/v1/games"));
+    ipcMain.handle("games:library", () =>
+      authenticatedApiRequest("/v1/games/library"),
+    );
+    ipcMain.handle("servers:friends", () =>
+      authenticatedApiRequest("/v1/servers/friends"),
+    );
+    ipcMain.handle("servers:game", (_event, input: { gameId: string }) =>
+      apiRequest(`/v1/games/${encodeURIComponent(input.gameId)}/servers`),
+    );
     ipcMain.handle("friends:list", async () => {
       if (!auth) throw new Error("Sign in to view friends.");
       const request = (accessToken: string) =>
@@ -517,6 +569,40 @@ if (!hasLock) {
     });
     ipcMain.handle("game:get", (_event, input: { gameId: string }) =>
       apiRequest(`/v1/games/${encodeURIComponent(input.gameId)}`),
+    );
+    ipcMain.handle(
+      "badges:award",
+      (_event, input: { gameId: string; badgeName: string }) =>
+        authenticatedApiRequest(
+          `/v1/games/${encodeURIComponent(input.gameId)}/badges/award`,
+          {
+            method: "POST",
+            body: { badgeName: input.badgeName },
+          },
+        ),
+    );
+    ipcMain.handle(
+      "game:entitlements",
+      (_event, input: { gameId: string }) =>
+        authenticatedApiRequest(
+          `/v1/games/${encodeURIComponent(input.gameId)}/entitlements`,
+        ),
+    );
+    ipcMain.handle(
+      "gamepasses:purchase",
+      (_event, input: { gameId: string; passId: string }) =>
+        authenticatedApiRequest(
+          `/v1/games/${encodeURIComponent(input.gameId)}/gamepasses/${encodeURIComponent(input.passId)}/purchase`,
+          { method: "POST" },
+        ),
+    );
+    ipcMain.handle(
+      "products:purchase",
+      (_event, input: { gameId: string; productId: string }) =>
+        authenticatedApiRequest(
+          `/v1/games/${encodeURIComponent(input.gameId)}/products/${encodeURIComponent(input.productId)}/purchase`,
+          { method: "POST" },
+        ),
     );
     ipcMain.handle(
       "friends:request",

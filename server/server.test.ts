@@ -15,6 +15,8 @@ import {
 import {
   adminInventorySchema,
   clientMessageSchema,
+  equipAvatarItemSchema,
+  equipAvatarPantsSchema,
   favoriteGameSchema,
   friendRequestSchema,
   profileUpdateSchema,
@@ -160,6 +162,22 @@ test("accepts only bounded gameplay messages", () => {
     }).success,
     false,
   );
+  assert.equal(
+    clientMessageSchema.safeParse({
+      type: "leaderstats",
+      values: { lava: 36, Multiplier: 2 },
+    }).success,
+    true,
+  );
+  assert.equal(
+    clientMessageSchema.safeParse({
+      type: "leaderstats",
+      values: Object.fromEntries(
+        Array.from({ length: 21 }, (_, index) => [`Stat ${index}`, index]),
+      ),
+    }).success,
+    false,
+  );
 });
 
 test("validates Studio publishes and friend requests", () => {
@@ -170,6 +188,24 @@ test("validates Studio publishes and friend requests", () => {
       manifest: { version: 2 },
     }).success,
     true,
+  );
+  assert.equal(
+    publishGameSchema.safeParse({
+      projectId: "11111111-1111-4111-8111-111111111111",
+      title: "Thumbnail Game",
+      thumbnailData: "data:image/png;base64,iVBORw0KGgo=",
+      manifest: { version: 2 },
+    }).success,
+    true,
+  );
+  assert.equal(
+    publishGameSchema.safeParse({
+      projectId: "11111111-1111-4111-8111-111111111111",
+      title: "Bad Thumbnail",
+      thumbnailData: "https://example.com/not-uploaded.png",
+      manifest: { version: 2 },
+    }).success,
+    false,
   );
   assert.equal(
     friendRequestSchema.safeParse({ username: "lava" }).success,
@@ -183,6 +219,24 @@ test("validates Studio publishes and friend requests", () => {
 
 test("validates favorites and owner inventory edits", () => {
   assert.equal(favoriteGameSchema.safeParse({ favorite: true }).success, true);
+  assert.equal(
+    equipAvatarItemSchema.safeParse({
+      shirtId: "orange-polymons-shirt",
+    }).success,
+    true,
+  );
+  assert.equal(
+    equipAvatarPantsSchema.safeParse({
+      pantsId: "polymons-varsity-pants",
+    }).success,
+    true,
+  );
+  assert.equal(
+    equipAvatarPantsSchema.safeParse({
+      pantsId: "not real pants!",
+    }).success,
+    false,
+  );
   assert.equal(
     adminInventorySchema.safeParse({
       itemId: "beta-tester-shirt",

@@ -10,6 +10,10 @@ contextBridge.exposeInMainWorld("polyStudio", {
   createProject: (input) => ipcRenderer.invoke("projects:create", input),
   loadProject: (id) => ipcRenderer.invoke("projects:load", { id }),
   saveProject: (project) => ipcRenderer.invoke("projects:save", project),
+  snapshotProject: (project) => ipcRenderer.invoke("projects:snapshot", project),
+  listProjectBackups: (id) => ipcRenderer.invoke("projects:backups", { id }),
+  restoreProjectBackup: (id, backupId) =>
+    ipcRenderer.invoke("projects:restore", { id, backupId }),
   publishProject: (project, metadata) =>
     ipcRenderer.invoke("projects:publish", { project, metadata }),
   exportProject: (project) => ipcRenderer.invoke("projects:export", project),

@@ -548,6 +548,35 @@ button.account-row.selected {
   padding-top: 16px;
 }
 
+.tix-editor {
+  display: grid;
+  gap: 12px;
+  border: 1px solid #30283a;
+  border-radius: 12px;
+  background: #111016;
+  padding: 14px;
+}
+
+.tix-editor-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 8px;
+}
+
+.tix-editor-controls select,
+.tix-editor-controls input {
+  min-width: 0;
+  border: 1px solid #342c3e;
+  border-radius: 7px;
+  background: #09090d;
+  color: #eeeaf4;
+  padding: 8px 9px;
+}
+
+.tix-editor small {
+  color: #b795f4;
+}
+
 .inventory-heading {
   display: flex;
   align-items: center;
@@ -636,6 +665,51 @@ button.account-row.selected {
   display: block;
   margin-top: 9px;
   color: #9ce4bb;
+}
+
+.catalog-review-panel {
+  border: 1px solid rgba(179, 139, 239, 0.14);
+  border-radius: 22px;
+  background: rgba(17, 13, 26, 0.86);
+  padding: 16px;
+  margin-bottom: 18px;
+}
+
+.catalog-review-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.catalog-review-list article {
+  display: grid;
+  grid-template-columns: 70px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 10px;
+}
+
+.catalog-review-list img,
+.catalog-review-list article > span {
+  width: 70px;
+  height: 70px;
+  border-radius: 14px;
+  background: #15111f;
+  object-fit: cover;
+}
+
+.catalog-review-list article div:not(.inventory-actions) {
+  display: grid;
+  gap: 4px;
+}
+
+.catalog-review-list article span,
+.catalog-review-list article small {
+  color: #a39ab7;
+  font-size: 11px;
 }
 
 .spin {

@@ -12,8 +12,13 @@ export type PolymonsUser = {
   username: string;
   displayName: string;
   description: string;
+  tix: number;
   avatarUrl: string | null;
   equippedShirtId: import("./game/avatarCatalog").ShirtId | null;
+  equippedPantsId: import("./game/avatarCatalog").PantsId | null;
+  equippedShirtTextureUrl?: string | null;
+  equippedPantsTextureUrl?: string | null;
+  avatarAppearance: import("./game/avatarAppearance").AvatarAppearance;
 };
 
 export type PolymonsSession = {
@@ -73,8 +78,36 @@ export type PlatformGame = {
   creatorUsername: string;
   activePlayers: number;
   visits: number;
+  favorites: number;
+  createdAt: string;
   updatedAt: string;
   manifest?: import("./game/polyProject").PolyProject | null;
+  badges?: GameBadge[];
+  gamePasses?: GamePass[];
+  developerProducts?: DeveloperProduct[];
+};
+
+export type GameBadge = {
+  id: string;
+  name: string;
+  description: string;
+  iconUrl: string | null;
+};
+
+export type GamePass = {
+  id: string;
+  name: string;
+  description: string;
+  priceTix: number;
+};
+
+export type DeveloperProduct = {
+  id: string;
+  name: string;
+  description: string;
+  priceTix: number;
+  effectKey: string | null;
+  effectAmount: number;
 };
 
 export type PublicPlayer = PolymonsUser & {
@@ -87,8 +120,10 @@ export type PublicPlayerProfile = {
     friends: number;
     games: number;
     gameVisits: number;
+    followers: number;
   };
   games: PlatformGame[];
+  badges: Array<GameBadge & { gameId: string; awardedAt: string }>;
 };
 
 export type Friendship = {
@@ -101,8 +136,25 @@ export type Friendship = {
 
 export type Wardrobe = {
   equippedShirtId: import("./game/avatarCatalog").ShirtId | null;
+  equippedPantsId: import("./game/avatarCatalog").PantsId | null;
+  avatarAppearance: import("./game/avatarAppearance").AvatarAppearance;
+  tix: number;
   totalCreatorVisits: number;
   items: import("./game/avatarCatalog").AvatarCatalogItem[];
+};
+
+export type AvatarCatalogSubmission = {
+  id: string;
+  name: string;
+  description: string;
+  itemType: "shirt" | "pants";
+  unlockType: "free" | "creator_visits" | "tix";
+  priceTix: number;
+  textureUrl: string | null;
+  reviewStatus: "pending" | "approved" | "rejected";
+  rejectionReason: string;
+  createdAt: string;
+  reviewedAt: string | null;
 };
 
 async function apiRequest<T>(
@@ -292,14 +344,187 @@ export function getWardrobe(
   return apiRequest("/v1/avatar/wardrobe", { accessToken });
 }
 
+export function listAvatarUploads(
+  accessToken: string,
+): Promise<{ submissions: AvatarCatalogSubmission[] }> {
+  return apiRequest("/v1/avatar/uploads", { accessToken });
+}
+
+export function submitAvatarUpload(
+  input: {
+    itemType: "shirt" | "pants";
+    name: string;
+    description: string;
+    priceTix: number;
+    textureData: string;
+  },
+  accessToken: string,
+): Promise<{ submission: AvatarCatalogSubmission }> {
+  return apiRequest("/v1/avatar/uploads", {
+    method: "POST",
+    accessToken,
+    body: input,
+  });
+}
+
 export function claimAvatarItem(
   itemId: string,
   accessToken: string,
-): Promise<{ itemId: string; owned: true }> {
+): Promise<{
+  itemId: string;
+  itemIds: string[];
+  owned: true;
+  tix: number;
+}> {
   return apiRequest(`/v1/avatar/items/${encodeURIComponent(itemId)}/claim`, {
     method: "POST",
     accessToken,
   });
+}
+
+export function setCreatorFollow(
+  username: string,
+  following: boolean,
+  accessToken: string,
+): Promise<{ username: string; following: boolean }> {
+  return apiRequest(`/v1/players/${encodeURIComponent(username)}/follow`, {
+    method: "POST",
+    accessToken,
+    body: { following },
+  });
+}
+
+export function listFollowedCreators(accessToken: string): Promise<{
+  creators: Array<{
+    id: string;
+    username: string;
+    displayName: string;
+    avatarUrl: string | null;
+    followedAt: string;
+  }>;
+}> {
+  return apiRequest("/v1/follows", { accessToken });
+}
+
+export function listFriendServers(accessToken: string): Promise<{
+  servers: Array<{
+    id: string;
+    playerCount: number;
+    friends: Array<{
+      userId: string;
+      username: string;
+      displayName: string;
+    }>;
+    game: {
+      id: string;
+      slug: string;
+      title: string;
+      thumbnailUrl: string | null;
+    };
+  }>;
+}> {
+  return apiRequest("/v1/servers/friends", { accessToken });
+}
+
+export function listGameServers(gameId: string): Promise<{
+  game: { id: string; slug: string; title: string };
+  servers: Array<{
+    id: string;
+    playerCount: number;
+    players: Array<{
+      userId: string;
+      username: string;
+      displayName: string;
+    }>;
+  }>;
+}> {
+  return apiRequest(`/v1/games/${encodeURIComponent(gameId)}/servers`);
+}
+
+export function getCreatorAnalytics(accessToken: string): Promise<{
+  totals: {
+    games: number;
+    visits: number;
+    activePlayers: number;
+    playsLast7Days: number;
+  };
+  games: Array<{
+    id: string;
+    slug: string;
+    title: string;
+    visits: number;
+    activePlayers: number;
+    favorites: number;
+    playsLast7Days: number;
+    updatedAt: string;
+  }>;
+}> {
+  return apiRequest("/v1/creator/analytics", { accessToken });
+}
+
+export function awardGameBadge(
+  gameId: string,
+  badgeName: string,
+  accessToken: string,
+): Promise<{ badgeId: string; awarded: true }> {
+  return apiRequest(`/v1/games/${encodeURIComponent(gameId)}/badges/award`, {
+    method: "POST",
+    accessToken,
+    body: { badgeName },
+  });
+}
+
+export function checkGameBadge(
+  gameId: string,
+  badgeName: string,
+  accessToken: string,
+): Promise<{ gameId: string; badgeName: string; owned: boolean }> {
+  return apiRequest(`/v1/games/${encodeURIComponent(gameId)}/badges/check`, {
+    method: "POST",
+    accessToken,
+    body: { badgeName },
+  });
+}
+
+export function getGameEntitlements(
+  gameId: string,
+  accessToken: string,
+): Promise<{
+  gamePasses: string[];
+  gamePassNames: string[];
+  badges: string[];
+  playerData: Record<string, import("./game/polyProject").PolyStoredValue>;
+}> {
+  return apiRequest(`/v1/games/${encodeURIComponent(gameId)}/entitlements`, {
+    accessToken,
+  });
+}
+
+export function purchaseGamePass(
+  gameId: string,
+  passId: string,
+  accessToken: string,
+): Promise<{ passId: string; owned: true; tix: number }> {
+  return apiRequest(
+    `/v1/games/${encodeURIComponent(gameId)}/gamepasses/${encodeURIComponent(passId)}/purchase`,
+    { method: "POST", accessToken },
+  );
+}
+
+export function purchaseDeveloperProduct(
+  gameId: string,
+  productId: string,
+  accessToken: string,
+): Promise<{
+  productId: string;
+  purchaseId: string;
+  tix: number;
+  playerData: Record<string, import("./game/polyProject").PolyStoredValue>;
+}> {
+  return apiRequest(
+    `/v1/games/${encodeURIComponent(gameId)}/products/${encodeURIComponent(productId)}/purchase`,
+    { method: "POST", accessToken },
+  );
 }
 
 export function equipShirt(
@@ -313,6 +538,34 @@ export function equipShirt(
     method: "POST",
     accessToken,
     body: { shirtId },
+  });
+}
+
+export function equipPants(
+  pantsId: import("./game/avatarCatalog").PantsId | null,
+  accessToken: string,
+): Promise<{
+  equippedPantsId: import("./game/avatarCatalog").PantsId | null;
+  user: PolymonsUser;
+}> {
+  return apiRequest("/v1/avatar/equip-pants", {
+    method: "POST",
+    accessToken,
+    body: { pantsId },
+  });
+}
+
+export function updateAvatarAppearance(
+  avatarAppearance: import("./game/avatarAppearance").AvatarAppearance,
+  accessToken: string,
+): Promise<{
+  avatarAppearance: import("./game/avatarAppearance").AvatarAppearance;
+  user: PolymonsUser;
+}> {
+  return apiRequest("/v1/avatar/appearance", {
+    method: "POST",
+    accessToken,
+    body: avatarAppearance,
   });
 }
 

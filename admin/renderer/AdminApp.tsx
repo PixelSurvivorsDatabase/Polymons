@@ -10,6 +10,7 @@ import {
   Search,
   ShieldCheck,
   Shirt,
+  Tickets,
   UserRound,
   Users,
 } from "lucide-react";
@@ -135,6 +136,15 @@ export default function AdminApp() {
   const [error, setError] = useState("");
   const [inventoryBusy, setInventoryBusy] = useState("");
   const [inventoryMessage, setInventoryMessage] = useState("");
+  const [tixMode, setTixMode] = useState<"add" | "set">("add");
+  const [tixAmount, setTixAmount] = useState("10");
+  const [tixBusy, setTixBusy] = useState(false);
+  const [tixMessage, setTixMessage] = useState("");
+  const [catalogSubmissions, setCatalogSubmissions] = useState<
+    PolyAdminCatalogSubmission[]
+  >([]);
+  const [catalogBusy, setCatalogBusy] = useState("");
+  const [catalogMessage, setCatalogMessage] = useState("");
 
   useEffect(() => {
     void window.polyAdmin.getAuth().then((current) => {
@@ -162,8 +172,20 @@ export default function AdminApp() {
     }
   }
 
+  async function loadCatalogSubmissions() {
+    try {
+      const result = await window.polyAdmin.listCatalogSubmissions();
+      setCatalogSubmissions(result.submissions);
+    } catch (nextError) {
+      setError(readableError(nextError));
+    }
+  }
+
   useEffect(() => {
-    if (auth) void loadAccounts(1);
+    if (auth) {
+      void loadAccounts(1);
+      void loadCatalogSubmissions();
+    }
     // Loading is intentionally tied to the authenticated identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth]);
@@ -216,6 +238,55 @@ export default function AdminApp() {
       setError(readableError(nextError));
     } finally {
       setInventoryBusy("");
+    }
+  }
+
+  async function updateTix() {
+    if (!selected) return;
+    const amount = Number(tixAmount);
+    if (!Number.isInteger(amount)) {
+      setTixMessage("Enter a whole number.");
+      return;
+    }
+    setTixBusy(true);
+    setTixMessage("");
+    setError("");
+    try {
+      const result = await window.polyAdmin.updateTix(
+        selected.id,
+        tixMode,
+        amount,
+      );
+      setTixMessage(`Balance is now ${result.tix.toLocaleString()} Tix.`);
+      await loadAccounts(page);
+    } catch (nextError) {
+      setError(readableError(nextError));
+    } finally {
+      setTixBusy(false);
+    }
+  }
+
+  async function reviewCatalogSubmission(
+    itemId: string,
+    status: "approved" | "rejected",
+  ) {
+    const reason =
+      status === "rejected"
+        ? window.prompt("Reason shown to the creator?", "") ?? ""
+        : "";
+    setCatalogBusy(itemId);
+    setCatalogMessage("");
+    setError("");
+    try {
+      await window.polyAdmin.reviewCatalogSubmission(itemId, status, reason);
+      setCatalogMessage(
+        status === "approved" ? "Catalog item approved." : "Catalog item rejected.",
+      );
+      await Promise.all([loadCatalogSubmissions(), loadAccounts(page)]);
+    } catch (nextError) {
+      setError(readableError(nextError));
+    } finally {
+      setCatalogBusy("");
     }
   }
 
@@ -290,6 +361,62 @@ export default function AdminApp() {
         )}
 
         {error && <p className="error-banner">{error}</p>}
+
+        <section className="catalog-review-panel">
+          <div className="inventory-heading">
+            <Shirt size={18} />
+            <div>
+              <strong>Catalog review</strong>
+              <span>Approve uploaded clothing before it reaches the public catalog.</span>
+            </div>
+          </div>
+          {catalogMessage && <small>{catalogMessage}</small>}
+          <div className="catalog-review-list">
+            {catalogSubmissions.length === 0 ? (
+              <div className="empty-state">No catalog submissions yet.</div>
+            ) : (
+              catalogSubmissions.map((item) => (
+                <article key={item.id}>
+                  {item.textureUrl ? <img src={item.textureUrl} alt="" /> : <span />}
+                  <div>
+                    <strong>{item.name}</strong>
+                    <span>
+                      {item.itemType} · {item.priceTix.toLocaleString()} Tix ·{" "}
+                      {item.creator
+                        ? `@${item.creator.username}`
+                        : "unknown creator"}
+                    </span>
+                    <small>{item.reviewStatus}</small>
+                    {item.rejectionReason && <small>{item.rejectionReason}</small>}
+                  </div>
+                  <div className="inventory-actions">
+                    <button
+                      disabled={
+                        catalogBusy === item.id || item.reviewStatus === "approved"
+                      }
+                      onClick={() =>
+                        void reviewCatalogSubmission(item.id, "approved")
+                      }
+                    >
+                      Approve
+                    </button>
+                    <button
+                      className="danger"
+                      disabled={
+                        catalogBusy === item.id || item.reviewStatus === "rejected"
+                      }
+                      onClick={() =>
+                        void reviewCatalogSubmission(item.id, "rejected")
+                      }
+                    >
+                      Reject
+                    </button>
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+        </section>
 
         <section className="account-workspace">
           <div className="account-list-panel">
@@ -405,7 +532,43 @@ export default function AdminApp() {
                     <strong>{selected.stats.gameVisits}</strong>
                     <span>Visits</span>
                   </div>
+                  <div>
+                    <Tickets size={17} />
+                    <strong>{selected.tix.toLocaleString()}</strong>
+                    <span>Tix</span>
+                  </div>
                 </div>
+
+                <section className="tix-editor">
+                  <div className="inventory-heading">
+                    <Tickets size={18} />
+                    <div>
+                      <strong>Edit Tix</strong>
+                      <span>Add to the balance or set an exact amount.</span>
+                    </div>
+                  </div>
+                  <div className="tix-editor-controls">
+                    <select
+                      value={tixMode}
+                      onChange={(event) =>
+                        setTixMode(event.target.value as "add" | "set")
+                      }
+                    >
+                      <option value="add">Add Tix</option>
+                      <option value="set">Set balance</option>
+                    </select>
+                    <input
+                      type="number"
+                      step="1"
+                      value={tixAmount}
+                      onChange={(event) => setTixAmount(event.target.value)}
+                    />
+                    <button disabled={tixBusy} onClick={() => void updateTix()}>
+                      {tixBusy ? "Saving..." : "Apply"}
+                    </button>
+                  </div>
+                  {tixMessage && <small>{tixMessage}</small>}
+                </section>
 
                 <dl className="detail-list">
                   <div>
@@ -466,7 +629,10 @@ export default function AdminApp() {
                       const owned = selected.inventory.some(
                         (entry) => entry.itemId === item.id,
                       );
-                      const equipped = selected.equippedShirtId === item.id;
+                      const equipped =
+                        item.itemType === "pants"
+                          ? selected.equippedPantsId === item.id
+                          : selected.equippedShirtId === item.id;
                       return (
                         <article key={item.id}>
                           <div>

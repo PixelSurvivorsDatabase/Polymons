@@ -1,17 +1,45 @@
 type StudioLanguage = "luau" | "cpp" | "csharp";
 
+type StudioSettings = {
+  autoSuggestEnabled: boolean;
+  polyCodeTrainingEnabled: boolean;
+};
+
 type StudioUser = {
   id: string;
   polymonsId: number;
   username: string;
   displayName: string;
   description: string;
+  tix: number;
   avatarUrl: string | null;
   equippedShirtId:
     | "polymon-shirt"
     | "beta-tester-shirt"
     | "creators-shirt"
+    | "orange-polymons-shirt"
+    | "polymons-varsity-jacket"
     | null;
+  equippedPantsId:
+    | "classic-denim-pants"
+    | "polymon-pants"
+    | "beta-tester-pants"
+    | "creators-pants"
+    | "orange-polymons-pants"
+    | "polymons-varsity-pants"
+    | null;
+  avatarAppearance: {
+    face: "classic-smile";
+    bodyColors: {
+      head: string;
+      torso: string;
+      leftArm: string;
+      rightArm: string;
+      leftLeg: string;
+      rightLeg: string;
+    };
+    accessories: string[];
+  };
 };
 
 type StudioAuth = {
@@ -189,6 +217,18 @@ type StudioProject = {
     fogEnd: number;
     globalShadows: boolean;
     shadowSoftness: number;
+    dayNightCycle: boolean;
+    dayLengthMinutes: number;
+    sunEnabled: boolean;
+    moonEnabled: boolean;
+    sunTextureData: string;
+    moonTextureData: string;
+    sunBrightness: number;
+    sunGlare: number;
+    sunRays: boolean;
+    moonBrightness: number;
+    moonPhases: boolean;
+    moonPhase: number;
   };
   leaderstats: Array<{
     id: string;
@@ -198,6 +238,26 @@ type StudioProject = {
     showOnLeaderboard?: boolean;
   }>;
   animations: StudioAnimation[];
+  badges: Array<{
+    id: string;
+    name: string;
+    description: string;
+    iconData: string;
+  }>;
+  gamePasses: Array<{
+    id: string;
+    name: string;
+    description: string;
+    priceTix: number;
+  }>;
+  developerProducts: Array<{
+    id: string;
+    name: string;
+    description: string;
+    priceTix: number;
+    effectKey: string | null;
+    effectAmount: number;
+  }>;
   values: StudioValueObject[];
   publication: {
     gameId: string;
@@ -243,9 +303,21 @@ interface Window {
     }) => Promise<StudioProject>;
     loadProject: (id: string) => Promise<StudioProject>;
     saveProject: (project: StudioProject) => Promise<StudioProject>;
+    snapshotProject: (project: StudioProject) => Promise<StudioProject>;
+    listProjectBackups: (
+      id: string,
+    ) => Promise<Array<{ id: string; name: string; savedAt: string }>>;
+    restoreProjectBackup: (
+      id: string,
+      backupId: string,
+    ) => Promise<StudioProject>;
     publishProject: (
       project: StudioProject,
-      metadata: { title: string; description: string },
+      metadata: {
+        title: string;
+        description: string;
+        thumbnailData?: string;
+      },
     ) => Promise<{
       game: { id: string; slug: string; title: string; version: number };
       project: StudioProject;

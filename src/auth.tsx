@@ -124,7 +124,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setReady(true);
     if (
       !Number.isInteger(auth.user.polymonsId) ||
-      typeof auth.user.description !== "string"
+      typeof auth.user.description !== "string" ||
+      auth.user.equippedPantsId === undefined
     ) {
       void refresh();
     }

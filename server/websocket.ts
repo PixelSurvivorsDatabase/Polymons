@@ -5,7 +5,11 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import type { ServerConfig } from "./config.js";
 import { hashPlayTicket } from "./security.js";
-import { loadProfile, type PublicProfile } from "./supabase.js";
+import {
+  loadProfile,
+  type AvatarAppearance,
+  type PublicProfile,
+} from "./supabase.js";
 import { clientMessageSchema } from "./validation.js";
 
 type Connection = {
@@ -13,9 +17,12 @@ type Connection = {
   gameId: string;
   profile: PublicProfile;
   state: PlayerState;
+  leaderstats: Record<string, number | string>;
   messageCount: number;
   messageWindowStartedAt: number;
   chatMessageTimes: number[];
+  lastPlaytimeRecordedAt: number;
+  recordingPlaytime: boolean;
 };
 
 type PlayerState = {
@@ -31,7 +38,10 @@ type RoomPlayer = {
   username: string;
   displayName: string;
   equippedShirtId: string | null;
+  equippedPantsId: string | null;
+  avatarAppearance: AvatarAppearance;
   state: PlayerState;
+  leaderstats: Record<string, number | string>;
 };
 
 type RoomChatMessage = {
@@ -50,6 +60,16 @@ export type PresenceSnapshot = {
     username: string;
     displayName: string;
     gameId: string;
+  }>;
+  servers: Array<{
+    id: string;
+    gameId: string;
+    playerCount: number;
+    players: Array<{
+      userId: string;
+      username: string;
+      displayName: string;
+    }>;
   }>;
 };
 
@@ -122,6 +142,42 @@ export function attachWebSocketServer(
   const roomChatHistory = new Map<string, RoomChatMessage[]>();
   const alive = new WeakMap<WebSocket, boolean>();
 
+  const recordPlaytime = async (
+    socket: WebSocket,
+    connection: Connection,
+  ) => {
+    if (connection.recordingPlaytime) return;
+    const now = Date.now();
+    const elapsedSeconds = Math.min(
+      600,
+      Math.floor((now - connection.lastPlaytimeRecordedAt) / 1000),
+    );
+    if (elapsedSeconds < 1) return;
+    connection.recordingPlaytime = true;
+    try {
+      const { data, error } = await admin.rpc("add_profile_playtime", {
+        target_user_id: connection.profile.id,
+        elapsed_seconds: elapsedSeconds,
+      });
+      if (error) throw error;
+      connection.lastPlaytimeRecordedAt += elapsedSeconds * 1000;
+      const reward = Array.isArray(data) ? data[0] : data;
+      if (reward && Number(reward.awarded) > 0) {
+        connection.profile.tix = Number(reward.balance);
+        send(socket, {
+          type: "tix_awarded",
+          amount: Number(reward.awarded),
+          balance: Number(reward.balance),
+          reason: "playtime",
+        });
+      }
+    } catch (error) {
+      console.error("Could not record Tix playtime.", error);
+    } finally {
+      connection.recordingPlaytime = false;
+    }
+  };
+
   const broadcast = (
     gameId: string,
     message: object,
@@ -136,6 +192,7 @@ export function attachWebSocketServer(
 
   const removeConnection = (socket: WebSocket, connection: Connection) => {
     if (!connections.delete(socket)) return;
+    void recordPlaytime(socket, connection);
     releaseAccountConnection(
       accountConnections,
       connection.profile.id,
@@ -196,9 +253,12 @@ export function attachWebSocketServer(
           gameId: playSession.game_id,
           profile,
           state: { ...SPAWN_STATE },
+          leaderstats: {},
           messageCount: 0,
           messageWindowStartedAt: Date.now(),
           chatMessageTimes: [],
+          lastPlaytimeRecordedAt: Date.now(),
+          recordingPlaytime: false,
         });
         webSocketServer.emit("connection", webSocket, request);
       });
@@ -252,7 +312,10 @@ export function attachWebSocketServer(
             username: peerConnection.profile.username,
             displayName: peerConnection.profile.displayName,
             equippedShirtId: peerConnection.profile.equippedShirtId,
+            equippedPantsId: peerConnection.profile.equippedPantsId,
+            avatarAppearance: peerConnection.profile.avatarAppearance,
             state: peerConnection.state,
+            leaderstats: peerConnection.leaderstats,
           });
         }
       }
@@ -266,12 +329,15 @@ export function attachWebSocketServer(
         username: connection.profile.username,
         displayName: connection.profile.displayName,
         equippedShirtId: connection.profile.equippedShirtId,
+        equippedPantsId: connection.profile.equippedPantsId,
+        avatarAppearance: connection.profile.avatarAppearance,
         state: connection.state,
+        leaderstats: connection.leaderstats,
       };
 
       send(socket, {
         type: "welcome",
-        protocolVersion: 1,
+        protocolVersion: 2,
         gameId: connection.gameId,
         player,
         players: existingPlayers,
@@ -351,6 +417,20 @@ export function attachWebSocketServer(
           return;
         }
 
+        if (parsed.data.type === "leaderstats") {
+          connection.leaderstats = parsed.data.values;
+          broadcast(
+            connection.gameId,
+            {
+              type: "player_leaderstats",
+              playerId: connection.id,
+              values: connection.leaderstats,
+            },
+            socket,
+          );
+          return;
+        }
+
         connection.state = {
           sequence: parsed.data.sequence,
           position: parsed.data.position,
@@ -383,11 +463,20 @@ export function attachWebSocketServer(
       socket.ping();
     }
   }, 30_000);
+  const playtimeRewards = setInterval(() => {
+    for (const [socket, connection] of connections) {
+      void recordPlaytime(socket, connection);
+    }
+  }, 30_000);
 
   return {
     snapshot: () => {
       const counts: Record<string, number> = {};
       const players: PresenceSnapshot["players"] = [];
+      const serversByGame = new Map<
+        string,
+        PresenceSnapshot["servers"][number]
+      >();
       for (const connection of connections.values()) {
         counts[connection.gameId] = (counts[connection.gameId] ?? 0) + 1;
         players.push({
@@ -396,11 +485,26 @@ export function attachWebSocketServer(
           displayName: connection.profile.displayName,
           gameId: connection.gameId,
         });
+        const server =
+          serversByGame.get(connection.gameId) ?? {
+            id: `${config.serverId}:${connection.gameId}`,
+            gameId: connection.gameId,
+            playerCount: 0,
+            players: [],
+          };
+        server.playerCount += 1;
+        server.players.push({
+          userId: connection.profile.id,
+          username: connection.profile.username,
+          displayName: connection.profile.displayName,
+        });
+        serversByGame.set(connection.gameId, server);
       }
-      return { counts, players };
+      return { counts, players, servers: [...serversByGame.values()] };
     },
     close: () => {
       clearInterval(keepAlive);
+      clearInterval(playtimeRewards);
       for (const socket of webSocketServer.clients) {
         socket.close(1001, "Server shutting down.");
       }

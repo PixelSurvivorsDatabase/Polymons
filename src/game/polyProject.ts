@@ -131,6 +131,18 @@ export type PolyLightingSettings = {
   fogEnd: number;
   globalShadows: boolean;
   shadowSoftness: number;
+  dayNightCycle: boolean;
+  dayLengthMinutes: number;
+  sunEnabled: boolean;
+  moonEnabled: boolean;
+  sunTextureData: string;
+  moonTextureData: string;
+  sunBrightness: number;
+  sunGlare: number;
+  sunRays: boolean;
+  moonBrightness: number;
+  moonPhases: boolean;
+  moonPhase: number;
 };
 
 export const DEFAULT_LIGHTING_SETTINGS: PolyLightingSettings = {
@@ -144,6 +156,18 @@ export const DEFAULT_LIGHTING_SETTINGS: PolyLightingSettings = {
   fogEnd: 260,
   globalShadows: true,
   shadowSoftness: 0.25,
+  dayNightCycle: false,
+  dayLengthMinutes: 20,
+  sunEnabled: true,
+  moonEnabled: true,
+  sunTextureData: "",
+  moonTextureData: "",
+  sunBrightness: 1.35,
+  sunGlare: 0.45,
+  sunRays: true,
+  moonBrightness: 0.55,
+  moonPhases: true,
+  moonPhase: 1,
 };
 
 export type PolyLeaderstat = {
@@ -198,6 +222,25 @@ export type PolyProject = {
   lighting?: PolyLightingSettings;
   leaderstats: PolyLeaderstat[];
   animations: PolyAnimation[];
+  badges?: Array<{
+    id: string;
+    name: string;
+    description: string;
+  }>;
+  gamePasses?: Array<{
+    id: string;
+    name: string;
+    description: string;
+    priceTix: number;
+  }>;
+  developerProducts?: Array<{
+    id: string;
+    name: string;
+    description: string;
+    priceTix: number;
+    effectKey: string | null;
+    effectAmount: number;
+  }>;
   values: PolyValueObject[];
   publication?: {
     gameId: string;
@@ -224,6 +267,7 @@ export type PolyRuntimeResult = {
     level: "info" | "warning" | "error";
     message: string;
     scriptName: string;
+    line?: number;
   }>;
   animationRequests: string[];
   animationVersion: number;
@@ -231,18 +275,42 @@ export type PolyRuntimeResult = {
   tweenVersion: number;
   soundRequests: PolySoundRequest[];
   soundVersion: number;
+  scheduledScripts: PolyScheduledScript[];
+  badgeAwards?: string[];
+  purchaseRequests?: Array<{
+    kind: "gamePass" | "developerProduct";
+    name: string;
+  }>;
 };
 
 export type PolyPlayerData = {
   userId: number;
   username: string;
   displayName: string;
+  gamePasses?: string[];
+  badges?: string[];
+  playerData?: Record<string, PolyStoredValue>;
 };
 
 export type PolySoundRequest = {
   id: string;
   objectId: string;
   action: "play" | "pause" | "stop";
+};
+
+export type PolyScheduledScript = {
+  id: string;
+  projectId: string;
+  scriptId: string;
+  source: string;
+  delayMs: number;
+  remoteDepth: number;
+  context: {
+    variables: Array<[string, Reference]>;
+    modules: Array<[string, Record<string, PolyStoredValue>]>;
+    stores: Array<[string, string]>;
+    values: Array<[string, PolyStoredValue]>;
+  };
 };
 
 export type PolyTweenRequest = {
@@ -278,6 +346,46 @@ type Reference =
   | { kind: "remote"; id: string };
 
 let soundRequestSequence = 0;
+let scheduledScriptSequence = 0;
+let randomGeneratorSequence = 0;
+let activeScheduledScripts: PolyScheduledScript[] | null = null;
+let activeBadgeAwards: string[] | null = null;
+let activePurchaseRequests:
+  | Array<{ kind: "gamePass" | "developerProduct"; name: string }>
+  | null = null;
+const MATH_RANDOM_STATE = "__poly_math_random_state__";
+const RANDOM_GENERATOR_PREFIX = "__poly_random_generator__";
+
+function collectScheduledScripts<T>(
+  scheduledScripts: PolyScheduledScript[],
+  run: () => T,
+): T {
+  const previous = activeScheduledScripts;
+  activeScheduledScripts = scheduledScripts;
+  try {
+    return run();
+  } finally {
+    activeScheduledScripts = previous;
+  }
+}
+
+function collectExecutionRequests<T>(
+  scheduledScripts: PolyScheduledScript[],
+  badgeAwards: string[],
+  purchaseRequests: Array<{ kind: "gamePass" | "developerProduct"; name: string }>,
+  run: () => T,
+): T {
+  const previousBadges = activeBadgeAwards;
+  const previousPurchases = activePurchaseRequests;
+  activeBadgeAwards = badgeAwards;
+  activePurchaseRequests = purchaseRequests;
+  try {
+    return collectScheduledScripts(scheduledScripts, run);
+  } finally {
+    activeBadgeAwards = previousBadges;
+    activePurchaseRequests = previousPurchases;
+  }
+}
 
 const WORLD_PROPERTIES = new Set([
   "Name",
@@ -350,6 +458,16 @@ const LIGHTING_PROPERTIES = new Set([
   "FogEnd",
   "GlobalShadows",
   "ShadowSoftness",
+  "DayNightCycle",
+  "DayLengthMinutes",
+  "SunEnabled",
+  "MoonEnabled",
+  "SunBrightness",
+  "SunGlare",
+  "SunRays",
+  "MoonBrightness",
+  "MoonPhases",
+  "MoonPhase",
 ]);
 const READ_ONLY_PLAYER_PROPERTIES = new Set([
   "UserId",
@@ -375,6 +493,80 @@ const MODULE_SCRIPT_PARENTS = new Set([
 
 function cloneProject(project: PolyProject): PolyProject {
   return structuredClone(project);
+}
+
+function runtimeWorldObject(
+  typeName: string,
+  name = typeName,
+): PolyWorldObject | null {
+  const type =
+    typeName === "Sound"
+      ? "sound"
+      : typeName === "Tool"
+        ? "tool"
+        : typeName === "Part"
+          ? "part"
+          : null;
+  if (!type) return null;
+  return {
+    id: crypto.randomUUID(),
+    name,
+    type,
+    position: [0, 2, 0],
+    rotation: [0, 0, 0],
+    scale: type === "sound" ? [0.6, 0.6, 0.6] : [4, 4, 4],
+    shape: "block",
+    color: "#7650d8",
+    anchored: true,
+    visible: true,
+    transparency: 0,
+    material: "plastic",
+    surfaceTexture: "none",
+    canCollide: type !== "sound",
+    castShadow: type !== "sound",
+    friction: 0.82,
+    restitution: 0.03,
+    mass: 1,
+    velocity: [0, 0, 0],
+    angularVelocity: [0, 0, 0],
+    soundData: "",
+    soundFileName: "",
+    volume: 0.7,
+    looped: false,
+    playbackSpeed: 1,
+    rolloffMinDistance: 5,
+    rolloffMaxDistance: 60,
+    autoplay: false,
+    parentId: null,
+    modelId: null,
+    attributes: {},
+    tags: [],
+  };
+}
+
+function destroyReference(project: PolyProject, reference: Reference): void {
+  if (reference.kind === "world") {
+    const removed = new Set([reference.id]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const object of project.objects) {
+        if (object.parentId && removed.has(object.parentId) && !removed.has(object.id)) {
+          removed.add(object.id);
+          changed = true;
+        }
+      }
+    }
+    project.objects = project.objects.filter((object) => !removed.has(object.id));
+    project.scripts = project.scripts.filter((script) => !removed.has(script.parent));
+    project.values = project.values.filter((value) => !removed.has(value.parent));
+  } else if (reference.kind === "gui") {
+    project.gui = project.gui.filter((item) => item.id !== reference.id);
+    project.scripts = project.scripts.filter((script) => script.parent !== reference.id);
+    project.values = project.values.filter((value) => value.parent !== reference.id);
+  } else if (reference.kind === "value") {
+    project.values = project.values.filter((value) => value.id !== reference.id);
+  }
 }
 
 export function normalizePolyProject(project: PolyProject): PolyProject {
@@ -507,6 +699,61 @@ export function normalizePolyProject(project: PolyProject): PolyProject {
           DEFAULT_LIGHTING_SETTINGS.shadowSoftness,
       ),
     ),
+    dayNightCycle:
+      normalized.lighting?.dayNightCycle ??
+      DEFAULT_LIGHTING_SETTINGS.dayNightCycle,
+    dayLengthMinutes: Math.max(
+      0.5,
+      Math.min(
+        240,
+        normalized.lighting?.dayLengthMinutes ??
+          DEFAULT_LIGHTING_SETTINGS.dayLengthMinutes,
+      ),
+    ),
+    sunEnabled:
+      normalized.lighting?.sunEnabled ?? DEFAULT_LIGHTING_SETTINGS.sunEnabled,
+    moonEnabled:
+      normalized.lighting?.moonEnabled ?? DEFAULT_LIGHTING_SETTINGS.moonEnabled,
+    sunTextureData:
+      normalized.lighting?.sunTextureData ??
+      DEFAULT_LIGHTING_SETTINGS.sunTextureData,
+    moonTextureData:
+      normalized.lighting?.moonTextureData ??
+      DEFAULT_LIGHTING_SETTINGS.moonTextureData,
+    sunBrightness: Math.max(
+      0,
+      Math.min(
+        8,
+        normalized.lighting?.sunBrightness ??
+          DEFAULT_LIGHTING_SETTINGS.sunBrightness,
+      ),
+    ),
+    sunGlare: Math.max(
+      0,
+      Math.min(
+        2,
+        normalized.lighting?.sunGlare ?? DEFAULT_LIGHTING_SETTINGS.sunGlare,
+      ),
+    ),
+    sunRays:
+      normalized.lighting?.sunRays ?? DEFAULT_LIGHTING_SETTINGS.sunRays,
+    moonBrightness: Math.max(
+      0,
+      Math.min(
+        4,
+        normalized.lighting?.moonBrightness ??
+          DEFAULT_LIGHTING_SETTINGS.moonBrightness,
+      ),
+    ),
+    moonPhases:
+      normalized.lighting?.moonPhases ?? DEFAULT_LIGHTING_SETTINGS.moonPhases,
+    moonPhase: Math.max(
+      0,
+      Math.min(
+        1,
+        normalized.lighting?.moonPhase ?? DEFAULT_LIGHTING_SETTINGS.moonPhase,
+      ),
+    ),
   };
   normalized.description ??= "";
   normalized.leaderstats = (normalized.leaderstats ?? []).map((stat) => ({
@@ -531,6 +778,27 @@ export function normalizePolyProject(project: PolyProject): PolyProject {
         poses: keyframe.poses ?? {},
       }))
       .sort((a, b) => a.time - b.time),
+  }));
+  normalized.badges = (normalized.badges ?? []).map((badge) => ({
+    id: badge.id,
+    name: badge.name,
+    description: badge.description ?? "",
+  }));
+  normalized.gamePasses = (normalized.gamePasses ?? []).map((pass) => ({
+    id: pass.id,
+    name: pass.name,
+    description: pass.description ?? "",
+    priceTix: Number.isFinite(pass.priceTix) ? pass.priceTix : 0,
+  }));
+  normalized.developerProducts = (normalized.developerProducts ?? []).map((product) => ({
+    id: product.id,
+    name: product.name,
+    description: product.description ?? "",
+    priceTix: Number.isFinite(product.priceTix) ? product.priceTix : 0,
+    effectKey: product.effectKey ?? null,
+    effectAmount: Number.isFinite(product.effectAmount)
+      ? product.effectAmount
+      : 0,
   }));
   normalized.publication ??= null;
   normalized.dataStores ??= {};
@@ -566,6 +834,7 @@ function referenceByName(
   name: string,
 ): Reference | null {
   if (container === "Workspace") {
+    if (name === "Sky") return { kind: "service", id: "Lighting" };
     const model = project.models.find((item) => item.name === name);
     if (model) return { kind: "model", id: model.id };
     const object = project.objects.find((item) => item.name === name);
@@ -1269,7 +1538,7 @@ function resolveSoundCall(
   reference: Reference;
 } | null {
   const match = source.match(
-    /^\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?::|\.|::)(Play|Pause|Stop)\s*\(\s*\)\s*;?\s*$/,
+    /^\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?::|\.|::)(play|pause|stop)\s*(?:\(\s*\))?\s*;?\s*$/i,
   );
   if (!match) return null;
   const reference =
@@ -1336,6 +1605,69 @@ function parseStoredValue(value: string): PolyStoredValue | undefined {
     return null;
   }
   return undefined;
+}
+
+function splitExpressionArguments(source: string): string[] {
+  const argumentsList: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  let escaped = false;
+  let depth = 0;
+  for (const character of source) {
+    if (quote) {
+      current += character;
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      current += character;
+    } else if (character === "(") {
+      depth += 1;
+      current += character;
+    } else if (character === ")") {
+      depth = Math.max(0, depth - 1);
+      current += character;
+    } else if (character === "," && depth === 0) {
+      argumentsList.push(current.trim());
+      current = "";
+    } else {
+      current += character;
+    }
+  }
+  if (current.trim()) argumentsList.push(current.trim());
+  return argumentsList;
+}
+
+function normalizedRandomSeed(value: number): number {
+  if (!Number.isFinite(value)) return 0x6d2b79f5;
+  return Math.trunc(value) >>> 0;
+}
+
+function nextRandomUnit(
+  values: Map<string, PolyStoredValue>,
+  stateKey: string,
+  initialSeed = Math.floor(Math.random() * 0x1_0000_0000),
+): number {
+  const storedState = values.get(stateKey);
+  const state =
+    typeof storedState === "number"
+      ? normalizedRandomSeed(storedState)
+      : normalizedRandomSeed(initialSeed);
+  const nextState = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+  values.set(stateKey, nextState);
+  return nextState / 0x1_0000_0000;
+}
+
+function randomInteger(unit: number, minimum: number, maximum: number): number | undefined {
+  const lower = Math.ceil(minimum);
+  const upper = Math.floor(maximum);
+  if (!Number.isFinite(lower) || !Number.isFinite(upper) || lower > upper) {
+    return undefined;
+  }
+  return lower + Math.floor(unit * (upper - lower + 1));
 }
 
 function rawStoredValue(value: PolyStoredValue): string {
@@ -1443,6 +1775,16 @@ function referencePropertyValue(
     if (property === "FogEnd") return lighting.fogEnd;
     if (property === "GlobalShadows") return lighting.globalShadows;
     if (property === "ShadowSoftness") return lighting.shadowSoftness;
+    if (property === "DayNightCycle") return lighting.dayNightCycle;
+    if (property === "DayLengthMinutes") return lighting.dayLengthMinutes;
+    if (property === "SunEnabled") return lighting.sunEnabled;
+    if (property === "MoonEnabled") return lighting.moonEnabled;
+    if (property === "SunBrightness") return lighting.sunBrightness;
+    if (property === "SunGlare") return lighting.sunGlare;
+    if (property === "SunRays") return lighting.sunRays;
+    if (property === "MoonBrightness") return lighting.moonBrightness;
+    if (property === "MoonPhases") return lighting.moonPhases;
+    if (property === "MoonPhase") return lighting.moonPhase;
     return undefined;
   }
   if (reference.kind !== "player") return undefined;
@@ -1578,6 +1920,131 @@ function resolveExpressionValue(
   script?: PolyScript,
 ): PolyStoredValue | undefined {
   const expression = rawValue.trim().replace(/;$/, "");
+  const badgeHas = expression.match(
+    /^Badges(?::|\.|::)Has\(\s*[^,]+\s*,\s*["']([^"']+)["']\s*\)$/i,
+  );
+  if (badgeHas) {
+    return (localPlayerData(project).badges ?? []).some(
+      (badgeName) => badgeName.toLowerCase() === badgeHas[1].toLowerCase(),
+    );
+  }
+  const gamePassOwns = expression.match(
+    /^GamePasses(?::|\.|::)Owns\(\s*[^,]+\s*,\s*["']([^"']+)["']\s*\)$/i,
+  );
+  if (gamePassOwns) {
+    return (localPlayerData(project).gamePasses ?? []).some(
+      (passName) => passName.toLowerCase() === gamePassOwns[1].toLowerCase(),
+    );
+  }
+  const playerDataGet = expression.match(
+    /^PlayerData(?::|\.|::)Get\(\s*["']([^"']+)["']\s*\)$/i,
+  );
+  if (playerDataGet) {
+    return localPlayerData(project).playerData?.[playerDataGet[1]] ?? null;
+  }
+  const randomSeedCall = expression.match(/^math\.randomseed\s*\((.*)\)$/i);
+  if (randomSeedCall) {
+    const seed = resolveExpressionValue(
+      randomSeedCall[1],
+      project,
+      variables,
+      values,
+      modules,
+      script,
+    );
+    if (typeof seed !== "number") return undefined;
+    const normalized = normalizedRandomSeed(seed);
+    values.set(MATH_RANDOM_STATE, normalized);
+    return normalized;
+  }
+  const randomCall = expression.match(/^math\.random\s*\((.*)\)$/i);
+  if (randomCall) {
+    const argumentsList = splitExpressionArguments(randomCall[1]).map((argument) =>
+      resolveExpressionValue(
+        argument,
+        project,
+        variables,
+        values,
+        modules,
+        script,
+      ),
+    );
+    const unit = nextRandomUnit(values, MATH_RANDOM_STATE);
+    if (argumentsList.length === 0) return unit;
+    if (argumentsList.length === 1 && typeof argumentsList[0] === "number") {
+      return randomInteger(unit, 1, argumentsList[0]);
+    }
+    if (
+      argumentsList.length === 2 &&
+      typeof argumentsList[0] === "number" &&
+      typeof argumentsList[1] === "number"
+    ) {
+      return randomInteger(unit, argumentsList[0], argumentsList[1]);
+    }
+    return undefined;
+  }
+  const randomConstructor = expression.match(/^Random(?:\.|::)new\s*\((.*)\)$/);
+  if (randomConstructor) {
+    const seedExpression = randomConstructor[1].trim();
+    const seed = seedExpression
+      ? resolveExpressionValue(
+          seedExpression,
+          project,
+          variables,
+          values,
+          modules,
+          script,
+        )
+      : Math.floor(Math.random() * 0x1_0000_0000);
+    if (typeof seed !== "number") return undefined;
+    randomGeneratorSequence += 1;
+    const token = `${RANDOM_GENERATOR_PREFIX}${randomGeneratorSequence}`;
+    values.set(`${token}:state`, normalizedRandomSeed(seed));
+    return token;
+  }
+  const randomMethod = expression.match(
+    /^([A-Za-z_]\w*)(?::|\.)(NextInteger|NextNumber)\s*\((.*)\)$/,
+  );
+  if (randomMethod) {
+    const token = values.get(randomMethod[1]);
+    if (
+      typeof token !== "string" ||
+      !token.startsWith(RANDOM_GENERATOR_PREFIX)
+    ) {
+      return undefined;
+    }
+    const argumentsList = splitExpressionArguments(randomMethod[3]).map((argument) =>
+      resolveExpressionValue(
+        argument,
+        project,
+        variables,
+        values,
+        modules,
+        script,
+      ),
+    );
+    const unit = nextRandomUnit(values, `${token}:state`);
+    if (randomMethod[2] === "NextInteger") {
+      if (
+        argumentsList.length !== 2 ||
+        typeof argumentsList[0] !== "number" ||
+        typeof argumentsList[1] !== "number"
+      ) {
+        return undefined;
+      }
+      return randomInteger(unit, argumentsList[0], argumentsList[1]);
+    }
+    if (argumentsList.length === 0) return unit;
+    if (
+      argumentsList.length === 2 &&
+      typeof argumentsList[0] === "number" &&
+      typeof argumentsList[1] === "number" &&
+      argumentsList[0] <= argumentsList[1]
+    ) {
+      return argumentsList[0] + unit * (argumentsList[1] - argumentsList[0]);
+    }
+    return undefined;
+  }
   if (/^not\s+/.test(expression)) {
     const value = resolveExpressionValue(
       expression.replace(/^not\s+/, ""),
@@ -1746,10 +2213,24 @@ function assignProperty(
       if (property === "OutdoorAmbient") lighting.outdoorAmbient = value;
       if (property === "SkyColor") lighting.skyColor = value;
       if (property === "FogColor") lighting.fogColor = value;
-    } else if (property === "GlobalShadows") {
+    } else if (
+      [
+        "GlobalShadows",
+        "DayNightCycle",
+        "SunEnabled",
+        "MoonEnabled",
+        "SunRays",
+        "MoonPhases",
+      ].includes(property)
+    ) {
       const value = parseBoolean(rawValue);
-      if (value === null) return "GlobalShadows must be true or false.";
-      lighting.globalShadows = value;
+      if (value === null) return `${property} must be true or false.`;
+      if (property === "GlobalShadows") lighting.globalShadows = value;
+      if (property === "DayNightCycle") lighting.dayNightCycle = value;
+      if (property === "SunEnabled") lighting.sunEnabled = value;
+      if (property === "MoonEnabled") lighting.moonEnabled = value;
+      if (property === "SunRays") lighting.sunRays = value;
+      if (property === "MoonPhases") lighting.moonPhases = value;
     } else {
       const value = parseNumber(rawValue);
       if (value === null) return `${property} must be a number.`;
@@ -1778,6 +2259,36 @@ function assignProperty(
           return "ShadowSoftness must be between 0 and 1.";
         }
         lighting.shadowSoftness = value;
+      }
+      if (property === "DayLengthMinutes") {
+        if (value < 0.5 || value > 240) {
+          return "DayLengthMinutes must be between 0.5 and 240.";
+        }
+        lighting.dayLengthMinutes = value;
+      }
+      if (property === "SunBrightness") {
+        if (value < 0 || value > 8) {
+          return "SunBrightness must be between 0 and 8.";
+        }
+        lighting.sunBrightness = value;
+      }
+      if (property === "SunGlare") {
+        if (value < 0 || value > 2) {
+          return "SunGlare must be between 0 and 2.";
+        }
+        lighting.sunGlare = value;
+      }
+      if (property === "MoonBrightness") {
+        if (value < 0 || value > 4) {
+          return "MoonBrightness must be between 0 and 4.";
+        }
+        lighting.moonBrightness = value;
+      }
+      if (property === "MoonPhase") {
+        if (value < 0 || value > 1) {
+          return "MoonPhase must be between 0 and 1.";
+        }
+        lighting.moonPhase = value;
       }
     }
     return null;
@@ -2200,6 +2711,7 @@ function syntaxDiagnostics(
       /\.(?:MouseButton1Click|Activated|Touched|TouchEnded|OnServerEvent|OnClientEvent|InputBegan|InputEnded)\s*:\s*Connect\s*\(\s*function\b/.test(
         code,
       ) ||
+      /^task\.(?:spawn|delay)\s*\(.*\bfunction\s*\(/.test(code) ||
       /\.OnServerInvoke\s*=\s*function\b/.test(code)
     ) {
       kind = "function";
@@ -2527,7 +3039,7 @@ export function analyzePolyScript(
     const dataSet = source.match(
       /^\s*([A-Za-z_]\w*)(?::|\.)(?:SetAsync|Set)\(\s*([^,]+?)\s*,\s*(.+?)\s*\)\s*;?\s*$/,
     );
-    if (dataSet) {
+    if (dataSet && dataSet[1] !== "Leaderstats") {
       const key = resolveDataStoreKey(
         dataSet[2],
         validationProject,
@@ -3497,26 +4009,291 @@ function executeScript(
   const sourceText = sourceOverride ?? withoutEventHandlers(script);
   if (!executionContext) {
     tweenRequests.push(...requestedTweens(sourceText, script, project));
-    if (
-      project.language === "luau" &&
-      /(^|\n)\s*(?:if\b.*\bthen|for\b.*\bdo|while\b.*\bdo|repeat)\s*(?:\n|$)/.test(
-        sourceText,
-      )
-    ) {
-      return executeLuauControlFlow(
-        sourceText.split("\n"),
-        script,
-        project,
-        output,
-        { variables, modules, stores, values },
-        remoteDepth,
-        tweenRequests,
-        soundRequests,
-      );
-    }
   }
-  for (const source of sourceText.split("\n")) {
-    if (/^\s*(?:wait|task\.wait)\s*\([^)]*\)\s*;?\s*$/.test(source)) {
+  if (
+    project.language === "luau" &&
+    /(^|\n)\s*(?:if\b.*\bthen|for\b.*\bdo|while\b.*\bdo|repeat)\s*(?:\n|$)/.test(
+      sourceText,
+    )
+  ) {
+    return executeLuauControlFlow(
+      sourceText.split("\n"),
+      script,
+      project,
+      output,
+      { variables, modules, stores, values },
+      remoteDepth,
+      tweenRequests,
+      soundRequests,
+    );
+  }
+  const sourceLines = sourceText.split("\n");
+  for (let sourceIndex = 0; sourceIndex < sourceLines.length; sourceIndex += 1) {
+    const source = sourceLines[sourceIndex];
+    const taskDelay = source.match(
+      /^\s*task\.delay\s*\(\s*(.+?)\s*,\s*function\s*\([^)]*\)\s*$/,
+    );
+    const taskSpawn = source.match(
+      /^\s*task\.spawn\s*\(\s*function\s*\([^)]*\)\s*$/,
+    );
+    if ((taskDelay || taskSpawn) && activeScheduledScripts) {
+      const closingOffset = sourceLines
+        .slice(sourceIndex + 1)
+        .findIndex((line) => /^\s*end\s*\)\s*;?\s*$/.test(line));
+      if (closingOffset >= 0) {
+        const closingIndex = sourceIndex + 1 + closingOffset;
+        const body = sourceLines.slice(sourceIndex + 1, closingIndex).join("\n");
+        const seconds = taskDelay
+          ? Number(
+              resolveExpressionValue(
+                taskDelay[1],
+                project,
+                variables,
+                values,
+                modules,
+                script,
+              ),
+            )
+          : 0;
+        if (Number.isFinite(seconds) && body.trim()) {
+          scheduledScriptSequence += 1;
+          activeScheduledScripts.push({
+            id: `${script.id}-task-${scheduledScriptSequence}`,
+            projectId: project.id,
+            scriptId: script.id,
+            source: body,
+            delayMs: Math.max(0, Math.min(60, seconds)) * 1000,
+            remoteDepth,
+            context: {
+              variables: [...variables.entries()],
+              modules: [...modules.entries()],
+              stores: [...stores.entries()],
+              values: [...values.entries()],
+            },
+          });
+        }
+        sourceIndex = closingIndex;
+        continue;
+      }
+    }
+    const waitCall = source.match(
+      /^\s*(?:wait|task\.wait)\s*\(\s*([^)]*)\s*\)\s*;?\s*$/,
+    );
+    if (waitCall) {
+      const requestedSeconds =
+        waitCall[1].trim() === ""
+          ? 0.03
+          : Number(
+              resolveExpressionValue(
+                waitCall[1],
+                project,
+                variables,
+                values,
+                modules,
+                script,
+              ),
+            );
+      const remainingSource = sourceLines.slice(sourceIndex + 1).join("\n");
+      if (
+        activeScheduledScripts &&
+        remainingSource.trim() &&
+        Number.isFinite(requestedSeconds)
+      ) {
+        scheduledScriptSequence += 1;
+        activeScheduledScripts.push({
+          id: `${script.id}-wait-${scheduledScriptSequence}`,
+          projectId: project.id,
+          scriptId: script.id,
+          source: remainingSource,
+          delayMs: Math.max(0, Math.min(60, requestedSeconds)) * 1000,
+          remoteDepth,
+          context: {
+            variables: [...variables.entries()],
+            modules: [...modules.entries()],
+            stores: [...stores.entries()],
+            values: [...values.entries()],
+          },
+        });
+        return undefined;
+      }
+      continue;
+    }
+    const badgeAward = source.match(
+      /^\s*Badges(?::|\.|::)Award\(\s*[^,]+\s*,\s*["']([^"']+)["']\s*\)\s*;?\s*$/,
+    );
+    if (badgeAward) {
+      const badge = project.badges?.find(
+        (candidate) =>
+          candidate.name.toLowerCase() === badgeAward[1].toLowerCase(),
+      );
+      if (!badge) {
+        output.push({
+          level: "error",
+          message: `Badge ${badgeAward[1]} does not exist.`,
+          scriptName: script.name,
+          line: sourceIndex + 1,
+        });
+      } else if (activeBadgeAwards && !activeBadgeAwards.includes(badge.name)) {
+        activeBadgeAwards.push(badge.name);
+      }
+      continue;
+    }
+    const gamePassPurchase = source.match(
+      /^\s*GamePasses(?::|\.|::)PromptPurchase\(\s*[^,]+\s*,\s*["']([^"']+)["']\s*\)\s*;?\s*$/i,
+    );
+    if (gamePassPurchase) {
+      const pass = project.gamePasses?.find(
+        (candidate) =>
+          candidate.name.toLowerCase() === gamePassPurchase[1].toLowerCase(),
+      );
+      if (!pass) {
+        output.push({
+          level: "error",
+          message: `Gamepass ${gamePassPurchase[1]} does not exist.`,
+          scriptName: script.name,
+          line: sourceIndex + 1,
+        });
+      } else if (activePurchaseRequests) {
+        activePurchaseRequests.push({ kind: "gamePass", name: pass.name });
+      }
+      continue;
+    }
+    const productPurchase = source.match(
+      /^\s*DeveloperProducts(?::|\.|::)PromptPurchase\(\s*[^,]+\s*,\s*["']([^"']+)["']\s*\)\s*;?\s*$/i,
+    );
+    if (productPurchase) {
+      const product = project.developerProducts?.find(
+        (candidate) =>
+          candidate.name.toLowerCase() === productPurchase[1].toLowerCase(),
+      );
+      if (!product) {
+        output.push({
+          level: "error",
+          message: `Developer product ${productPurchase[1]} does not exist.`,
+          scriptName: script.name,
+          line: sourceIndex + 1,
+        });
+      } else if (activePurchaseRequests) {
+        activePurchaseRequests.push({
+          kind: "developerProduct",
+          name: product.name,
+        });
+      }
+      continue;
+    }
+    const instanceDeclaration = source.match(
+      /^\s*(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*Instance(?::|\.|::)new\(\s*["'](Part|Sound|Tool)["']\s*\)\s*;?\s*$/,
+    );
+    if (instanceDeclaration) {
+      const object = runtimeWorldObject(
+        instanceDeclaration[2],
+        instanceDeclaration[2],
+      );
+      if (object) {
+        project.objects.push(object);
+        variables.set(instanceDeclaration[1], { kind: "world", id: object.id });
+      }
+      continue;
+    }
+    const cloneDeclaration = source.match(
+      /^\s*(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?::|\.|::)Clone\(\s*\)\s*;?\s*$/,
+    );
+    if (cloneDeclaration) {
+      const reference =
+        variables.get(cloneDeclaration[2]) ??
+        resolveReferenceExpression(
+          cloneDeclaration[2],
+          project,
+          script,
+          variables,
+        );
+      if (reference?.kind === "world") {
+        const sourceObject = project.objects.find(
+          (object) => object.id === reference.id,
+        );
+        if (sourceObject) {
+          const clone = structuredClone(sourceObject);
+          clone.id = crypto.randomUUID();
+          clone.name = `${sourceObject.name} Clone`;
+          project.objects.push(clone);
+          variables.set(cloneDeclaration[1], { kind: "world", id: clone.id });
+        }
+      }
+      continue;
+    }
+    const destroyCall = source.match(
+      /^\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?::|\.|::)Destroy\(\s*\)\s*;?\s*$/,
+    );
+    if (destroyCall) {
+      const reference =
+        variables.get(destroyCall[1]) ??
+        resolveReferenceExpression(destroyCall[1], project, script, variables);
+      if (reference) destroyReference(project, reference);
+      continue;
+    }
+    const raycastDeclaration = source.match(
+      /^\s*(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*(?:Workspace|workspace)(?::|\.|::)Raycast\(\s*(Vector3(?:\.|::)new\([^)]+\))\s*,\s*(Vector3(?:\.|::)new\([^)]+\))\s*\)\s*;?\s*$/,
+    );
+    if (raycastDeclaration) {
+      const origin = parseNumbers(raycastDeclaration[2], 3);
+      const direction = parseNumbers(raycastDeclaration[3], 3);
+      if (origin && direction) {
+        const lengthSquared = direction.reduce(
+          (total, value) => total + value * value,
+          0,
+        );
+        const hit = lengthSquared > 0
+          ? project.objects
+              .filter((object) => object.visible !== false && object.canCollide)
+              .map((object) => {
+                const relative = object.position.map(
+                  (value, index) => value - origin[index],
+                );
+                const projection = relative.reduce(
+                  (total, value, index) =>
+                    total + value * direction[index],
+                  0,
+                ) / lengthSquared;
+                const clamped = Math.max(0, Math.min(1, projection));
+                const nearest = origin.map(
+                  (value, index) => value + direction[index] * clamped,
+                );
+                const distance = Math.hypot(
+                  object.position[0] - nearest[0],
+                  object.position[1] - nearest[1],
+                  object.position[2] - nearest[2],
+                );
+                const radius = Math.max(...object.scale) / 2;
+                return { object, projection, distance, radius };
+              })
+              .filter(
+                (candidate) =>
+                  candidate.projection >= 0 &&
+                  candidate.projection <= 1 &&
+                  candidate.distance <= candidate.radius,
+              )
+              .sort((left, right) => left.projection - right.projection)[0]
+          : null;
+        if (hit) {
+          variables.set(raycastDeclaration[1], {
+            kind: "world",
+            id: hit.object.id,
+          });
+        } else {
+          values.set(raycastDeclaration[1], null);
+        }
+      }
+      continue;
+    }
+    if (/^\s*math\.randomseed\s*\(/i.test(source)) {
+      resolveExpressionValue(
+        source,
+        project,
+        variables,
+        values,
+        modules,
+        script,
+      );
       continue;
     }
     const returnValue = source.match(/^\s*return\s+(.+?)\s*;?\s*$/);
@@ -3929,6 +4706,39 @@ function executeScript(
         variables,
       );
     if (!reference) continue;
+    if (assignment[2] === "Parent") {
+      const parent =
+        variables.get(assignment[3].trim()) ??
+        resolveReferenceExpression(
+          assignment[3],
+          project,
+          script,
+          variables,
+        );
+      if (reference.kind === "world" && parent) {
+        const object = project.objects.find((item) => item.id === reference.id);
+        if (object) {
+          if (parent.kind === "service" && parent.id === "Workspace") {
+            object.parentId = null;
+            object.modelId = null;
+          } else if (parent.kind === "world") {
+            object.parentId = parent.id;
+            object.modelId =
+              project.objects.find((item) => item.id === parent.id)?.modelId ??
+              null;
+          } else if (parent.kind === "model") {
+            object.parentId = null;
+            object.modelId = parent.id;
+          }
+        }
+      } else if (reference.kind === "gui" && parent) {
+        const gui = project.gui.find((item) => item.id === reference.id);
+        if (gui && (parent.kind === "gui" || parent.kind === "service")) {
+          gui.parentId = parent.kind === "gui" ? parent.id : null;
+        }
+      }
+      continue;
+    }
     const error = assignProperty(
       project,
       reference,
@@ -3942,7 +4752,12 @@ function executeScript(
       ),
     );
     if (error) {
-      output.push({ level: "error", message: error, scriptName: script.name });
+      output.push({
+        level: "error",
+        message: error,
+        scriptName: script.name,
+        line: sourceIndex + 1,
+      });
     }
   }
 }
@@ -4055,33 +4870,38 @@ export function activatePolyGui(
   const animationRequests: string[] = [];
   const tweenRequests: PolyTweenRequest[] = [];
   const soundRequests: PolySoundRequest[] = [];
+  const scheduledScripts: PolyScheduledScript[] = [];
+  const badgeAwards: string[] = [];
+  const purchaseRequests: Array<{ kind: "gamePass" | "developerProduct"; name: string }> = [];
 
-  for (const script of scripts) {
-    if (
-      diagnostics.some(
-        (diagnostic) =>
-          diagnostic.scriptId === script.id && diagnostic.severity === "error",
-      )
-    ) {
-      continue;
-    }
-    for (const handler of guiEventHandlers(script)) {
-      executeScript(
-        script,
-        project,
-        output,
-        handlerSource(script, handler),
-        undefined,
-        0,
-        undefined,
-        tweenRequests,
-        soundRequests,
-      );
-      for (const name of requestedAnimations(handler.body, project)) {
-        if (!animationRequests.includes(name)) animationRequests.push(name);
+  collectExecutionRequests(scheduledScripts, badgeAwards, purchaseRequests, () => {
+    for (const script of scripts) {
+      if (
+        diagnostics.some(
+          (diagnostic) =>
+            diagnostic.scriptId === script.id && diagnostic.severity === "error",
+        )
+      ) {
+        continue;
+      }
+      for (const handler of guiEventHandlers(script)) {
+        executeScript(
+          script,
+          project,
+          output,
+          handlerSource(script, handler),
+          undefined,
+          0,
+          undefined,
+          tweenRequests,
+          soundRequests,
+        );
+        for (const name of requestedAnimations(handler.body, project)) {
+          if (!animationRequests.includes(name)) animationRequests.push(name);
+        }
       }
     }
-  }
+  });
 
   return {
     project,
@@ -4094,6 +4914,9 @@ export function activatePolyGui(
     tweenVersion: tweenRequests.length > 0 ? 1 : 0,
     soundRequests,
     soundVersion: soundRequests.length > 0 ? 1 : 0,
+    scheduledScripts,
+    badgeAwards,
+    purchaseRequests,
   };
 }
 
@@ -4128,27 +4951,34 @@ export function activatePolyTool(
   const animationRequests: string[] = [];
   const tweenRequests: PolyTweenRequest[] = [];
   const soundRequests: PolySoundRequest[] = [];
-  for (const script of scripts) {
-    for (const handler of guiEventHandlers(script).filter(
-      (candidate) => candidate.event === "Activated",
-    )) {
-      executeScript(
-        script,
-        project,
-        output,
-        handlerSource(script, handler),
-        undefined,
-        0,
-        undefined,
-        tweenRequests,
-        soundRequests,
-      );
-      applyNearestDamage(handler.body, project, toolId, output, script.name);
-      for (const name of requestedAnimations(handler.body, project)) {
-        if (!animationRequests.includes(name)) animationRequests.push(name);
+  const scheduledScripts: PolyScheduledScript[] = [];
+  const badgeAwards: string[] = [];
+  const purchaseRequests: Array<{ kind: "gamePass" | "developerProduct"; name: string }> = [];
+
+  collectExecutionRequests(scheduledScripts, badgeAwards, purchaseRequests, () => {
+    for (const script of scripts) {
+      for (const handler of guiEventHandlers(script).filter(
+        (candidate) => candidate.event === "Activated",
+      )) {
+        executeScript(
+          script,
+          project,
+          output,
+          handlerSource(script, handler),
+          undefined,
+          0,
+          undefined,
+          tweenRequests,
+          soundRequests,
+        );
+        applyNearestDamage(handler.body, project, toolId, output, script.name);
+        for (const name of requestedAnimations(handler.body, project)) {
+          if (!animationRequests.includes(name)) animationRequests.push(name);
+        }
       }
     }
-  }
+  });
+
   return {
     project,
     playerData: localPlayerData(project),
@@ -4160,6 +4990,9 @@ export function activatePolyTool(
     tweenVersion: tweenRequests.length > 0 ? 1 : 0,
     soundRequests,
     soundVersion: soundRequests.length > 0 ? 1 : 0,
+    scheduledScripts,
+    badgeAwards,
+    purchaseRequests,
   };
 }
 
@@ -4191,43 +5024,48 @@ export function activatePolyTouched(
   const animationRequests: string[] = [];
   const tweenRequests: PolyTweenRequest[] = [];
   const soundRequests: PolySoundRequest[] = [];
+  const scheduledScripts: PolyScheduledScript[] = [];
+  const badgeAwards: string[] = [];
+  const purchaseRequests: Array<{ kind: "gamePass" | "developerProduct"; name: string }> = [];
 
-  for (const script of scripts) {
-    if (
-      diagnostics.some(
-        (diagnostic) =>
-          diagnostic.scriptId === script.id && diagnostic.severity === "error",
-      )
-    ) {
-      continue;
-    }
-    for (const handler of touchedEventHandlers(script)) {
-      if (handler.event !== event) continue;
-      const reference = eventTargetReference(handler, script, project);
-      if (reference?.kind !== "world" || reference.id !== worldObjectId) continue;
-      executeScript(
-        script,
-        project,
-        output,
-        handlerSource(script, handler),
-        undefined,
-        0,
-        handler.parameters[0]
-          ? new Map([
-              [
-                handler.parameters[0],
-                { kind: "player", id: "LocalPlayer" } as const,
-              ],
-            ])
-          : undefined,
-        tweenRequests,
-        soundRequests,
-      );
-      for (const name of requestedAnimations(handler.body, project)) {
-        if (!animationRequests.includes(name)) animationRequests.push(name);
+  collectExecutionRequests(scheduledScripts, badgeAwards, purchaseRequests, () => {
+    for (const script of scripts) {
+      if (
+        diagnostics.some(
+          (diagnostic) =>
+            diagnostic.scriptId === script.id && diagnostic.severity === "error",
+        )
+      ) {
+        continue;
+      }
+      for (const handler of touchedEventHandlers(script)) {
+        if (handler.event !== event) continue;
+        const reference = eventTargetReference(handler, script, project);
+        if (reference?.kind !== "world" || reference.id !== worldObjectId) continue;
+        executeScript(
+          script,
+          project,
+          output,
+          handlerSource(script, handler),
+          undefined,
+          0,
+          handler.parameters[0]
+            ? new Map([
+                [
+                  handler.parameters[0],
+                  { kind: "player", id: "LocalPlayer" } as const,
+                ],
+              ])
+            : undefined,
+          tweenRequests,
+          soundRequests,
+        );
+        for (const name of requestedAnimations(handler.body, project)) {
+          if (!animationRequests.includes(name)) animationRequests.push(name);
+        }
       }
     }
-  }
+  });
 
   return {
     project,
@@ -4240,6 +5078,9 @@ export function activatePolyTouched(
     tweenVersion: tweenRequests.length > 0 ? 1 : 0,
     soundRequests,
     soundVersion: soundRequests.length > 0 ? 1 : 0,
+    scheduledScripts,
+    badgeAwards,
+    purchaseRequests,
   };
 }
 
@@ -4271,41 +5112,48 @@ export function activatePolyInput(
   const animationRequests: string[] = [];
   const tweenRequests: PolyTweenRequest[] = [];
   const soundRequests: PolySoundRequest[] = [];
-  for (const script of scripts) {
-    if (
-      diagnostics.some(
-        (diagnostic) =>
-          diagnostic.scriptId === script.id && diagnostic.severity === "error",
-      )
-    ) {
-      continue;
-    }
-    for (const handler of inputScriptHandlers(script)) {
+  const scheduledScripts: PolyScheduledScript[] = [];
+  const badgeAwards: string[] = [];
+  const purchaseRequests: Array<{ kind: "gamePass" | "developerProduct"; name: string }> = [];
+
+  collectExecutionRequests(scheduledScripts, badgeAwards, purchaseRequests, () => {
+    for (const script of scripts) {
       if (
-        handler.event !== event ||
-        (handler.keyCode &&
-          handler.keyCode.toLowerCase() !== keyCode.toLowerCase())
+        diagnostics.some(
+          (diagnostic) =>
+            diagnostic.scriptId === script.id && diagnostic.severity === "error",
+        )
       ) {
         continue;
       }
-      executeScript(
-        script,
-        project,
-        output,
-        handlerSource(script, handler),
-        handler.parameters[0]
-          ? new Map([[handler.parameters[0], keyCode]])
-          : undefined,
-        0,
-        undefined,
-        tweenRequests,
-        soundRequests,
-      );
-      for (const name of requestedAnimations(handler.body, project)) {
-        if (!animationRequests.includes(name)) animationRequests.push(name);
+      for (const handler of inputScriptHandlers(script)) {
+        if (
+          handler.event !== event ||
+          (handler.keyCode &&
+            handler.keyCode.toLowerCase() !== keyCode.toLowerCase())
+        ) {
+          continue;
+        }
+        executeScript(
+          script,
+          project,
+          output,
+          handlerSource(script, handler),
+          handler.parameters[0]
+            ? new Map([[handler.parameters[0], keyCode]])
+            : undefined,
+          0,
+          undefined,
+          tweenRequests,
+          soundRequests,
+        );
+        for (const name of requestedAnimations(handler.body, project)) {
+          if (!animationRequests.includes(name)) animationRequests.push(name);
+        }
       }
     }
-  }
+  });
+
   return {
     project,
     playerData: localPlayerData(project),
@@ -4317,6 +5165,9 @@ export function activatePolyInput(
     tweenVersion: tweenRequests.length > 0 ? 1 : 0,
     soundRequests,
     soundVersion: soundRequests.length > 0 ? 1 : 0,
+    scheduledScripts,
+    badgeAwards,
+    purchaseRequests,
   };
 }
 
@@ -4439,7 +5290,11 @@ export function runPolyProject(
   const animationRequests: string[] = [];
   const tweenRequests: PolyTweenRequest[] = [];
   const soundRequests: PolySoundRequest[] = [];
+  const scheduledScripts: PolyScheduledScript[] = [];
+  const badgeAwards: string[] = [];
+  const purchaseRequests: Array<{ kind: "gamePass" | "developerProduct"; name: string }> = [];
 
+  collectExecutionRequests(scheduledScripts, badgeAwards, purchaseRequests, () => {
   for (const script of project.scripts.filter((item) => item.kind === "script")) {
     if (
       !diagnostics.some(
@@ -4488,6 +5343,7 @@ export function runPolyProject(
       }
     }
   }
+  });
 
   return {
     project,
@@ -4500,5 +5356,120 @@ export function runPolyProject(
     tweenVersion: tweenRequests.length > 0 ? 1 : 0,
     soundRequests,
     soundVersion: soundRequests.length > 0 ? 1 : 0,
+    scheduledScripts,
+    badgeAwards,
+    purchaseRequests,
+  };
+}
+
+export function resumePolyScheduledScript(
+  input: PolyProject,
+  scheduled: PolyScheduledScript,
+  playerData?: PolyPlayerData,
+): PolyRuntimeResult {
+  const project = runtimeProject(input, playerData);
+  const script = project.scripts.find((item) => item.id === scheduled.scriptId);
+  const output: PolyRuntimeResult["output"] = [];
+  const tweenRequests: PolyTweenRequest[] = [];
+  const soundRequests: PolySoundRequest[] = [];
+  const scheduledScripts: PolyScheduledScript[] = [];
+  const badgeAwards: string[] = [];
+  const purchaseRequests: Array<{
+    kind: "gamePass" | "developerProduct";
+    name: string;
+  }> = [];
+  if (!script || project.id !== scheduled.projectId) {
+    return {
+      project,
+      playerData: localPlayerData(project),
+      diagnostics: [],
+      output,
+      animationRequests: [],
+      animationVersion: 0,
+      tweenRequests,
+      tweenVersion: 0,
+      soundRequests,
+      soundVersion: 0,
+      scheduledScripts,
+      badgeAwards,
+      purchaseRequests,
+    };
+  }
+
+  collectExecutionRequests(scheduledScripts, badgeAwards, purchaseRequests, () => {
+    executeScript(
+      script,
+      project,
+      output,
+      scheduled.source,
+      undefined,
+      scheduled.remoteDepth,
+      undefined,
+      tweenRequests,
+      soundRequests,
+      {
+        variables: new Map(scheduled.context.variables),
+        modules: new Map(scheduled.context.modules),
+        stores: new Map(scheduled.context.stores),
+        values: new Map(scheduled.context.values),
+      },
+    );
+  });
+
+  const animationRequests = requestedAnimations(scheduled.source, project);
+  return {
+    project,
+    playerData: localPlayerData(project),
+    diagnostics: [],
+    output,
+    animationRequests,
+    animationVersion: animationRequests.length > 0 ? 1 : 0,
+    tweenRequests,
+    tweenVersion: tweenRequests.length > 0 ? 1 : 0,
+    soundRequests,
+    soundVersion: soundRequests.length > 0 ? 1 : 0,
+    scheduledScripts,
+    badgeAwards,
+    purchaseRequests,
+  };
+}
+
+export function mergePolyRuntimeResults(
+  current: PolyRuntimeResult,
+  activated: PolyRuntimeResult,
+): PolyRuntimeResult {
+  return {
+    ...activated,
+    diagnostics: [...current.diagnostics, ...activated.diagnostics],
+    output: [...current.output, ...activated.output],
+    animationRequests: [
+      ...new Set([
+        ...current.animationRequests,
+        ...activated.animationRequests,
+      ]),
+    ],
+    animationVersion:
+      current.animationVersion +
+      (activated.animationRequests.length > 0 ? 1 : 0),
+    tweenRequests: [...current.tweenRequests, ...activated.tweenRequests],
+    tweenVersion:
+      current.tweenVersion + (activated.tweenRequests.length > 0 ? 1 : 0),
+    soundRequests: [...current.soundRequests, ...activated.soundRequests],
+    soundVersion:
+      current.soundVersion + (activated.soundRequests.length > 0 ? 1 : 0),
+    scheduledScripts: [
+      ...current.scheduledScripts,
+      ...activated.scheduledScripts,
+    ],
+    badgeAwards: [
+      ...new Set([
+        ...(current.badgeAwards ?? []),
+        ...(activated.badgeAwards ?? []),
+      ]),
+    ],
+    purchaseRequests: [
+      ...(current.purchaseRequests ?? []),
+      ...(activated.purchaseRequests ?? []),
+    ],
   };
 }

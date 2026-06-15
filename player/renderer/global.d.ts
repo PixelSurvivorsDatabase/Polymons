@@ -4,12 +4,35 @@ type PlayerUser = {
   username: string;
   displayName: string;
   description: string;
+  tix: number;
   avatarUrl: string | null;
   equippedShirtId:
     | "polymon-shirt"
     | "beta-tester-shirt"
     | "creators-shirt"
+    | "orange-polymons-shirt"
+    | "polymons-varsity-jacket"
     | null;
+  equippedPantsId:
+    | "classic-denim-pants"
+    | "polymon-pants"
+    | "beta-tester-pants"
+    | "creators-pants"
+    | "orange-polymons-pants"
+    | "polymons-varsity-pants"
+    | null;
+  avatarAppearance: {
+    face: "classic-smile";
+    bodyColors: {
+      head: string;
+      torso: string;
+      leftArm: string;
+      rightArm: string;
+      leftLeg: string;
+      rightLeg: string;
+    };
+    accessories: string[];
+  };
 };
 
 type PlayerAuth = {
@@ -45,6 +68,8 @@ type PlayerGameSummary = {
   creatorUsername: string;
   activePlayers: number;
   visits: number;
+  favorites: number;
+  createdAt: string;
   updatedAt: string;
 };
 
@@ -83,7 +108,43 @@ interface Window {
     ) => Promise<PlayerAuth>;
     logout: () => Promise<void>;
     listGames: () => Promise<{ games: PlayerGameSummary[] }>;
+    getGameLibrary: () => Promise<{
+      favoriteGameIds: string[];
+      recentGames: Array<{
+        game_id: string;
+        last_played_at: string;
+        play_count: number;
+      }>;
+    }>;
     listFriends: () => Promise<{ friendships: PlayerFriendship[] }>;
+    listFriendServers: () => Promise<{
+      servers: Array<{
+        id: string;
+        playerCount: number;
+        friends: Array<{
+          userId: string;
+          username: string;
+          displayName: string;
+        }>;
+        game: {
+          id: string;
+          slug: string;
+          title: string;
+          thumbnailUrl: string | null;
+        };
+      }>;
+    }>;
+    listGameServers: (gameId: string) => Promise<{
+      servers: Array<{
+        id: string;
+        playerCount: number;
+        players: Array<{
+          userId: string;
+          username: string;
+          displayName: string;
+        }>;
+      }>;
+    }>;
     play: (
       gameId: string,
     ) => Promise<{
@@ -97,8 +158,38 @@ interface Window {
         id: string;
         slug: string;
         title: string;
+        thumbnailUrl: string | null;
         manifest: import("../../src/game/polyProject").PolyProject | null;
       };
+    }>;
+    awardBadge: (
+      gameId: string,
+      badgeName: string,
+    ) => Promise<{ badgeId: string; awarded: true }>;
+    getGameEntitlements: (gameId: string) => Promise<{
+      gamePasses: string[];
+      gamePassNames: string[];
+      badges: string[];
+      playerData: Record<
+        string,
+        import("../../src/game/polyProject").PolyStoredValue
+      >;
+    }>;
+    purchaseGamePass: (
+      gameId: string,
+      passId: string,
+    ) => Promise<{ passId: string; owned: true; tix: number }>;
+    purchaseDeveloperProduct: (
+      gameId: string,
+      productId: string,
+    ) => Promise<{
+      productId: string;
+      purchaseId: string;
+      tix: number;
+      playerData: Record<
+        string,
+        import("../../src/game/polyProject").PolyStoredValue
+      >;
     }>;
     sendFriendRequest: (username: string) => Promise<void>;
     loadStudioProject: (id: string) => Promise<import("../../src/game/polyProject").PolyProject>;

@@ -14,4 +14,9 @@ contextBridge.exposeInMainWorld("polyAdmin", {
       owned,
       equip,
     }),
+  updateTix: (userId, mode, amount) =>
+    ipcRenderer.invoke("accounts:tix", { userId, mode, amount }),
+  listCatalogSubmissions: () => ipcRenderer.invoke("catalog:list"),
+  reviewCatalogSubmission: (itemId, status, reason) =>
+    ipcRenderer.invoke("catalog:review", { itemId, status, reason }),
 });

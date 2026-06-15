@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { isShirtId, type ShirtId } from "./avatarCatalog";
+import {
+  isPantsId,
+  isShirtId,
+  type PantsId,
+  type ShirtId,
+} from "./avatarCatalog";
+import {
+  normalizeAvatarAppearance,
+  type AvatarAppearance,
+} from "./avatarAppearance";
 
 export type PlayerTransform = {
   sequence: number;
@@ -14,7 +23,10 @@ export type RemotePlayer = {
   username: string;
   displayName: string;
   equippedShirtId: ShirtId | null;
+  equippedPantsId: PantsId | null;
+  avatarAppearance: AvatarAppearance;
   state: PlayerTransform;
+  leaderstats: Record<string, number | string>;
 };
 
 export type ChatMessage = {
@@ -26,13 +38,15 @@ export type ChatMessage = {
   sentAt: string;
 };
 
-type ServerPlayer = Omit<RemotePlayer, "state"> & {
+type ServerPlayer = Omit<RemotePlayer, "state" | "avatarAppearance"> & {
   state?: PlayerTransform;
+  avatarAppearance?: unknown;
 };
 
 type ServerMessage =
   | {
       type: "welcome";
+      protocolVersion?: number;
       gameId: string;
       player: ServerPlayer;
       players: ServerPlayer[];
@@ -40,9 +54,20 @@ type ServerMessage =
     }
   | { type: "player_joined"; player: ServerPlayer }
   | ({ type: "player_state"; playerId: string } & PlayerTransform)
+  | {
+      type: "player_leaderstats";
+      playerId: string;
+      values: Record<string, number | string>;
+    }
   | { type: "player_left"; playerId: string }
   | { type: "chat_message"; message: ChatMessage }
   | { type: "chat_error"; message: string }
+  | {
+      type: "tix_awarded";
+      amount: number;
+      balance: number;
+      reason: "playtime";
+    }
   | { type: "pong" };
 
 const SPAWN_STATE: PlayerTransform = {
@@ -76,7 +101,29 @@ function isPlayer(value: unknown): value is ServerPlayer {
     typeof player.displayName === "string" &&
     (player.equippedShirtId === null ||
       isShirtId(player.equippedShirtId)) &&
+    (player.equippedPantsId === null ||
+      isPantsId(player.equippedPantsId)) &&
+    (player.leaderstats === undefined || isLeaderstats(player.leaderstats)) &&
     (player.state === undefined || isTransform(player.state))
+  );
+}
+
+function isLeaderstats(
+  value: unknown,
+): value is Record<string, number | string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const entries = Object.entries(value);
+  return (
+    entries.length <= 20 &&
+    entries.every(
+      ([name, stat]) =>
+        name.length > 0 &&
+        name.length <= 64 &&
+        ((typeof stat === "number" &&
+          Number.isFinite(stat) &&
+          Math.abs(stat) <= 1_000_000_000_000) ||
+          (typeof stat === "string" && stat.length <= 128)),
+    )
   );
 }
 
@@ -107,6 +154,9 @@ export function parseServerMessage(value: string): ServerMessage | null {
   const candidate = message as Record<string, unknown>;
   if (candidate.type === "welcome") {
     if (
+      (candidate.protocolVersion !== undefined &&
+        (!Number.isInteger(candidate.protocolVersion) ||
+          Number(candidate.protocolVersion) < 1)) ||
       typeof candidate.gameId !== "string" ||
       !isPlayer(candidate.player) ||
       !Array.isArray(candidate.players)
@@ -133,6 +183,13 @@ export function parseServerMessage(value: string): ServerMessage | null {
     return candidate as ServerMessage;
   }
   if (
+    candidate.type === "player_leaderstats" &&
+    typeof candidate.playerId === "string" &&
+    isLeaderstats(candidate.values)
+  ) {
+    return candidate as ServerMessage;
+  }
+  if (
     candidate.type === "chat_message" &&
     isChatMessage(candidate.message)
   ) {
@@ -150,6 +207,16 @@ export function parseServerMessage(value: string): ServerMessage | null {
   ) {
     return candidate as ServerMessage;
   }
+  if (
+    candidate.type === "tix_awarded" &&
+    typeof candidate.amount === "number" &&
+    Number.isFinite(candidate.amount) &&
+    typeof candidate.balance === "number" &&
+    Number.isFinite(candidate.balance) &&
+    candidate.reason === "playtime"
+  ) {
+    return candidate as ServerMessage;
+  }
   if (candidate.type === "pong") return { type: "pong" };
   return null;
 }
@@ -157,7 +224,9 @@ export function parseServerMessage(value: string): ServerMessage | null {
 function withState(player: ServerPlayer): RemotePlayer {
   return {
     ...player,
+    avatarAppearance: normalizeAvatarAppearance(player.avatarAppearance),
     state: player.state ?? SPAWN_STATE,
+    leaderstats: player.leaderstats ?? {},
   };
 }
 
@@ -167,9 +236,15 @@ export function useMultiplayer(
 ) {
   const socket = useRef<WebSocket | null>(null);
   const sequence = useRef(0);
+  const pendingLeaderstats = useRef<Record<string, number | string>>({});
+  const supportsLeaderstats = useRef(false);
+  const leaderstatsTimer = useRef<number | null>(null);
+  const pingStartedAt = useRef(0);
   const [connection, setConnection] = useState("Connecting");
+  const [latency, setLatency] = useState<number | null>(null);
+  const [tixBalance, setTixBalance] = useState<number | null>(null);
   const [remotePlayers, setRemotePlayers] = useState<RemotePlayer[]>([]);
-  const [localPlayer, setLocalPlayer] = useState<ServerPlayer | null>(null);
+  const [localPlayer, setLocalPlayer] = useState<RemotePlayer | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatError, setChatError] = useState("");
 
@@ -182,9 +257,13 @@ export function useMultiplayer(
     setLocalPlayer(null);
     setChatMessages([]);
     setChatError("");
+    setLatency(null);
+    setTixBalance(null);
+    supportsLeaderstats.current = false;
 
     nextSocket.addEventListener("open", () => {
       setConnection("Connected");
+      pingStartedAt.current = Date.now();
       nextSocket.send(JSON.stringify({ type: "ping" }));
     });
     nextSocket.addEventListener("message", (event) => {
@@ -200,8 +279,17 @@ export function useMultiplayer(
           nextSocket.close(1008, "Game session mismatch.");
           return;
         }
+        supportsLeaderstats.current = (message.protocolVersion ?? 1) >= 2;
+        if (supportsLeaderstats.current) {
+          nextSocket.send(
+            JSON.stringify({
+              type: "leaderstats",
+              values: pendingLeaderstats.current,
+            }),
+          );
+        }
         setRemotePlayers(message.players.map(withState));
-        setLocalPlayer(message.player);
+        setLocalPlayer(withState(message.player));
         setChatMessages(message.chatMessages);
         return;
       }
@@ -230,6 +318,16 @@ export function useMultiplayer(
         );
         return;
       }
+      if (message.type === "player_leaderstats") {
+        setRemotePlayers((players) =>
+          players.map((player) =>
+            player.id === message.playerId
+              ? { ...player, leaderstats: message.values }
+              : player,
+          ),
+        );
+        return;
+      }
       if (message.type === "player_left") {
         setRemotePlayers((players) =>
           players.filter((player) => player.id !== message.playerId),
@@ -243,6 +341,16 @@ export function useMultiplayer(
       }
       if (message.type === "chat_error") {
         setChatError(message.message);
+        return;
+      }
+      if (message.type === "tix_awarded") {
+        setTixBalance(message.balance);
+        return;
+      }
+      if (message.type === "pong") {
+        if (pingStartedAt.current > 0) {
+          setLatency(Math.max(0, Date.now() - pingStartedAt.current));
+        }
       }
     });
     nextSocket.addEventListener("close", (event) => {
@@ -261,8 +369,18 @@ export function useMultiplayer(
         setConnection("Connection failed");
       }
     });
+    const pingTimer = window.setInterval(() => {
+      if (nextSocket.readyState !== WebSocket.OPEN) return;
+      pingStartedAt.current = Date.now();
+      nextSocket.send(JSON.stringify({ type: "ping" }));
+    }, 5_000);
 
     return () => {
+      window.clearInterval(pingTimer);
+      if (leaderstatsTimer.current !== null) {
+        window.clearTimeout(leaderstatsTimer.current);
+        leaderstatsTimer.current = null;
+      }
       if (socket.current === nextSocket) socket.current = null;
       nextSocket.close();
     };
@@ -297,13 +415,57 @@ export function useMultiplayer(
     return true;
   }, []);
 
+  const sendLeaderstats = useCallback(
+    (values: Record<string, number | string>) => {
+      pendingLeaderstats.current = Object.fromEntries(
+        Object.entries(values)
+          .filter(
+            ([name, value]) =>
+              name.trim().length > 0 &&
+              name.length <= 64 &&
+              ((typeof value === "number" &&
+                Number.isFinite(value) &&
+                Math.abs(value) <= 1_000_000_000_000) ||
+                typeof value === "string"),
+          )
+          .slice(0, 20)
+          .map(([name, value]) => [
+            name,
+            typeof value === "string" ? value.slice(0, 128) : value,
+          ]),
+      );
+      if (leaderstatsTimer.current !== null) {
+        window.clearTimeout(leaderstatsTimer.current);
+      }
+      leaderstatsTimer.current = window.setTimeout(() => {
+        leaderstatsTimer.current = null;
+        if (
+          !supportsLeaderstats.current ||
+          socket.current?.readyState !== WebSocket.OPEN
+        ) {
+          return;
+        }
+        socket.current.send(
+          JSON.stringify({
+            type: "leaderstats",
+            values: pendingLeaderstats.current,
+          }),
+        );
+      }, 150);
+    },
+    [],
+  );
+
   return {
     connection,
+    latency,
+    tixBalance,
     remotePlayers,
     localPlayer,
     chatMessages,
     chatError,
     sendState,
     sendChat,
+    sendLeaderstats,
   };
 }

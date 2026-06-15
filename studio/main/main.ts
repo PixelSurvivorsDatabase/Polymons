@@ -5,6 +5,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -33,12 +34,35 @@ type StudioUser = {
   username: string;
   displayName: string;
   description: string;
+  tix: number;
   avatarUrl: string | null;
   equippedShirtId:
     | "polymon-shirt"
     | "beta-tester-shirt"
     | "creators-shirt"
+    | "orange-polymons-shirt"
+    | "polymons-varsity-jacket"
     | null;
+  equippedPantsId:
+    | "classic-denim-pants"
+    | "polymon-pants"
+    | "beta-tester-pants"
+    | "creators-pants"
+    | "orange-polymons-pants"
+    | "polymons-varsity-pants"
+    | null;
+  avatarAppearance: {
+    face: "classic-smile";
+    bodyColors: {
+      head: string;
+      torso: string;
+      leftArm: string;
+      rightArm: string;
+      leftLeg: string;
+      rightLeg: string;
+    };
+    accessories: string[];
+  };
 };
 
 type StudioSession = {
@@ -194,6 +218,18 @@ type StudioLightingSettings = {
   fogEnd: number;
   globalShadows: boolean;
   shadowSoftness: number;
+  dayNightCycle: boolean;
+  dayLengthMinutes: number;
+  sunEnabled: boolean;
+  moonEnabled: boolean;
+  sunTextureData: string;
+  moonTextureData: string;
+  sunBrightness: number;
+  sunGlare: number;
+  sunRays: boolean;
+  moonBrightness: number;
+  moonPhases: boolean;
+  moonPhase: number;
 };
 
 function defaultLighting(): StudioLightingSettings {
@@ -208,6 +244,18 @@ function defaultLighting(): StudioLightingSettings {
     fogEnd: 260,
     globalShadows: true,
     shadowSoftness: 0.25,
+    dayNightCycle: false,
+    dayLengthMinutes: 20,
+    sunEnabled: true,
+    moonEnabled: true,
+    sunTextureData: "",
+    moonTextureData: "",
+    sunBrightness: 1.35,
+    sunGlare: 0.45,
+    sunRays: true,
+    moonBrightness: 0.55,
+    moonPhases: true,
+    moonPhase: 1,
   };
 }
 
@@ -244,6 +292,26 @@ type StudioProject = {
     showOnLeaderboard?: boolean;
   }>;
   animations: StudioAnimation[];
+  badges: Array<{
+    id: string;
+    name: string;
+    description: string;
+    iconData: string;
+  }>;
+  gamePasses: Array<{
+    id: string;
+    name: string;
+    description: string;
+    priceTix: number;
+  }>;
+  developerProducts: Array<{
+    id: string;
+    name: string;
+    description: string;
+    priceTix: number;
+    effectKey: string | null;
+    effectAmount: number;
+  }>;
   values: StudioValueObject[];
   publication: {
     gameId: string;
@@ -324,6 +392,10 @@ function manifestPath(id: string): string {
 
 function dataStoresPath(id: string): string {
   return join(projectDirectory(id), "data-stores.json");
+}
+
+function backupsDirectory(id: string): string {
+  return join(projectDirectory(id), "backups");
 }
 
 async function findPlayerExecutable(): Promise<string | null> {
@@ -553,6 +625,9 @@ function migrateLegacyProject(
     lighting: defaultLighting(),
     leaderstats: [],
     animations: [],
+    badges: [],
+    gamePasses: [],
+    developerProducts: [],
     values: [],
     publication: null,
     dataStores: {},
@@ -674,6 +749,35 @@ function normalizeProject(project: StudioProject): StudioProject {
           project.lighting?.shadowSoftness ?? defaultLighting().shadowSoftness,
         ),
       ),
+      dayLengthMinutes: Math.max(
+        0.5,
+        Math.min(
+          240,
+          project.lighting?.dayLengthMinutes ?? defaultLighting().dayLengthMinutes,
+        ),
+      ),
+      sunBrightness: Math.max(
+        0,
+        Math.min(
+          8,
+          project.lighting?.sunBrightness ?? defaultLighting().sunBrightness,
+        ),
+      ),
+      sunGlare: Math.max(
+        0,
+        Math.min(2, project.lighting?.sunGlare ?? defaultLighting().sunGlare),
+      ),
+      moonBrightness: Math.max(
+        0,
+        Math.min(
+          4,
+          project.lighting?.moonBrightness ?? defaultLighting().moonBrightness,
+        ),
+      ),
+      moonPhase: Math.max(
+        0,
+        Math.min(1, project.lighting?.moonPhase ?? defaultLighting().moonPhase),
+      ),
     },
     description: project.description ?? "",
     leaderstats: (project.leaderstats ?? []).map((stat) => ({
@@ -698,6 +802,36 @@ function normalizeProject(project: StudioProject): StudioProject {
           poses: keyframe.poses ?? {},
         }))
         .sort((a, b) => a.time - b.time),
+    })),
+    badges: (project.badges ?? []).map((badge) => ({
+      id: badge.id,
+      name: String(badge.name ?? "").slice(0, 64),
+      description: String(badge.description ?? "").slice(0, 500),
+      iconData:
+        typeof badge.iconData === "string" &&
+        /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(badge.iconData)
+          ? badge.iconData
+          : "",
+    })),
+    gamePasses: (project.gamePasses ?? []).map((pass) => ({
+      id: pass.id,
+      name: String(pass.name ?? "").slice(0, 64),
+      description: String(pass.description ?? "").slice(0, 500),
+      priceTix: Math.max(0, Math.min(1_000_000, Math.floor(Number(pass.priceTix) || 0))),
+    })),
+    developerProducts: (project.developerProducts ?? []).map((product) => ({
+      id: product.id,
+      name: String(product.name ?? "").slice(0, 64),
+      description: String(product.description ?? "").slice(0, 500),
+      priceTix: Math.max(0, Math.min(1_000_000, Math.floor(Number(product.priceTix) || 0))),
+      effectKey:
+        typeof product.effectKey === "string" &&
+        /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(product.effectKey)
+          ? product.effectKey
+          : null,
+      effectAmount: Number.isFinite(Number(product.effectAmount))
+        ? Number(product.effectAmount)
+        : 0,
     })),
     publication: project.publication ?? null,
     dataStores: project.dataStores ?? {},
@@ -969,7 +1103,11 @@ async function apiRequest<T>(
 
 async function publishProject(
   project: StudioProject,
-  metadata: { title: string; description: string },
+  metadata: {
+    title: string;
+    description: string;
+    thumbnailData?: string;
+  },
 ): Promise<{
   game: { id: string; slug: string; title: string; version: number };
 }> {
@@ -994,10 +1132,38 @@ async function publishProject(
         title,
         description,
         genre: "All",
+        thumbnailData: metadata.thumbnailData,
+        badges: project.badges.map((badge) => ({
+          id: badge.id,
+          name: badge.name,
+          description: badge.description,
+          iconData: badge.iconData || undefined,
+        })),
+        gamePasses: project.gamePasses.map((pass) => ({
+          id: pass.id,
+          name: pass.name,
+          description: pass.description,
+          priceTix: pass.priceTix,
+        })),
+        developerProducts: project.developerProducts.map((product) => ({
+          id: product.id,
+          name: product.name,
+          description: product.description,
+          priceTix: product.priceTix,
+          effectKey: product.effectKey,
+          effectAmount: product.effectAmount,
+        })),
         manifest: {
           ...project,
           name: title,
           description,
+          badges: project.badges.map((badge) => ({
+            id: badge.id,
+            name: badge.name,
+            description: badge.description,
+          })),
+          gamePasses: project.gamePasses,
+          developerProducts: project.developerProducts,
         },
       },
     });
@@ -1488,6 +1654,70 @@ function validateProject(project: StudioProject): void {
     }
   }
   if (
+    !Array.isArray(project.badges) ||
+    project.badges.length > 50 ||
+    project.badges.some(
+      (badge) =>
+        typeof badge.id !== "string" ||
+        !/^[a-f0-9-]{36}$/i.test(badge.id) ||
+        typeof badge.name !== "string" ||
+        badge.name.trim().length < 1 ||
+        badge.name.length > 64 ||
+        typeof badge.description !== "string" ||
+        badge.description.length > 500 ||
+        (badge.iconData !== "" &&
+          (!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(badge.iconData) ||
+            Buffer.byteLength(badge.iconData, "utf8") > 1_400_000)),
+    )
+  ) {
+    throw new Error("Invalid badges.");
+  }
+  if (
+    !Array.isArray(project.gamePasses) ||
+    project.gamePasses.length > 50 ||
+    project.gamePasses.some(
+      (pass) =>
+        typeof pass.id !== "string" ||
+        !/^[a-f0-9-]{36}$/i.test(pass.id) ||
+        typeof pass.name !== "string" ||
+        pass.name.trim().length < 1 ||
+        pass.name.length > 64 ||
+        typeof pass.description !== "string" ||
+        pass.description.length > 500 ||
+        !Number.isInteger(pass.priceTix) ||
+        pass.priceTix < 0 ||
+        pass.priceTix > 1_000_000,
+    )
+  ) {
+    throw new Error("Invalid gamepasses.");
+  }
+  if (
+    !Array.isArray(project.developerProducts) ||
+    project.developerProducts.length > 50 ||
+    project.developerProducts.some(
+      (product) =>
+        typeof product.id !== "string" ||
+        !/^[a-f0-9-]{36}$/i.test(product.id) ||
+        typeof product.name !== "string" ||
+        product.name.trim().length < 1 ||
+        product.name.length > 64 ||
+        typeof product.description !== "string" ||
+        product.description.length > 500 ||
+        !Number.isInteger(product.priceTix) ||
+        product.priceTix < 0 ||
+        product.priceTix > 1_000_000 ||
+        !(
+          product.effectKey === null ||
+          (typeof product.effectKey === "string" &&
+            /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(product.effectKey))
+        ) ||
+        typeof product.effectAmount !== "number" ||
+        !Number.isFinite(product.effectAmount),
+    )
+  ) {
+    throw new Error("Invalid developer products.");
+  }
+  if (
     project.publication &&
     (typeof project.publication.gameId !== "string" ||
       typeof project.publication.slug !== "string" ||
@@ -1555,9 +1785,86 @@ async function readProject(id: string): Promise<StudioProject> {
   return project;
 }
 
-async function writeProject(project: StudioProject): Promise<void> {
+const lastBackupAt = new Map<string, number>();
+
+async function createProjectBackup(
+  projectId: string,
+  force = false,
+): Promise<void> {
+  const now = Date.now();
+  if (!force && now - (lastBackupAt.get(projectId) ?? 0) < 5 * 60_000) {
+    return;
+  }
+  const current = await readFile(manifestPath(projectId), "utf8").catch(
+    () => null,
+  );
+  if (!current) return;
+  const directory = backupsDirectory(projectId);
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, `${now}.poly.json`), current);
+  lastBackupAt.set(projectId, now);
+  const files = (await readdir(directory))
+    .filter((file) => /^\d+\.poly\.json$/.test(file))
+    .sort((left, right) => Number(right.split(".")[0]) - Number(left.split(".")[0]));
+  await Promise.all(
+    files.slice(25).map((file) => unlink(join(directory, file))),
+  );
+}
+
+async function listProjectBackups(projectId: string) {
+  requireAuth();
+  validateProjectId(projectId);
+  const directory = backupsDirectory(projectId);
+  const files = await readdir(directory).catch(() => [] as string[]);
+  return Promise.all(
+    files
+      .filter((file) => /^\d+\.poly\.json$/.test(file))
+      .sort((left, right) => Number(right.split(".")[0]) - Number(left.split(".")[0]))
+      .map(async (file) => {
+        const project = normalizeProject(
+          JSON.parse(await readFile(join(directory, file), "utf8")) as StudioProject,
+        );
+        return {
+          id: file,
+          name: project.name,
+          savedAt: new Date(Number(file.split(".")[0])).toISOString(),
+        };
+      }),
+  );
+}
+
+async function restoreProjectBackup(
+  projectId: string,
+  backupId: string,
+): Promise<StudioProject> {
+  requireAuth();
+  validateProjectId(projectId);
+  if (!/^\d+\.poly\.json$/.test(backupId)) {
+    throw new Error("Invalid project backup.");
+  }
+  await createProjectBackup(projectId, true);
+  const restored = normalizeProject(
+    JSON.parse(
+      await readFile(join(backupsDirectory(projectId), backupId), "utf8"),
+    ) as StudioProject,
+  );
+  const next = {
+    ...restored,
+    id: projectId,
+    updatedAt: new Date().toISOString(),
+  };
+  validateProject(next);
+  await writeProject(next);
+  return next;
+}
+
+async function writeProject(
+  project: StudioProject,
+  forceBackup = false,
+): Promise<void> {
   requireAuth();
   validateProject(project);
+  await createProjectBackup(project.id, forceBackup);
   const directory = projectDirectory(project.id);
   await mkdir(join(directory, "src"), { recursive: true });
   await Promise.all([
@@ -1601,6 +1908,9 @@ function pmxlProject(
     lighting: defaultLighting(),
     leaderstats: [],
     animations: [],
+      badges: [],
+      gamePasses: [],
+      developerProducts: [],
     values: [],
     publication: null,
     dataStores: {},
@@ -2159,6 +2469,9 @@ void app.whenReady().then(async () => {
           },
         ],
         animations: [],
+        badges: [],
+        gamePasses: [],
+        developerProducts: [],
         values: [],
         publication: null,
         dataStores: {},
@@ -2177,13 +2490,32 @@ void app.whenReady().then(async () => {
     await writeProject(next);
     return next;
   });
+  ipcMain.handle("projects:snapshot", async (_event, project: StudioProject) => {
+    requireAuth();
+    const next = { ...project, updatedAt: new Date().toISOString() };
+    await writeProject(next, true);
+    return next;
+  });
+  ipcMain.handle(
+    "projects:backups",
+    (_event, input: { id: string }) => listProjectBackups(input.id),
+  );
+  ipcMain.handle(
+    "projects:restore",
+    (_event, input: { id: string; backupId: string }) =>
+      restoreProjectBackup(input.id, input.backupId),
+  );
   ipcMain.handle(
     "projects:publish",
     async (
       _event,
       input: {
         project: StudioProject;
-        metadata: { title: string; description: string };
+        metadata: {
+          title: string;
+          description: string;
+          thumbnailData?: string;
+        };
       },
     ) => {
     requireAuth();
@@ -2193,7 +2525,7 @@ void app.whenReady().then(async () => {
         description: input.metadata.description.trim(),
         updatedAt: new Date().toISOString(),
       });
-      await writeProject(draft);
+      await writeProject(draft, true);
       const result = await publishProject(draft, input.metadata);
       const next: StudioProject = {
         ...draft,

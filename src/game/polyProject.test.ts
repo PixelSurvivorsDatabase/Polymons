@@ -8,9 +8,11 @@ import {
   analyzePolyScript,
   executePolyCommand,
   type PolyProject,
+  resumePolyScheduledScript,
   runPolyProject,
 } from "./polyProject";
 import { parseServerMessage } from "./multiplayer";
+import { avatarThumbnailDataUrl } from "./avatarThumbnail";
 
 function project(): PolyProject {
   return {
@@ -170,6 +172,45 @@ lighting.ShadowSoftness = 0.6`,
   assert.equal(result.project.lighting?.fogEnd, 180);
   assert.equal(result.project.lighting?.globalShadows, false);
   assert.equal(result.project.lighting?.shadowSoftness, 0.6);
+});
+
+test("normalizes Sky settings and supports scripted celestial controls", () => {
+  const fixture = project();
+  fixture.lighting = {
+    ...fixture.lighting!,
+    dayNightCycle: true,
+    dayLengthMinutes: 0.1,
+    sunEnabled: true,
+    moonEnabled: true,
+    sunTextureData: "",
+    moonTextureData: "",
+    sunBrightness: 20,
+    sunGlare: 4,
+    sunRays: true,
+    moonBrightness: 8,
+    moonPhases: true,
+    moonPhase: 2,
+  };
+  fixture.scripts = [
+    {
+      id: "sky-script",
+      name: "SkyScript",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `Lighting.DayNightCycle = false
+Workspace.Sky.SunEnabled = false
+Workspace.Sky.MoonPhase = 0.4`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.project.lighting?.dayLengthMinutes, 0.5);
+  assert.equal(result.project.lighting?.sunBrightness, 8);
+  assert.equal(result.project.lighting?.sunGlare, 2);
+  assert.equal(result.project.lighting?.moonBrightness, 4);
+  assert.equal(result.project.lighting?.dayNightCycle, false);
+  assert.equal(result.project.lighting?.sunEnabled, false);
+  assert.equal(result.project.lighting?.moonPhase, 0.4);
 });
 
 test("normalizes legacy blocks and scripts supported part shapes", () => {
@@ -746,11 +787,13 @@ test("tracks concatenated local strings assigned to GUI text", () => {
     source: `local button = script.Parent
 local player = Players.LocalPlayer
 local upgrade = ReplicatedStorage.upgrade
-local text = "Upgrade - " + player.UpgradePrice + " lava"
+local text = "Upgrade - " + player.UpgradePrice
+text = text + " lava"
 button.Text = text
 
 upgrade.OnClientEvent:Connect(function(price)
-    local updatedText = "Upgrade - " + price + " lava"
+    local updatedText = "Upgrade - " + price
+    updatedText = updatedText + " lava"
     button.Text = updatedText
 end)`,
   };
@@ -760,6 +803,78 @@ end)`,
   const result = runPolyProject(fixture);
   assert.equal(result.diagnostics.length, 0);
   assert.equal(result.project.gui.at(-1)?.text, "Upgrade - 30 lava");
+
+  fixture.scripts.push({
+    id: "upgrade-server",
+    name: "UpgradeServer",
+    kind: "script",
+    parent: "ServerScriptService",
+    source: `local upgrade = ReplicatedStorage.upgrade
+wait(0.01)
+upgrade:FireAllClients(56)`,
+  });
+  const updated = runPolyProject(fixture);
+  assert.equal(updated.diagnostics.length, 0);
+  assert.equal(updated.project.gui.at(-1)?.text, "Upgrade - 30 lava");
+  assert.equal(updated.scheduledScripts.length, 1);
+  const delivered = resumePolyScheduledScript(
+    updated.project,
+    updated.scheduledScripts[0],
+  );
+  assert.equal(delivered.project.gui.at(-1)?.text, "Upgrade - 56 lava");
+});
+
+test("supports seeded math.random and Random generators", () => {
+  const fixture = project();
+  fixture.leaderstats = [
+    { id: "first", name: "First", type: "number", defaultValue: 0 },
+    { id: "second", name: "Second", type: "number", defaultValue: 0 },
+    { id: "dice", name: "Dice", type: "number", defaultValue: 0 },
+    { id: "integer", name: "Integer", type: "number", defaultValue: 0 },
+    { id: "decimal", name: "Decimal", type: "number", defaultValue: 0 },
+  ];
+  fixture.scripts = [
+    {
+      id: "rng-server",
+      name: "RngServer",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `math.randomseed(242)
+local first = math.random(10, 20)
+math.randomseed(242)
+local second = math.random(10, 20)
+local dice = math.random(6)
+
+local generator = Random.new(99)
+local integer = generator:NextInteger(100, 200)
+local decimal = generator:NextNumber(0.25, 0.75)
+
+Leaderstats:Set("lava", "First", first)
+Leaderstats:Set("lava", "Second", second)
+Leaderstats:Set("lava", "Dice", dice)
+Leaderstats:Set("lava", "Integer", integer)
+Leaderstats:Set("lava", "Decimal", decimal)`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0);
+  assert.equal(
+    result.project.leaderstats.find((stat) => stat.name === "First")?.defaultValue,
+    result.project.leaderstats.find((stat) => stat.name === "Second")?.defaultValue,
+  );
+  const dice = Number(
+    result.project.leaderstats.find((stat) => stat.name === "Dice")?.defaultValue,
+  );
+  const integer = Number(
+    result.project.leaderstats.find((stat) => stat.name === "Integer")?.defaultValue,
+  );
+  const decimal = Number(
+    result.project.leaderstats.find((stat) => stat.name === "Decimal")?.defaultValue,
+  );
+  assert.ok(dice >= 1 && dice <= 6);
+  assert.ok(integer >= 100 && integer <= 200);
+  assert.ok(decimal >= 0.25 && decimal <= 0.75);
 });
 
 test("runs Part Touched scripts only when the avatar enters the part", () => {
@@ -1004,6 +1119,7 @@ test("requires an immutable game room id in multiplayer welcomes", () => {
     username: "lava",
     displayName: "Lava",
     equippedShirtId: "polymon-shirt",
+    equippedPantsId: "classic-denim-pants",
   };
   const valid = parseServerMessage(
     JSON.stringify({
@@ -1025,6 +1141,32 @@ test("requires an immutable game room id in multiplayer welcomes", () => {
 
   assert.equal(valid?.type, "welcome");
   assert.equal(missingRoom, null);
+});
+
+test("parses per-player leaderstat updates without sharing local values", () => {
+  const update = parseServerMessage(
+    JSON.stringify({
+      type: "player_leaderstats",
+      playerId: "connection-2",
+      values: { lava: 42, Multiplier: 4 },
+    }),
+  );
+  const oversized = parseServerMessage(
+    JSON.stringify({
+      type: "player_leaderstats",
+      playerId: "connection-2",
+      values: Object.fromEntries(
+        Array.from({ length: 21 }, (_, index) => [`Stat ${index}`, index]),
+      ),
+    }),
+  );
+
+  assert.deepEqual(update, {
+    type: "player_leaderstats",
+    playerId: "connection-2",
+    values: { lava: 42, Multiplier: 4 },
+  });
+  assert.equal(oversized, null);
 });
 
 test("exposes immutable account identity on LocalPlayer", () => {
@@ -1497,6 +1639,45 @@ test("plays Sound objects directly from their script parent in every language", 
   }
 });
 
+test("accepts lowercase Sound calls and shorthand without parentheses", () => {
+  const sources = [
+    "script.Parent:play()",
+    "script.Parent:play",
+    "script.Parent.Play();",
+  ];
+
+  for (const [index, source] of sources.entries()) {
+    const fixture = project();
+    fixture.objects.push({
+      ...fixture.objects[0],
+      id: `lowercase-sound-${index}`,
+      name: "Clicksound",
+      type: "sound",
+      soundData: "data:audio/mpeg;base64,//uQZA==",
+    });
+    fixture.scripts = [
+      {
+        id: `lowercase-sound-script-${index}`,
+        name: "ClickSoundScript",
+        kind: "script",
+        parent: `lowercase-sound-${index}`,
+        source,
+      },
+    ];
+
+    const result = runPolyProject(fixture);
+    assert.equal(result.diagnostics.length, 0, source);
+    assert.deepEqual(
+      result.soundRequests.map(({ objectId, action }) => ({
+        objectId,
+        action,
+      })),
+      [{ objectId: `lowercase-sound-${index}`, action: "play" }],
+      source,
+    );
+  }
+});
+
 test("creates a new Sound request for every key press", () => {
   const fixture = project();
   fixture.objects.push({
@@ -1639,6 +1820,98 @@ end`,
   assert.equal(result.project.values.find((item) => item.id === "state")?.value, "ready");
 });
 
+test("wait schedules the remaining script and resumes with local references", () => {
+  const fixture = project();
+  fixture.values = [
+    {
+      id: "state",
+      name: "State",
+      type: "stringValue",
+      parent: "ReplicatedStorage",
+      value: "idle",
+    },
+  ];
+  fixture.scripts = [
+    {
+      id: "wait-script",
+      name: "WaitScript",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `local state = ReplicatedStorage.State
+state.Value = "before"
+wait(0.25)
+state.Value = "after"`,
+    },
+  ];
+
+  const initial = runPolyProject(fixture);
+  assert.equal(
+    initial.project.values.find((item) => item.id === "state")?.value,
+    "before",
+  );
+  assert.equal(initial.scheduledScripts.length, 1);
+  assert.equal(initial.scheduledScripts[0].delayMs, 250);
+
+  const resumed = resumePolyScheduledScript(
+    initial.project,
+    initial.scheduledScripts[0],
+    initial.playerData,
+  );
+  assert.equal(
+    resumed.project.values.find((item) => item.id === "state")?.value,
+    "after",
+  );
+});
+
+test("resumes Sound playback after wait inside a button callback", () => {
+  const fixture = project();
+  fixture.objects.push({
+    id: "wait-sound",
+    name: "Clicksound",
+    type: "sound",
+    soundData: "data:audio/mpeg;base64,//uQZA==",
+  });
+  fixture.gui.push({
+    id: "wait-sound-button",
+    name: "SoundButton",
+    type: "textButton",
+    parent: "StarterGui",
+    text: "Play",
+  });
+  fixture.scripts = [
+    {
+      id: "wait-sound-script",
+      name: "WaitSoundScript",
+      kind: "localScript",
+      parent: "wait-sound-button",
+      source: `local sound = Workspace.Clicksound
+script.Parent.Activated:Connect(function()
+  sound:play()
+  wait(0.05)
+  sound:play()
+end)`,
+    },
+  ];
+
+  const initial = activatePolyGui(fixture, "wait-sound-button");
+  assert.deepEqual(
+    initial.soundRequests.map(({ objectId, action }) => ({ objectId, action })),
+    [{ objectId: "wait-sound", action: "play" }],
+  );
+  assert.equal(initial.scheduledScripts.length, 1);
+  assert.equal(initial.scheduledScripts[0].delayMs, 50);
+
+  const resumed = resumePolyScheduledScript(
+    initial.project,
+    initial.scheduledScripts[0],
+    initial.playerData,
+  );
+  assert.deepEqual(
+    resumed.soundRequests.map(({ objectId, action }) => ({ objectId, action })),
+    [{ objectId: "wait-sound", action: "play" }],
+  );
+});
+
 test("uses direct child paths and local child chains in button callbacks", () => {
   const fixture = project();
   fixture.objects.push(
@@ -1742,4 +2015,80 @@ end)`,
     result.soundRequests.map(({ objectId, action }) => ({ objectId, action })),
     [{ objectId: "remote-sound", action: "play" }],
   );
+});
+
+test("generates avatar thumbnails from equipped clothing and body colors", () => {
+  const denim = avatarThumbnailDataUrl({
+    username: "lava",
+    displayName: "lava",
+    equippedShirtId: "polymon-shirt",
+    equippedPantsId: "classic-denim-pants",
+  });
+  const polymonPants = avatarThumbnailDataUrl({
+    username: "lava",
+    displayName: "lava",
+    equippedShirtId: "polymon-shirt",
+    equippedPantsId: "polymon-pants",
+  });
+
+  assert.match(denim, /^data:image\/svg\+xml/);
+  assert.notEqual(denim, polymonPants);
+});
+
+test("creates, clones, parents, and destroys runtime parts", () => {
+  const fixture = project();
+  fixture.scripts = [
+    {
+      id: "object-lifecycle",
+      name: "ObjectLifecycle",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `local created = Instance.new("Part")
+created.Name = "Runtime Part"
+created.Parent = Workspace
+local clone = created:Clone()
+clone.Name = "Runtime Clone"
+created:Destroy()`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0, JSON.stringify(result.diagnostics));
+  assert.equal(
+    result.project.objects.some((object) => object.name === "Runtime Part"),
+    false,
+  );
+  assert.equal(
+    result.project.objects.some((object) => object.name === "Runtime Clone"),
+    true,
+  );
+});
+
+test("schedules task.delay and requests configured badges", () => {
+  const fixture = project();
+  fixture.badges = [
+    {
+      id: "22222222-2222-4222-8222-222222222222",
+      name: "First Click",
+      description: "Clicked once.",
+    },
+  ];
+  fixture.scripts = [
+    {
+      id: "badge-delay",
+      name: "BadgeDelay",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `Badges:Award(player, "First Click")
+task.delay(0.1, function()
+    print("later")
+end)`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0, JSON.stringify(result.diagnostics));
+  assert.deepEqual(result.badgeAwards, ["First Click"]);
+  assert.equal(result.scheduledScripts.length, 1);
+  assert.equal(result.scheduledScripts[0].delayMs, 100);
 });
