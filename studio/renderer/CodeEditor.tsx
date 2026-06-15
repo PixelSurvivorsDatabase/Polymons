@@ -206,6 +206,30 @@ function polyCodeInlineSuggestion(
   return null;
 }
 
+function polyCodePrompt(
+  model: monaco.editor.ITextModel,
+  position: monaco.Position,
+): string {
+  return model.getValueInRange({
+    startLineNumber: 1,
+    startColumn: 1,
+    endLineNumber: position.lineNumber,
+    endColumn: position.column,
+  });
+}
+
+function cleanPolyCodeSuggestion(value: string): string | null {
+  const cleaned = value.replace(/\r\n/g, "\n").replace(/\s+$/g, "");
+  if (!cleaned.trim()) return null;
+  if (/^```/.test(cleaned.trim())) {
+    return cleaned
+      .replace(/^```[a-zA-Z0-9_-]*\n?/, "")
+      .replace(/\n?```$/, "")
+      .trimEnd();
+  }
+  return cleaned;
+}
+
 export default function CodeEditor({
   script,
   project,
@@ -228,6 +252,10 @@ export default function CodeEditor({
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const modelRef = useRef<monaco.editor.ITextModel | null>(null);
   const trainingTimerRef = useRef<number | null>(null);
+  const polyCodeCacheRef = useRef<{
+    key: string;
+    promise: Promise<string | null>;
+  } | null>(null);
   const externalUpdate = useRef(false);
   const scriptId = script.id;
   onChangeRef.current = onChange;
@@ -829,18 +857,55 @@ export default function CodeEditor({
     );
     const inlineCompletionSubscription =
       monaco.languages.registerInlineCompletionsProvider(language, {
-        provideInlineCompletions(currentModel, position) {
+        async provideInlineCompletions(currentModel, position) {
           if (
             currentModel !== model ||
             !settingsRef.current.autoSuggestEnabled
           ) {
             return { items: [] };
           }
-          const insertText = polyCodeInlineSuggestion(
+          const fallback = polyCodeInlineSuggestion(
             currentModel,
             position,
             projectRef.current.language,
           );
+          const prompt = polyCodePrompt(currentModel, position);
+          const currentLine = currentModel
+            .getLineContent(position.lineNumber)
+            .slice(0, position.column - 1);
+          let insertText: string | null = null;
+          if (
+            window.polyStudio?.completeCode &&
+            currentLine.trim().length >= 2 &&
+            prompt.trim().length >= 8
+          ) {
+            const cacheKey = [
+              projectRef.current.language,
+              scriptRef.current.id,
+              position.lineNumber,
+              position.column,
+              prompt.slice(-1_500),
+            ].join("\u0000");
+            if (polyCodeCacheRef.current?.key !== cacheKey) {
+              polyCodeCacheRef.current = {
+                key: cacheKey,
+                promise: window.polyStudio
+                  .completeCode({
+                    language: projectRef.current.language,
+                    prompt,
+                    tokens: 48,
+                  })
+                  .then((result) =>
+                    result.source === "polycode"
+                      ? cleanPolyCodeSuggestion(result.suggestion)
+                      : null,
+                  )
+                  .catch(() => null),
+              };
+            }
+            insertText = await polyCodeCacheRef.current.promise;
+          }
+          insertText = insertText || fallback;
           if (!insertText) return { items: [] };
           return {
             items: [

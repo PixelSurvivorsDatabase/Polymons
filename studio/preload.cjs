@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld("polyStudio", {
   importAnimation: () => ipcRenderer.invoke("animations:import"),
   importSound: () => ipcRenderer.invoke("sounds:import"),
   importImage: () => ipcRenderer.invoke("images:import"),
+  completeCode: (input) => ipcRenderer.invoke("polycode:complete", input),
   getUpdateState: () => ipcRenderer.invoke("updates:get"),
   checkForUpdates: () => ipcRenderer.invoke("updates:check"),
   installUpdate: () => ipcRenderer.invoke("updates:install"),

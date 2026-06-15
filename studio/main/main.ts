@@ -23,6 +23,7 @@ import { registerUpdater } from "./updater.js";
 const API_URL = "https://polymons-server.onrender.com";
 const WEBSITE_URL = "https://pixelsurvivorsdatabase.github.io/Polymons/";
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const POLYCODE_TIMEOUT_MS = 25_000;
 
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 
@@ -373,6 +374,162 @@ function sessionPath(): string {
 
 function projectsRoot(): string {
   return join(app.getPath("documents"), "Poly Studio Projects");
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function findPolyCodeRoot(): Promise<string | null> {
+  const executableDirectory = dirname(
+    process.env.PORTABLE_EXECUTABLE_FILE ?? process.execPath,
+  );
+  const candidates = [
+    process.env.POLYCODE_ROOT,
+    join(process.cwd(), "polycode"),
+    join(__dirname, "..", "..", "polycode"),
+    join(executableDirectory, "polycode"),
+    join(executableDirectory, "..", "polycode"),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  for (const candidate of [...new Set(candidates)]) {
+    if (
+      (await pathExists(join(candidate, "complete.py"))) &&
+      (await pathExists(join(candidate, "model.py"))) &&
+      (await pathExists(join(candidate, "checkpoints-28m", "checkpoint-latest.pt"))) &&
+      (await pathExists(join(candidate, "artifacts", "tokenizer-28m.json")))
+    ) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function trimCompletion(prompt: string, output: string): string {
+  const normalized = output.replace(/\r\n/g, "\n").trimEnd();
+  if (normalized.startsWith(prompt)) return normalized.slice(prompt.length);
+  const promptTail = prompt.slice(-200);
+  const tailIndex = normalized.lastIndexOf(promptTail);
+  if (tailIndex >= 0) return normalized.slice(tailIndex + promptTail.length);
+  return normalized;
+}
+
+async function completeWithLocalPolyCode(input: {
+  language: StudioLanguage;
+  prompt: string;
+  tokens?: number;
+}): Promise<{ suggestion: string; source: "polycode" | "unavailable" }> {
+  if (!["luau", "cpp", "csharp"].includes(input.language)) {
+    throw new Error("Choose a supported scripting language.");
+  }
+  const prompt = input.prompt.slice(-6_000);
+  if (prompt.trim().length < 8) {
+    return { suggestion: "", source: "unavailable" };
+  }
+  const root = await findPolyCodeRoot();
+  if (!root) return { suggestion: "", source: "unavailable" };
+
+  const promptPath = join(
+    app.getPath("temp"),
+    `polycode-prompt-${process.pid}-${Date.now()}-${randomUUID()}.txt`,
+  );
+  await writeFile(promptPath, prompt, "utf8");
+  const python = process.env.POLYCODE_PYTHON || "python";
+  const args = [
+    join(root, "complete.py"),
+    "--checkpoint",
+    join(root, "checkpoints-28m", "checkpoint-latest.pt"),
+    "--tokenizer",
+    join(root, "artifacts", "tokenizer-28m.json"),
+    "--language",
+    input.language,
+    "--prompt-file",
+    promptPath,
+    "--tokens",
+    String(Math.max(8, Math.min(96, input.tokens ?? 48))),
+    "--temperature",
+    "0.18",
+    "--top-k",
+    "5",
+  ];
+
+  try {
+    const output = await new Promise<string>((resolve, reject) => {
+      const child = spawn(python, args, {
+        cwd: root,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      const timeout = setTimeout(() => {
+        child.kill();
+        reject(new Error("PolyCode suggestion timed out."));
+      }, POLYCODE_TIMEOUT_MS);
+      child.stdout?.on("data", (chunk) => {
+        stdout += String(chunk);
+      });
+      child.stderr?.on("data", (chunk) => {
+        stderr += String(chunk);
+      });
+      child.once("error", (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+      child.once("close", (code) => {
+        clearTimeout(timeout);
+        if (code === 0) resolve(stdout);
+        else reject(new Error(stderr.trim() || `PolyCode exited with ${code}.`));
+      });
+    });
+    return {
+      suggestion: trimCompletion(prompt, output).slice(0, 2_000),
+      source: "polycode",
+    };
+  } finally {
+    await unlink(promptPath).catch(() => undefined);
+  }
+}
+
+async function completeCode(input: {
+  language: StudioLanguage;
+  prompt: string;
+  tokens?: number;
+}): Promise<{ suggestion: string; source: "polycode" | "unavailable" }> {
+  if (auth) {
+    try {
+      let current = auth;
+      if (
+        !current.session.expiresAt ||
+        current.session.expiresAt * 1000 < Date.now() + 60_000
+      ) {
+        const renewed = await refreshAuth();
+        if (renewed) current = renewed;
+      }
+      const result = await apiRequest<{
+        suggestion: string;
+        source: "polycode" | "unavailable";
+      }>("/v1/polycode/complete", {
+        method: "POST",
+        accessToken: current.session.accessToken,
+        body: {
+          language: input.language,
+          prompt: input.prompt.slice(-6_000),
+          tokens: Math.max(8, Math.min(96, input.tokens ?? 48)),
+        },
+      });
+      if (result.source === "polycode" && result.suggestion.trim()) {
+        return result;
+      }
+    } catch {
+      // Fall back to a local checkpoint if the hosted API is unavailable.
+    }
+  }
+  return completeWithLocalPolyCode(input);
 }
 
 function validateProjectId(id: string): void {
@@ -2587,6 +2744,11 @@ void app.whenReady().then(async () => {
   ipcMain.handle("animations:import", () => importPma());
   ipcMain.handle("sounds:import", () => importSound());
   ipcMain.handle("images:import", () => importImage());
+  ipcMain.handle(
+    "polycode:complete",
+    (_event, input: { language: StudioLanguage; prompt: string; tokens?: number }) =>
+      completeCode(input),
+  );
 
   createWindow();
   if (updater) {

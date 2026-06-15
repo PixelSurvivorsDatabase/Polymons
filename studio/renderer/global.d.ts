@@ -354,6 +354,14 @@ interface Window {
       dataUrl: string;
       byteLength: number;
     } | null>;
+    completeCode: (input: {
+      language: StudioLanguage;
+      prompt: string;
+      tokens?: number;
+    }) => Promise<{
+      suggestion: string;
+      source: "polycode" | "unavailable";
+    }>;
     getUpdateState: () => Promise<DesktopUpdateState>;
     checkForUpdates: () => Promise<DesktopUpdateState>;
     installUpdate: () => Promise<DesktopUpdateState>;

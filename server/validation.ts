@@ -154,6 +154,12 @@ export const hasBadgeSchema = z.object({
   badgeName: z.string().trim().min(1).max(64),
 });
 
+export const polyCodeCompleteSchema = z.object({
+  language: z.enum(["luau", "cpp", "csharp"]),
+  prompt: z.string().min(1).max(6_000),
+  tokens: z.number().int().min(8).max(96).default(48),
+});
+
 export const avatarUploadSchema = z.object({
   itemType: z.enum(["shirt", "pants"]),
   name: z.string().trim().min(1).max(64),

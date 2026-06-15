@@ -12,7 +12,9 @@ studio-release/
 admin-dist/
 admin-release/
 polycode/data/generated/
-polycode/artifacts/
+polycode/artifacts/*
+!polycode/artifacts/
+!polycode/artifacts/tokenizer-28m.json
 polycode/checkpoints/
 polycode/checkpoints-28m/
 __pycache__/

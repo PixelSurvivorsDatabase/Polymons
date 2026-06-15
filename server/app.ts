@@ -1,9 +1,13 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { spawn } from "child_process";
 import cors from "cors";
 import { randomUUID } from "crypto";
 import express, { type Request } from "express";
 import { rateLimit } from "express-rate-limit";
+import { access, unlink, writeFile } from "fs/promises";
 import helmet from "helmet";
+import { tmpdir } from "os";
+import { join } from "path";
 import type { ServerConfig } from "./config.js";
 import {
   bearerToken,
@@ -46,6 +50,7 @@ import {
   loginSchema,
   playerAccountLinkSchema,
   playSessionSchema,
+  polyCodeCompleteSchema,
   profileUpdateSchema,
   publishGameSchema,
   refreshSchema,
@@ -292,6 +297,104 @@ function websocketUrl(request: Request, ticket: string): string {
   return `${protocol}://${request.get("host")}/v1/connect?ticket=${encodeURIComponent(ticket)}`;
 }
 
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function polyCodeRoot(): string {
+  return process.env.POLYCODE_ROOT || join(process.cwd(), "polycode");
+}
+
+async function runPolyCodeCompletion(input: {
+  language: "luau" | "cpp" | "csharp";
+  prompt: string;
+  tokens: number;
+}): Promise<{ suggestion: string; source: "polycode" | "unavailable" }> {
+  const root = polyCodeRoot();
+  const completeScript = join(root, "complete.py");
+  const checkpoint =
+    process.env.POLYCODE_CHECKPOINT ||
+    join(root, "checkpoints-28m", "checkpoint-latest.pt");
+  const tokenizer =
+    process.env.POLYCODE_TOKENIZER ||
+    join(root, "artifacts", "tokenizer-28m.json");
+  if (
+    !(await fileExists(completeScript)) ||
+    !(await fileExists(checkpoint)) ||
+    !(await fileExists(tokenizer))
+  ) {
+    return { suggestion: "", source: "unavailable" };
+  }
+
+  const promptPath = join(
+    tmpdir(),
+    `polymons-polycode-${process.pid}-${Date.now()}-${randomUUID()}.txt`,
+  );
+  await writeFile(promptPath, input.prompt, "utf8");
+  const python = process.env.POLYCODE_PYTHON || "python";
+  const args = [
+    completeScript,
+    "--checkpoint",
+    checkpoint,
+    "--tokenizer",
+    tokenizer,
+    "--language",
+    input.language,
+    "--prompt-file",
+    promptPath,
+    "--tokens",
+    String(input.tokens),
+    "--temperature",
+    process.env.POLYCODE_TEMPERATURE || "0.18",
+    "--top-k",
+    process.env.POLYCODE_TOP_K || "5",
+  ];
+
+  try {
+    const output = await new Promise<string>((resolve, reject) => {
+      const child = spawn(python, args, {
+        cwd: root,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      const timeout = setTimeout(() => {
+        child.kill();
+        reject(new Error("PolyCode suggestion timed out."));
+      }, Number(process.env.POLYCODE_TIMEOUT_MS || 25_000));
+      child.stdout?.on("data", (chunk) => {
+        stdout += String(chunk);
+      });
+      child.stderr?.on("data", (chunk) => {
+        stderr += String(chunk);
+      });
+      child.once("error", (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+      child.once("close", (code) => {
+        clearTimeout(timeout);
+        if (code === 0) resolve(stdout);
+        else reject(new Error(stderr.trim() || `PolyCode exited with ${code}.`));
+      });
+    });
+    const normalized = output.replace(/\r\n/g, "\n").trimEnd();
+    const prompt = input.prompt.replace(/\r\n/g, "\n");
+    const suggestion = normalized.startsWith(prompt)
+      ? normalized.slice(prompt.length)
+      : normalized;
+    return { suggestion: suggestion.slice(0, 2_000), source: "polycode" };
+  } finally {
+    await unlink(promptPath).catch(() => undefined);
+  }
+}
+
 async function authenticatedUser(
   request: Request,
   admin: SupabaseClient,
@@ -384,6 +487,13 @@ export function createApp(
     legacyHeaders: false,
   });
 
+  const polyCodeLimiter = rateLimit({
+    windowMs: 2 * 60 * 60_000,
+    limit: 120,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+  });
+
   app.get("/", (_request, response) => {
     response.json({
       name: "Polymons Server",
@@ -394,6 +504,13 @@ export function createApp(
 
   app.get("/health", (_request, response) => {
     response.json({ status: "ok" });
+  });
+
+  app.post("/v1/polycode/complete", polyCodeLimiter, async (request, response) => {
+    await authenticatedUser(request, admin);
+    const input = parseBody(polyCodeCompleteSchema, request.body);
+    const result = await runPolyCodeCompletion(input);
+    response.json(result);
   });
 
   app.post("/v1/accounts/signup", signUpLimiter, async (request, response) => {
