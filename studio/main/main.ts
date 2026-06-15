@@ -29,8 +29,10 @@ type StudioLanguage = "luau" | "cpp" | "csharp";
 
 type StudioUser = {
   id: string;
+  polymonsId: number;
   username: string;
   displayName: string;
+  description: string;
   avatarUrl: string | null;
   equippedShirtId:
     | "polymon-shirt"
@@ -66,6 +68,7 @@ type SceneObject = {
   position: [number, number, number];
   rotation: [number, number, number];
   scale: [number, number, number];
+  shape?: "block" | "sphere" | "cylinder" | "stud";
   color: string;
   anchored: boolean;
   visible?: boolean;
@@ -180,6 +183,34 @@ type StudioValueObject = {
   value: string | number | boolean;
 };
 
+type StudioLightingSettings = {
+  clockTime: number;
+  brightness: number;
+  ambient: string;
+  outdoorAmbient: string;
+  skyColor: string;
+  fogColor: string;
+  fogStart: number;
+  fogEnd: number;
+  globalShadows: boolean;
+  shadowSoftness: number;
+};
+
+function defaultLighting(): StudioLightingSettings {
+  return {
+    clockTime: 14,
+    brightness: 2,
+    ambient: "#8A8A8A",
+    outdoorAmbient: "#A7B0A0",
+    skyColor: "#8EC8ED",
+    fogColor: "#A9D4EE",
+    fogStart: 90,
+    fogEnd: 260,
+    globalShadows: true,
+    shadowSoftness: 0.25,
+  };
+}
+
 type StudioProject = {
   version: 2;
   id: string;
@@ -204,6 +235,7 @@ type StudioProject = {
     sprintEnabled: boolean;
     sprintMultiplier: number;
   };
+  lighting: StudioLightingSettings;
   leaderstats: Array<{
     id: string;
     name: string;
@@ -518,6 +550,7 @@ function migrateLegacyProject(
       sprintEnabled: true,
       sprintMultiplier: 1.5,
     },
+    lighting: defaultLighting(),
     leaderstats: [],
     animations: [],
     values: [],
@@ -539,6 +572,7 @@ function normalizeProject(project: StudioProject): StudioProject {
     ...project,
     objects: project.objects.map((object) => ({
       ...object,
+      shape: object.shape ?? "block",
       visible: object.visible ?? true,
       transparency: object.transparency ?? 0,
       material: object.material ?? "plastic",
@@ -613,6 +647,33 @@ function normalizeProject(project: StudioProject): StudioProject {
       maxHealth: project.playerSettings.maxHealth ?? 100,
       sprintEnabled: project.playerSettings.sprintEnabled ?? true,
       sprintMultiplier: project.playerSettings.sprintMultiplier ?? 1.5,
+    },
+    lighting: {
+      ...defaultLighting(),
+      ...(project.lighting ?? {}),
+      clockTime: Math.max(
+        0,
+        Math.min(24, project.lighting?.clockTime ?? defaultLighting().clockTime),
+      ),
+      brightness: Math.max(
+        0,
+        Math.min(8, project.lighting?.brightness ?? defaultLighting().brightness),
+      ),
+      fogStart: Math.max(
+        0,
+        project.lighting?.fogStart ?? defaultLighting().fogStart,
+      ),
+      fogEnd: Math.max(
+        Math.max(0, project.lighting?.fogStart ?? defaultLighting().fogStart) + 1,
+        project.lighting?.fogEnd ?? defaultLighting().fogEnd,
+      ),
+      shadowSoftness: Math.max(
+        0,
+        Math.min(
+          1,
+          project.lighting?.shadowSoftness ?? defaultLighting().shadowSoftness,
+        ),
+      ),
     },
     description: project.description ?? "",
     leaderstats: (project.leaderstats ?? []).map((stat) => ({
@@ -1048,6 +1109,8 @@ function validateProject(project: StudioProject): void {
       object.position.length !== 3 ||
       object.rotation.length !== 3 ||
       object.scale.length !== 3 ||
+      (object.shape !== undefined &&
+        !["block", "sphere", "cylinder", "stud"].includes(object.shape)) ||
       ![...object.position, ...object.rotation, ...object.scale].every(
         Number.isFinite,
       ) ||
@@ -1535,6 +1598,7 @@ function pmxlProject(
       sprintEnabled: true,
       sprintMultiplier: 1.5,
     },
+    lighting: defaultLighting(),
     leaderstats: [],
     animations: [],
     values: [],
@@ -1590,6 +1654,7 @@ async function exportPmxl(input: {
         ],
         rotation: part.rotation,
         scale: part.scale,
+        shape: part.shape ?? "block",
         color: part.color,
         anchored: part.anchored,
         visible: part.visible,
@@ -1675,6 +1740,7 @@ async function importPmxl(): Promise<{
       ] as [number, number, number],
       rotation: part.rotation,
       scale: part.scale,
+      shape: part.shape ?? "block",
       color: part.color,
       anchored: part.anchored,
       visible: part.visible,
@@ -2008,7 +2074,9 @@ void app.whenReady().then(async () => {
       });
   if (
     auth &&
-    (!auth.session.expiresAt ||
+    (!Number.isInteger(auth.user.polymonsId) ||
+      typeof auth.user.description !== "string" ||
+      !auth.session.expiresAt ||
       auth.session.expiresAt * 1000 < Date.now() + 60_000)
   ) {
     await refreshAuth();
@@ -2081,6 +2149,7 @@ void app.whenReady().then(async () => {
           sprintEnabled: true,
           sprintMultiplier: 1.5,
         },
+        lighting: defaultLighting(),
         leaderstats: [
           {
             id: randomUUID(),

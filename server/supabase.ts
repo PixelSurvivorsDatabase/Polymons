@@ -9,8 +9,10 @@ import type { ServerConfig } from "./config.js";
 
 export type PublicProfile = {
   id: string;
+  polymonsId: number;
   username: string;
   displayName: string;
+  description: string;
   avatarUrl: string | null;
   equippedShirtId: string | null;
 };
@@ -51,7 +53,9 @@ export async function loadProfile(
   await syncAvatarUnlocks(client, userId);
   const { data, error } = await client
     .from("profiles")
-    .select("id, username, display_name, avatar_url, equipped_shirt_id")
+    .select(
+      "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id",
+    )
     .eq("id", userId)
     .single();
 
@@ -61,8 +65,10 @@ export async function loadProfile(
 
   return {
     id: data.id,
+    polymonsId: Number(data.polymons_id),
     username: data.username,
     displayName: data.display_name,
+    description: data.bio ?? "",
     avatarUrl: data.avatar_url,
     equippedShirtId: data.equipped_shirt_id,
   };

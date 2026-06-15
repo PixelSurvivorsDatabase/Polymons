@@ -17,6 +17,7 @@ import {
   clientMessageSchema,
   favoriteGameSchema,
   friendRequestSchema,
+  profileUpdateSchema,
   publishGameSchema,
   signUpSchema,
 } from "./validation.js";
@@ -85,6 +86,18 @@ test("validates signup credentials", () => {
       username: "no",
       password: "password",
     }).success,
+    false,
+  );
+});
+
+test("validates editable profile descriptions", () => {
+  assert.equal(
+    profileUpdateSchema.safeParse({ description: "Builder and scripter." })
+      .success,
+    true,
+  );
+  assert.equal(
+    profileUpdateSchema.safeParse({ description: "x".repeat(501) }).success,
     false,
   );
 });

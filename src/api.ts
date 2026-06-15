@@ -8,8 +8,10 @@ export const POLY_STUDIO_DOWNLOAD_URL =
 
 export type PolymonsUser = {
   id: string;
+  polymonsId: number;
   username: string;
   displayName: string;
+  description: string;
   avatarUrl: string | null;
   equippedShirtId: import("./game/avatarCatalog").ShirtId | null;
 };
@@ -244,6 +246,17 @@ export function getPlayerProfile(
   username: string,
 ): Promise<PublicPlayerProfile> {
   return apiRequest(`/v1/players/${encodeURIComponent(username)}`);
+}
+
+export function updateProfile(
+  description: string,
+  accessToken: string,
+): Promise<{ user: PolymonsUser }> {
+  return apiRequest("/v1/me/profile", {
+    method: "POST",
+    accessToken,
+    body: { description },
+  });
 }
 
 export function listFriends(

@@ -27,6 +27,7 @@ type PlayerState = {
 type RoomPlayer = {
   id: string;
   userId: string;
+  polymonsId: number;
   username: string;
   displayName: string;
   equippedShirtId: string | null;
@@ -247,6 +248,7 @@ export function attachWebSocketServer(
           existingPlayers.push({
             id: peerConnection.id,
             userId: peerConnection.profile.id,
+            polymonsId: peerConnection.profile.polymonsId,
             username: peerConnection.profile.username,
             displayName: peerConnection.profile.displayName,
             equippedShirtId: peerConnection.profile.equippedShirtId,
@@ -260,6 +262,7 @@ export function attachWebSocketServer(
       const player = {
         id: connection.id,
         userId: connection.profile.id,
+        polymonsId: connection.profile.polymonsId,
         username: connection.profile.username,
         displayName: connection.profile.displayName,
         equippedShirtId: connection.profile.equippedShirtId,

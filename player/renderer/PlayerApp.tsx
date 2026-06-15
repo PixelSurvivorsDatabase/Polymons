@@ -16,6 +16,7 @@ import {
   activatePolyTouched,
   activatePolyTool,
   executePolyCommand,
+  type PolyPlayerData,
   type PolyProject,
   type PolyRuntimeResult,
   runPolyProject,
@@ -24,6 +25,18 @@ import {
 const BaseplateGame = lazy(
   () => import("../../src/game/BaseplateGame"),
 );
+
+function runtimePlayerData(
+  user: PlayerUser | null | undefined,
+): PolyPlayerData | undefined {
+  return user
+    ? {
+        userId: user.polymonsId,
+        username: user.username,
+        displayName: user.displayName,
+      }
+    : undefined;
+}
 
 function mergeRuntimeResults(
   current: PolyRuntimeResult,
@@ -353,7 +366,12 @@ function OnlinePlayerGame({
           throw new Error("Polymons returned the wrong game.");
         }
         if (result.game.manifest) {
-          setRuntime(runPolyProject(result.game.manifest));
+          setRuntime(
+            runPolyProject(
+              result.game.manifest,
+              runtimePlayerData(auth?.user),
+            ),
+          );
         } else if (result.game.slug === "baseplate") {
           setRuntime(null);
         } else {
@@ -369,7 +387,7 @@ function OnlinePlayerGame({
         );
       })
       .finally(() => setGameLoading(false));
-  }, [launch.game]);
+  }, [auth?.user, launch.game]);
 
   return (
     <main className="game-screen">
@@ -403,6 +421,7 @@ function OnlinePlayerGame({
             soundVersion={runtime?.soundVersion}
             guiObjects={runtime?.project.gui}
             playerSettings={runtime?.project.playerSettings}
+            lighting={runtime?.project.lighting}
             leaderstats={runtime?.project.leaderstats}
             projectName={runtime?.project.name}
             localPlayer={sessionPlayer ?? auth?.user}
@@ -412,14 +431,22 @@ function OnlinePlayerGame({
             onGuiActivated={(guiObjectId) => {
               setRuntime((current) => {
                 if (!current) return current;
-                const activated = activatePolyGui(current.project, guiObjectId);
+                const activated = activatePolyGui(
+                  current.project,
+                  guiObjectId,
+                  current.playerData,
+                );
                 return mergeRuntimeResults(current, activated);
               });
             }}
             onToolActivated={(toolObjectId) => {
               setRuntime((current) => {
                 if (!current) return current;
-                const activated = activatePolyTool(current.project, toolObjectId);
+                const activated = activatePolyTool(
+                  current.project,
+                  toolObjectId,
+                  current.playerData,
+                );
                 return mergeRuntimeResults(current, activated);
               });
             }}
@@ -429,6 +456,8 @@ function OnlinePlayerGame({
                 const activated = activatePolyTouched(
                   current.project,
                   worldObjectId,
+                  "Touched",
+                  current.playerData,
                 );
                 return mergeRuntimeResults(current, activated);
               });
@@ -438,7 +467,12 @@ function OnlinePlayerGame({
                 current
                   ? mergeRuntimeResults(
                       current,
-                      activatePolyInput(current.project, keyCode, event),
+                      activatePolyInput(
+                        current.project,
+                        keyCode,
+                        event,
+                        current.playerData,
+                      ),
                     )
                   : current,
               );
@@ -496,8 +530,11 @@ function StudioPlayerGame({
   }, [launch.projectId]);
 
   const initialRuntime = useMemo(
-    () => (project ? runPolyProject(project) : null),
-    [project],
+    () =>
+      project
+        ? runPolyProject(project, runtimePlayerData(auth?.user))
+        : null,
+    [auth?.user, project],
   );
   const [runtime, setRuntime] = useState<PolyRuntimeResult | null>(null);
   const [terminalOpen, setTerminalOpen] = useState(false);
@@ -547,6 +584,7 @@ function StudioPlayerGame({
               soundVersion={runtime.soundVersion}
               guiObjects={runtime.project.gui}
               playerSettings={runtime.project.playerSettings}
+              lighting={runtime.project.lighting}
               leaderstats={runtime.project.leaderstats}
               projectName={runtime.project.name}
               localPlayer={auth?.user}
@@ -556,6 +594,7 @@ function StudioPlayerGame({
                   const activated = activatePolyGui(
                     current.project,
                     guiObjectId,
+                    current.playerData,
                   );
                   return mergeRuntimeResults(current, activated);
                 });
@@ -566,6 +605,7 @@ function StudioPlayerGame({
                   const activated = activatePolyTool(
                     current.project,
                     toolObjectId,
+                    current.playerData,
                   );
                   return mergeRuntimeResults(current, activated);
                 });
@@ -576,6 +616,8 @@ function StudioPlayerGame({
                   const activated = activatePolyTouched(
                     current.project,
                     worldObjectId,
+                    "Touched",
+                    current.playerData,
                   );
                   return mergeRuntimeResults(current, activated);
                 });
@@ -587,6 +629,7 @@ function StudioPlayerGame({
                     current.project,
                     worldObjectId,
                     "TouchEnded",
+                    current.playerData,
                   );
                   return mergeRuntimeResults(current, activated);
                 });
@@ -596,7 +639,12 @@ function StudioPlayerGame({
                   current
                     ? mergeRuntimeResults(
                         current,
-                        activatePolyInput(current.project, keyCode, event),
+                        activatePolyInput(
+                          current.project,
+                          keyCode,
+                          event,
+                          current.playerData,
+                        ),
                       )
                     : current,
                 );

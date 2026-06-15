@@ -20,8 +20,10 @@ app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 
 type PlayerUser = {
   id: string;
+  polymonsId: number;
   username: string;
   displayName: string;
+  description: string;
   avatarUrl: string | null;
   equippedShirtId:
     | "polymon-shirt"
@@ -402,6 +404,13 @@ if (!hasLock) {
       console.error("Could not register the Polymons protocol.", error);
     }
     auth = await loadAuth();
+    if (
+      auth &&
+      (!Number.isInteger(auth.user.polymonsId) ||
+        typeof auth.user.description !== "string")
+    ) {
+      await refreshAuth();
+    }
     const initialRequest = findProtocolRequest(process.argv);
     if (initialRequest?.accountTicket) {
       try {

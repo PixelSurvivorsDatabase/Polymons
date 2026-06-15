@@ -142,6 +142,54 @@ player.CameraMaxZoomDistance = 96`;
   assert.equal(result.project.playerSettings.cameraMaxZoomDistance, 96);
 });
 
+test("applies project Lighting properties from scripts", () => {
+  const fixture = project();
+  fixture.scripts = [
+    {
+      id: "lighting-server",
+      name: "LightingServer",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `Lighting.ClockTime = 18
+local lighting = Lighting
+lighting.Brightness = 1.25
+lighting.FogColor = "#6B7280"
+lighting.FogStart = 40
+lighting.FogEnd = 180
+lighting.GlobalShadows = false
+lighting.ShadowSoftness = 0.6`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0, JSON.stringify(result.diagnostics));
+  assert.equal(result.project.lighting?.clockTime, 18);
+  assert.equal(result.project.lighting?.brightness, 1.25);
+  assert.equal(result.project.lighting?.fogColor, "#6B7280");
+  assert.equal(result.project.lighting?.fogStart, 40);
+  assert.equal(result.project.lighting?.fogEnd, 180);
+  assert.equal(result.project.lighting?.globalShadows, false);
+  assert.equal(result.project.lighting?.shadowSoftness, 0.6);
+});
+
+test("normalizes legacy blocks and scripts supported part shapes", () => {
+  const fixture = project();
+  fixture.scripts = [
+    {
+      id: "shape-server",
+      name: "ShapeServer",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `local part = Workspace.Part
+part.Shape = "Sphere"`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0, JSON.stringify(result.diagnostics));
+  assert.equal(result.project.objects[0].shape, "sphere");
+});
+
 test("normalizes camera zoom limits for older projects", () => {
   const fixture = project();
   const legacySettings = fixture.playerSettings as Partial<
@@ -952,6 +1000,7 @@ test("requires an immutable game room id in multiplayer welcomes", () => {
   const player = {
     id: "connection-1",
     userId: "player-1",
+    polymonsId: 2,
     username: "lava",
     displayName: "Lava",
     equippedShirtId: "polymon-shirt",
@@ -976,6 +1025,80 @@ test("requires an immutable game room id in multiplayer welcomes", () => {
 
   assert.equal(valid?.type, "welcome");
   assert.equal(missingRoom, null);
+});
+
+test("exposes immutable account identity on LocalPlayer", () => {
+  const fixture = project();
+  fixture.scripts = [
+    {
+      id: "identity-client",
+      name: "IdentityClient",
+      kind: "localScript",
+      parent: "StarterPlayerScripts",
+      source: `local player = Players.LocalPlayer
+local label = PlayerGui.Status
+label.Text = player.Username`,
+    },
+  ];
+
+  const result = runPolyProject(fixture, {
+    userId: 2,
+    username: "lava",
+    displayName: "Lava",
+  });
+
+  assert.equal(result.playerData.userId, 2);
+  assert.equal(result.project.gui.find((gui) => gui.id === "status")?.text, "lava");
+
+  fixture.scripts[0].source = `local player = Players.LocalPlayer
+player.UserId = 99`;
+  const writeResult = runPolyProject(fixture, result.playerData);
+  assert.ok(
+    writeResult.diagnostics.some((diagnostic) =>
+      diagnostic.message.includes("UserId is read-only"),
+    ),
+  );
+});
+
+test("uses numeric player UserId as a DataStore key", () => {
+  const fixture = project();
+  fixture.remotes = [
+    {
+      id: "save-event",
+      name: "SavePlayer",
+      kind: "remoteEvent",
+    },
+  ];
+  fixture.scripts = [
+    {
+      id: "save-server",
+      name: "SaveServer",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `local store = DataStoreService:GetDataStore("PlayerData")
+local remote = ReplicatedStorage.SavePlayer
+
+remote.OnServerEvent:Connect(function(player)
+    store:SetAsync(player.UserId, "saved")
+end)`,
+    },
+    {
+      id: "save-client",
+      name: "SaveClient",
+      kind: "localScript",
+      parent: "StarterPlayerScripts",
+      source: "ReplicatedStorage.SavePlayer:FireServer()",
+    },
+  ];
+
+  const result = runPolyProject(fixture, {
+    userId: 2,
+    username: "lava",
+    displayName: "Lava",
+  });
+
+  assert.equal(result.diagnostics.length, 0, JSON.stringify(result.diagnostics));
+  assert.equal(result.project.dataStores.PlayerData?.["2"], "saved");
 });
 
 test("normalizes animations and collects script playback requests", () => {

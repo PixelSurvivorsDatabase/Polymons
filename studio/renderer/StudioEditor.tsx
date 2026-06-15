@@ -34,6 +34,7 @@ import {
   UserRound,
   Volume2,
   CircleHelp,
+  Sun,
 } from "lucide-react";
 import {
   type ReactNode,
@@ -44,7 +45,6 @@ import {
   useState,
 } from "react";
 import { Color, Euler, Object3D, Vector3 } from "three";
-import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls as ThreeTransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import {
   analyzePolyScript,
@@ -52,6 +52,7 @@ import {
   type PolyProject,
 } from "../../src/game/polyProject";
 import { createSurfaceTexture } from "../../src/game/surfaceTextures";
+import { LightingRig } from "../../src/game/LightingRig";
 import logo from "../../assets/studio/poly-studio-logo-dark.png";
 import CodeEditor from "./CodeEditor";
 
@@ -612,6 +613,7 @@ export default function StudioEditor({
   function addPart(
     type: StudioObject["type"] = "part",
     target: ContextTarget = { type: "service", id: "Workspace" },
+    shape: NonNullable<StudioObject["shape"]> = "block",
   ) {
     if (type === "humanoidRootPart") {
       addHumanoidRig(target);
@@ -633,7 +635,13 @@ export default function StudioEditor({
           ? "Handle"
           : type === "sound"
             ? "Sound"
-            : "Part";
+            : shape === "sphere"
+              ? "Sphere"
+              : shape === "cylinder"
+                ? "Cylinder"
+                : shape === "stud"
+                  ? "Stud"
+                  : "Part";
     const next: StudioObject = {
       id: crypto.randomUUID(),
       name: nextName(
@@ -650,7 +658,14 @@ export default function StudioEditor({
         : [0, 2, 0],
       rotation: [0, 0, 0],
       scale:
-        type === "handle" ? [1, 3, 1] : type === "sound" ? [0.6, 0.6, 0.6] : [4, 4, 4],
+        type === "handle"
+          ? [1, 3, 1]
+          : type === "sound"
+            ? [0.6, 0.6, 0.6]
+            : shape === "stud"
+              ? [2, 0.7, 2]
+              : [4, 4, 4],
+      shape,
       color: "#30254D",
       anchored: true,
       visible: true,
@@ -721,6 +736,7 @@ export default function StudioEditor({
       ],
       rotation: [0, 0, 0],
       scale,
+      shape: "block",
       color,
       anchored: true,
       visible: true,
@@ -1563,6 +1579,9 @@ end)
     const addWorldActions = () => {
       actions.push(
         { label: "Part", icon: <Box size={14} />, run: () => addPart("part", target) },
+        { label: "Sphere", icon: <CircleHelp size={14} />, run: () => addPart("part", target, "sphere") },
+        { label: "Cylinder", icon: <CircleHelp size={14} />, run: () => addPart("part", target, "cylinder") },
+        { label: "Stud", icon: <CircleHelp size={14} />, run: () => addPart("part", target, "stud") },
         { label: "Tool", icon: <Package size={14} />, run: () => addPart("tool", target) },
         { label: "Handle", icon: <Move3D size={14} />, run: () => addPart("handle", target) },
         { label: "Sound", icon: <Volume2 size={14} />, run: () => addPart("sound", target) },
@@ -2151,6 +2170,7 @@ end)
             <SceneViewport
               objects={project.objects}
               gui={project.gui}
+              lighting={project.lighting}
               selectedWorldIds={activeWorldIds}
               selectedGuiId={selectedGui?.id ?? null}
               showGui={workspace === "ui"}
@@ -2244,6 +2264,12 @@ end)
             updateProject((current) => ({
               ...current,
               playerSettings: { ...current.playerSettings, ...patch },
+            }))
+          }
+          onLightingChange={(patch) =>
+            updateProject((current) => ({
+              ...current,
+              lighting: { ...current.lighting, ...patch },
             }))
           }
           onLeaderstatsChange={(leaderstats) =>
@@ -2889,6 +2915,12 @@ function Explorer({
             <ValueTree key={value.id} value={value} project={project} selection={selection} onSelect={onSelect} onContextMenu={onContextMenu} />
           ))}
         </TreeRoot>
+        <TreeItem
+          active={selection?.type === "service" && selection.id === "Lighting"}
+          icon={<Sun size={14} />}
+          label="Lighting"
+          onClick={() => onSelect({ type: "service", id: "Lighting" })}
+        />
         <TreeRoot
           icon={<UserRound size={14} />}
           label="Players"
@@ -3436,69 +3468,95 @@ function PanelHeading({ icon, title }: { icon: ReactNode; title: string }) {
 function CameraControls({ enabled }: { enabled: boolean }) {
   const { camera, gl } = useThree();
   useEffect(() => {
-    const controls = new OrbitControls(camera, gl.domElement);
-    controls.enabled = enabled;
-    controls.target.set(0, 1, 0);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
-    controls.maxPolarAngle = Math.PI * 0.49;
-    controls.minDistance = 4;
-    controls.maxDistance = 80;
     const pressed = new Set<string>();
     const forward = new Vector3();
     const right = new Vector3();
     const movement = new Vector3();
-    const direction = new Vector3();
-    const nextDirection = new Vector3();
     const up = new Vector3(0, 1, 0);
+    camera.rotation.order = "YXZ";
+    let yaw = camera.rotation.y;
+    let pitch = camera.rotation.x;
+    let looking = false;
+    let activePointerId: number | null = null;
     const supportedKeys = new Set([
       "KeyW",
       "KeyA",
       "KeyS",
       "KeyD",
+      "KeyQ",
+      "KeyE",
+      "ShiftLeft",
+      "ShiftRight",
       "ArrowUp",
       "ArrowDown",
       "ArrowLeft",
       "ArrowRight",
     ]);
-    const rotateView = (yaw: number, pitch: number) => {
-      camera.getWorldDirection(direction).normalize();
-      const viewDistance = Math.max(
-        1,
-        camera.position.distanceTo(controls.target),
+    const applyLook = (yawDelta: number, pitchDelta: number) => {
+      yaw -= yawDelta;
+      pitch = Math.max(
+        -Math.PI * 0.495,
+        Math.min(Math.PI * 0.495, pitch - pitchDelta),
       );
-      if (yaw !== 0) direction.applyAxisAngle(up, yaw);
-      if (pitch !== 0) {
-        right.crossVectors(direction, up).normalize();
-        nextDirection.copy(direction).applyAxisAngle(right, pitch);
-        if (Math.abs(nextDirection.y) < 0.96) {
-          direction.copy(nextDirection);
-        }
-      }
-      controls.target
-        .copy(camera.position)
-        .addScaledVector(direction.normalize(), viewDistance);
+      camera.rotation.set(pitch, yaw, 0, "YXZ");
     };
     gl.domElement.tabIndex = 0;
-    const focusViewport = () => gl.domElement.focus({ preventScroll: true });
+    const onPointerDown = (event: PointerEvent) => {
+      gl.domElement.focus({ preventScroll: true });
+      if (!enabled || event.button !== 2) return;
+      event.preventDefault();
+      looking = true;
+      activePointerId = event.pointerId;
+      gl.domElement.setPointerCapture(event.pointerId);
+      gl.domElement.style.cursor = "grabbing";
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      if (!enabled || !looking || event.pointerId !== activePointerId) return;
+      applyLook(event.movementX * 0.003, event.movementY * 0.003);
+    };
+    const stopLooking = (event?: PointerEvent) => {
+      if (
+        event &&
+        activePointerId !== null &&
+        event.pointerId !== activePointerId
+      ) {
+        return;
+      }
+      if (
+        activePointerId !== null &&
+        gl.domElement.hasPointerCapture(activePointerId)
+      ) {
+        gl.domElement.releasePointerCapture(activePointerId);
+      }
+      looking = false;
+      activePointerId = null;
+      gl.domElement.style.cursor = "";
+    };
+    const onWheel = (event: WheelEvent) => {
+      if (!enabled) return;
+      event.preventDefault();
+      camera.getWorldDirection(forward).normalize();
+      camera.position.addScaledVector(
+        forward,
+        Math.max(-8, Math.min(8, -event.deltaY * 0.015)),
+      );
+    };
+    const preventContextMenu = (event: MouseEvent) => event.preventDefault();
     const onKeyDown = (event: KeyboardEvent) => {
       if (!supportedKeys.has(event.code)) return;
       event.preventDefault();
       pressed.add(event.code);
-      if (!event.repeat) {
-        const lookStep = Math.PI / 90;
-        if (event.code === "ArrowLeft") rotateView(lookStep, 0);
-        if (event.code === "ArrowRight") rotateView(-lookStep, 0);
-        if (event.code === "ArrowUp") rotateView(0, lookStep);
-        if (event.code === "ArrowDown") rotateView(0, -lookStep);
-        controls.update();
-      }
     };
     const onKeyUp = (event: KeyboardEvent) => {
       pressed.delete(event.code);
     };
     const clearKeys = () => pressed.clear();
-    gl.domElement.addEventListener("pointerdown", focusViewport);
+    gl.domElement.addEventListener("pointerdown", onPointerDown);
+    gl.domElement.addEventListener("pointermove", onPointerMove);
+    gl.domElement.addEventListener("pointerup", stopLooking);
+    gl.domElement.addEventListener("pointercancel", stopLooking);
+    gl.domElement.addEventListener("wheel", onWheel, { passive: false });
+    gl.domElement.addEventListener("contextmenu", preventContextMenu);
     gl.domElement.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", clearKeys);
@@ -3507,27 +3565,22 @@ function CameraControls({ enabled }: { enabled: boolean }) {
     let frameId = requestAnimationFrame(function frame(time) {
       const delta = Math.min(0.05, Math.max(0, (time - previousTime) / 1000));
       previousTime = time;
-      if (enabled && pressed.size > 0) {
-        camera.getWorldDirection(direction).normalize();
-
-        const yaw =
-          (Number(pressed.has("ArrowLeft")) -
-            Number(pressed.has("ArrowRight"))) *
-          0.62 *
+      if (enabled) {
+        const yawInput =
+          (Number(pressed.has("ArrowRight")) -
+            Number(pressed.has("ArrowLeft"))) *
+          0.8 *
           delta;
-        const pitch =
-          (Number(pressed.has("ArrowUp")) -
-            Number(pressed.has("ArrowDown"))) *
-          0.5 *
+        const pitchInput =
+          (Number(pressed.has("ArrowDown")) -
+            Number(pressed.has("ArrowUp"))) *
+          0.7 *
           delta;
-        if (yaw !== 0 || pitch !== 0) {
-          rotateView(yaw, pitch);
-          camera.getWorldDirection(direction).normalize();
+        if (yawInput !== 0 || pitchInput !== 0) {
+          applyLook(yawInput, pitchInput);
         }
 
-        forward.copy(direction).setY(0);
-        if (forward.lengthSq() < 0.0001) forward.set(0, 0, -1);
-        forward.normalize();
+        camera.getWorldDirection(forward).normalize();
         right.crossVectors(forward, up).normalize();
         movement
           .set(0, 0, 0)
@@ -3538,23 +3591,32 @@ function CameraControls({ enabled }: { enabled: boolean }) {
           .addScaledVector(
             right,
             Number(pressed.has("KeyD")) - Number(pressed.has("KeyA")),
+          )
+          .addScaledVector(
+            up,
+            Number(pressed.has("KeyE")) - Number(pressed.has("KeyQ")),
           );
         if (movement.lengthSq() > 0) {
-          movement.normalize().multiplyScalar(8 * delta);
+          const fast =
+            pressed.has("ShiftLeft") || pressed.has("ShiftRight");
+          movement.normalize().multiplyScalar((fast ? 24 : 10) * delta);
           camera.position.add(movement);
-          controls.target.add(movement);
         }
       }
-      controls.update();
       frameId = requestAnimationFrame(frame);
     });
     return () => {
       cancelAnimationFrame(frameId);
-      gl.domElement.removeEventListener("pointerdown", focusViewport);
+      stopLooking();
+      gl.domElement.removeEventListener("pointerdown", onPointerDown);
+      gl.domElement.removeEventListener("pointermove", onPointerMove);
+      gl.domElement.removeEventListener("pointerup", stopLooking);
+      gl.domElement.removeEventListener("pointercancel", stopLooking);
+      gl.domElement.removeEventListener("wheel", onWheel);
+      gl.domElement.removeEventListener("contextmenu", preventContextMenu);
       gl.domElement.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", clearKeys);
-      controls.dispose();
     };
   }, [camera, enabled, gl]);
   return null;
@@ -3563,6 +3625,7 @@ function CameraControls({ enabled }: { enabled: boolean }) {
 function SceneViewport({
   objects,
   gui,
+  lighting,
   selectedWorldIds,
   selectedGuiId,
   showGui,
@@ -3578,6 +3641,7 @@ function SceneViewport({
 }: {
   objects: StudioObject[];
   gui: StudioGuiObject[];
+  lighting: StudioProject["lighting"];
   selectedWorldIds: string[];
   selectedGuiId: string | null;
   showGui: boolean;
@@ -3610,14 +3674,17 @@ function SceneViewport({
       <Canvas
         shadows
         camera={{ position: [16, 13, 18], fov: 48, near: 0.1, far: 300 }}
-        onPointerMissed={() => {
-          if (tool === "select" && !transforming) onSelectWorld(null);
+        onPointerMissed={(event) => {
+          if (
+            event.button === 0 &&
+            tool === "select" &&
+            !transforming
+          ) {
+            onSelectWorld(null);
+          }
         }}
       >
-        <color attach="background" args={["#0B0B10"]} />
-        <fog attach="fog" args={["#0B0B10", 45, 120]} />
-        <ambientLight intensity={1.2} color="#B9B3D1" />
-        <directionalLight position={[-12, 20, 8]} intensity={2.5} color="#F1ECFF" castShadow />
+        <LightingRig lighting={lighting} />
         <gridHelper args={[120, 120, new Color("#3B3150"), new Color("#201D29")]} position={[0, 0.015, 0]} />
         {objects.filter((object) => object.visible !== false).map((object) => (
           <mesh
@@ -3627,7 +3694,8 @@ function SceneViewport({
             scale={object.scale}
             castShadow={object.castShadow}
             receiveShadow
-            onClick={(event) => {
+            onPointerDown={(event) => {
+              if (event.button !== 0) return;
               event.stopPropagation();
               onSelectWorld(
                 object.id,
@@ -3647,7 +3715,7 @@ function SceneViewport({
               </>
             ) : (
               <>
-                <boxGeometry args={[1, 1, 1]} />
+                <StudioPartGeometry shape={object.shape ?? "block"} />
                 <StudioSurfaceMaterial
                   object={object}
                   selected={selectedWorldIds.includes(object.id)}
@@ -3656,7 +3724,7 @@ function SceneViewport({
             )}
             {selectedWorldIds.includes(object.id) && (
               <mesh scale={1.012}>
-                <boxGeometry args={[1, 1, 1]} />
+                <StudioPartGeometry shape={object.shape ?? "block"} />
                 <meshBasicMaterial color="#B78CFF" wireframe />
               </mesh>
             )}
@@ -3689,7 +3757,7 @@ function SceneViewport({
         {tool === "select"
           ? "Click parts to select"
           : `Drag handles to ${tool}`}{" "}
-        | WASD move | Arrow keys look | Right drag orbit | Wheel zoom
+        | WASD move | Q/E vertical | Right drag look | Wheel dolly
       </div>
     </div>
   );
@@ -4042,6 +4110,7 @@ function Properties({
   onScriptChange,
   onValueChange,
   onPlayerChange,
+  onLightingChange,
   onLeaderstatsChange,
   onDelete,
   onUngroup,
@@ -4056,6 +4125,7 @@ function Properties({
   onScriptChange: (patch: Partial<StudioScript>) => void;
   onValueChange: (patch: Partial<StudioValueObject>) => void;
   onPlayerChange: (patch: Partial<StudioProject["playerSettings"]>) => void;
+  onLightingChange: (patch: Partial<StudioProject["lighting"]>) => void;
   onLeaderstatsChange: (leaderstats: StudioProject["leaderstats"]) => void;
   onDelete: () => void;
   onUngroup: () => void;
@@ -4144,6 +4214,21 @@ function Properties({
             </PropertySection>
           )}
           {world.type !== "sound" && <PropertySection title="Appearance">
+            <SelectField
+              label="Shape"
+              value={world.shape ?? "block"}
+              options={[
+                { value: "block", label: "Block" },
+                { value: "sphere", label: "Sphere" },
+                { value: "cylinder", label: "Cylinder" },
+                { value: "stud", label: "Stud" },
+              ]}
+              onChange={(shape) =>
+                onWorldChange({
+                  shape: shape as NonNullable<StudioObject["shape"]>,
+                })
+              }
+            />
             <ColorField label="Color" value={world.color} onChange={(color) => onWorldChange({ color })} />
             <SelectField
               label="Material"
@@ -4439,6 +4524,11 @@ function Properties({
       ) : selection.type === "player" ? (
         <div className="properties-content">
           <ReadOnlyField label="Name" value="LocalPlayer" />
+          <PropertySection title="Player data">
+            <ReadOnlyField label="UserId" value="Current account ID at runtime" />
+            <ReadOnlyField label="Username" value="Current account username" />
+            <ReadOnlyField label="DisplayName" value="Current account display name" />
+          </PropertySection>
           <PropertySection title="Character">
             <NumberField label="Health" value={project.playerSettings.health} minimum={0} maximum={project.playerSettings.maxHealth} step={1} onChange={(health) => onPlayerChange({ health })} />
             <NumberField label="WalkSpeed" value={project.playerSettings.walkSpeed} minimum={1} maximum={500} step={1} onChange={(walkSpeed) => onPlayerChange({ walkSpeed })} />
@@ -4456,6 +4546,67 @@ function Properties({
             <LeaderstatsField
               value={project.leaderstats}
               onChange={onLeaderstatsChange}
+            />
+          </PropertySection>
+        </div>
+      ) : selection.type === "service" && selection.id === "Lighting" ? (
+        <div className="properties-content">
+          <ReadOnlyField label="Name" value="Lighting" />
+          <PropertySection title="Time and brightness">
+            <NumberField
+              label="ClockTime"
+              value={project.lighting.clockTime}
+              minimum={0}
+              maximum={24}
+              step={0.25}
+              onChange={(clockTime) => onLightingChange({ clockTime })}
+            />
+            <NumberField
+              label="Brightness"
+              value={project.lighting.brightness}
+              minimum={0}
+              maximum={8}
+              step={0.1}
+              onChange={(brightness) => onLightingChange({ brightness })}
+            />
+          </PropertySection>
+          <PropertySection title="Colors">
+            <ColorField label="Ambient" value={project.lighting.ambient} onChange={(ambient) => onLightingChange({ ambient })} />
+            <ColorField label="OutdoorAmbient" value={project.lighting.outdoorAmbient} onChange={(outdoorAmbient) => onLightingChange({ outdoorAmbient })} />
+            <ColorField label="SkyColor" value={project.lighting.skyColor} onChange={(skyColor) => onLightingChange({ skyColor })} />
+            <ColorField label="FogColor" value={project.lighting.fogColor} onChange={(fogColor) => onLightingChange({ fogColor })} />
+          </PropertySection>
+          <PropertySection title="Fog">
+            <NumberField
+              label="FogStart"
+              value={project.lighting.fogStart}
+              minimum={0}
+              maximum={Math.max(0, project.lighting.fogEnd - 1)}
+              step={1}
+              onChange={(fogStart) => onLightingChange({ fogStart })}
+            />
+            <NumberField
+              label="FogEnd"
+              value={project.lighting.fogEnd}
+              minimum={project.lighting.fogStart + 1}
+              maximum={10_000}
+              step={5}
+              onChange={(fogEnd) => onLightingChange({ fogEnd })}
+            />
+          </PropertySection>
+          <PropertySection title="Shadows">
+            <ToggleField
+              label="GlobalShadows"
+              value={project.lighting.globalShadows}
+              onChange={(globalShadows) => onLightingChange({ globalShadows })}
+            />
+            <NumberField
+              label="ShadowSoftness"
+              value={project.lighting.shadowSoftness}
+              minimum={0}
+              maximum={1}
+              step={0.05}
+              onChange={(shadowSoftness) => onLightingChange({ shadowSoftness })}
             />
           </PropertySection>
         </div>
@@ -4532,6 +4683,20 @@ function PropertyLabel({ label }: { label: string }) {
       )}
     </span>
   );
+}
+
+function StudioPartGeometry({
+  shape,
+}: {
+  shape: NonNullable<StudioObject["shape"]>;
+}) {
+  if (shape === "sphere") {
+    return <sphereGeometry args={[0.5, 32, 20]} />;
+  }
+  if (shape === "cylinder" || shape === "stud") {
+    return <cylinderGeometry args={[0.5, 0.5, 1, 32]} />;
+  }
+  return <boxGeometry args={[1, 1, 1]} />;
 }
 
 function NameField({ value, onChange }: { value: string; onChange: (value: string) => void }) {

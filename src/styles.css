@@ -2149,6 +2149,75 @@ h3,
   margin: 12px 0 8px;
 }
 
+.profile-description {
+  min-height: 24px;
+  color: #f3eef8;
+  line-height: 1.55;
+}
+
+.profile-description-button {
+  border: 0;
+  background: transparent;
+  color: #d4c4ff;
+  padding: 0;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.profile-description-button:hover {
+  color: #fff;
+  text-decoration: underline;
+}
+
+.profile-description-editor {
+  display: grid;
+  max-width: 560px;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.profile-description-editor textarea {
+  width: 100%;
+  min-height: 92px;
+  resize: vertical;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
+  outline: 0;
+  background: rgba(10, 9, 15, 0.78);
+  color: #fff;
+  padding: 12px;
+  font: inherit;
+  line-height: 1.5;
+}
+
+.profile-description-editor textarea:focus {
+  border-color: rgba(167, 125, 255, 0.85);
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.18);
+}
+
+.profile-description-editor > div {
+  display: flex;
+  gap: 8px;
+}
+
+.profile-description-editor .primary-button,
+.profile-description-editor .secondary-button {
+  width: auto;
+  min-width: 90px;
+  padding: 9px 15px;
+}
+
+.profile-description-status {
+  display: block;
+  margin-top: 9px;
+}
+
+.profile-joined {
+  color: #d7d0df;
+  font-size: 13px;
+}
+
 .profile-stats {
   display: flex;
   gap: 50px;

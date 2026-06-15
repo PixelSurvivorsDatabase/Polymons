@@ -81,6 +81,7 @@ function createPreviewProject(
         position: [0, -0.5, 0],
         rotation: [0, 0, 0],
         scale: [40, 1, 40],
+        shape: "block",
         color: "#405946",
         anchored: true,
         visible: true,
@@ -100,6 +101,7 @@ function createPreviewProject(
         position: [0, 0.15, 5],
         rotation: [0, 0, 0],
         scale: [4, 0.3, 4],
+        shape: "block",
         color: "#5b3d91",
         anchored: true,
         visible: true,
@@ -119,6 +121,7 @@ function createPreviewProject(
         position: [0, 2, 0],
         rotation: [0, 0, 0],
         scale: [4, 4, 4],
+        shape: "block",
         color: "#342856",
         anchored: true,
         visible: true,
@@ -162,6 +165,18 @@ function createPreviewProject(
       sprintEnabled: true,
       sprintMultiplier: 1.5,
     },
+    lighting: {
+      clockTime: 14,
+      brightness: 2,
+      ambient: "#8A8A8A",
+      outdoorAmbient: "#A7B0A0",
+      skyColor: "#8EC8ED",
+      fogColor: "#A9D4EE",
+      fogStart: 90,
+      fogEnd: 260,
+      globalShadows: true,
+      shadowSoftness: 0.25,
+    },
     leaderstats: [
       {
         id: crypto.randomUUID(),
@@ -200,8 +215,10 @@ if (isPreview && !window.polyStudio) {
   const previewAuth: StudioAuth = {
     user: {
       id: "preview-user",
+      polymonsId: 2,
       username: "lava",
       displayName: "lava",
+      description: "",
       avatarUrl: null,
       equippedShirtId: "polymon-shirt",
     },

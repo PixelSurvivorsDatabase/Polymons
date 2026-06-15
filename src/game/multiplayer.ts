@@ -10,6 +10,7 @@ export type PlayerTransform = {
 export type RemotePlayer = {
   id: string;
   userId: string;
+  polymonsId: number;
   username: string;
   displayName: string;
   equippedShirtId: ShirtId | null;
@@ -69,6 +70,8 @@ function isPlayer(value: unknown): value is ServerPlayer {
   return (
     typeof player.id === "string" &&
     typeof player.userId === "string" &&
+    Number.isInteger(player.polymonsId) &&
+    player.polymonsId! > 0 &&
     typeof player.username === "string" &&
     typeof player.displayName === "string" &&
     (player.equippedShirtId === null ||

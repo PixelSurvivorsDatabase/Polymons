@@ -1,7 +1,9 @@
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import {
+  BallCollider,
   CapsuleCollider,
   CuboidCollider,
+  CylinderCollider,
   Physics,
   RigidBody,
   type CollisionPayload,
@@ -46,11 +48,14 @@ import type {
   PolyAnimation,
   PolyGuiObject,
   PolyLeaderstat,
+  PolyLightingSettings,
   PolyPlayerSettings,
   PolySoundRequest,
   PolyTweenRequest,
   PolyWorldObject,
 } from "./polyProject";
+import { DEFAULT_LIGHTING_SETTINGS } from "./polyProject";
+import { LightingRig } from "./LightingRig";
 import { createSurfaceTexture } from "./surfaceTextures";
 
 type InputState = {
@@ -1408,11 +1413,7 @@ function ProjectBlock({
     );
     if (scaled.current) {
       const size = lerpVector(tween.from.scale, tween.to.scale);
-      scaled.current.scale.set(
-        size[0] / Math.max(0.001, tween.to.scale[0]),
-        size[1] / Math.max(0.001, tween.to.scale[1]),
-        size[2] / Math.max(0.001, tween.to.scale[2]),
-      );
+      scaled.current.scale.set(...size);
     }
     if (meshMaterial.current) {
       meshMaterial.current.opacity =
@@ -1440,12 +1441,12 @@ function ProjectBlock({
   }[object.material];
   const content = (
     <group ref={animated}>
-      <group ref={scaled}>
+      <group ref={scaled} scale={object.scale}>
         <mesh
           castShadow={object.castShadow && object.transparency < 0.95}
           receiveShadow={object.transparency < 0.95}
         >
-          <boxGeometry args={object.scale} />
+          <ProjectPartGeometry shape={object.shape ?? "block"} />
           <meshStandardMaterial
             ref={meshMaterial}
             key={`${object.material}-${object.surfaceTexture}`}
@@ -1487,12 +1488,8 @@ function ProjectBlock({
       rotation={object.rotation}
       ccd={!object.anchored}
     >
-      <CuboidCollider
-        args={[
-          Math.max(0.01, object.scale[0] / 2),
-          Math.max(0.01, object.scale[1] / 2),
-          Math.max(0.01, object.scale[2] / 2),
-        ]}
+      <ProjectPartCollider
+        object={object}
         sensor={!object.canCollide}
         friction={object.friction ?? 0.82}
         restitution={object.restitution ?? 0.03}
@@ -1507,23 +1504,84 @@ function ProjectBlock({
   );
 }
 
-function BaseplateWorld() {
-  return (
-    <>
-      <color attach="background" args={["#8ec8ed"]} />
-      <fog attach="fog" args={["#8ec8ed", 38, 86]} />
-      <hemisphereLight args={["#dff3ff", "#556b3f", 1.75]} />
-      <directionalLight
-        position={[-14, 22, 9]}
-        intensity={2.6}
-        castShadow
-        shadow-mapSize={[2048, 2048]}
-        shadow-camera-left={-36}
-        shadow-camera-right={36}
-        shadow-camera-top={36}
-        shadow-camera-bottom={-36}
+function ProjectPartGeometry({
+  shape,
+}: {
+  shape: NonNullable<PolyWorldObject["shape"]>;
+}) {
+  if (shape === "sphere") {
+    return <sphereGeometry args={[0.5, 32, 20]} />;
+  }
+  if (shape === "cylinder" || shape === "stud") {
+    return <cylinderGeometry args={[0.5, 0.5, 1, 32]} />;
+  }
+  return <boxGeometry args={[1, 1, 1]} />;
+}
+
+function ProjectPartCollider({
+  object,
+  sensor,
+  friction,
+  restitution,
+  mass,
+  onCollisionEnter,
+  onCollisionExit,
+  onIntersectionEnter,
+  onIntersectionExit,
+}: {
+  object: PolyWorldObject;
+  sensor: boolean;
+  friction: number;
+  restitution: number;
+  mass: number;
+  onCollisionEnter: (payload: CollisionPayload) => void;
+  onCollisionExit: (payload: CollisionPayload) => void;
+  onIntersectionEnter: (payload: CollisionPayload) => void;
+  onIntersectionExit: (payload: CollisionPayload) => void;
+}) {
+  const common = {
+    sensor,
+    friction,
+    restitution,
+    mass,
+    onCollisionEnter,
+    onCollisionExit,
+    onIntersectionEnter,
+    onIntersectionExit,
+  };
+  if (object.shape === "sphere") {
+    return (
+      <BallCollider
+        args={[
+          Math.max(
+            0.01,
+            Math.min(object.scale[0], object.scale[1], object.scale[2]) / 2,
+          ),
+        ]}
+        {...common}
       />
-    </>
+    );
+  }
+  if (object.shape === "cylinder" || object.shape === "stud") {
+    return (
+      <CylinderCollider
+        args={[
+          Math.max(0.01, object.scale[1] / 2),
+          Math.max(0.01, Math.min(object.scale[0], object.scale[2]) / 2),
+        ]}
+        {...common}
+      />
+    );
+  }
+  return (
+    <CuboidCollider
+      args={[
+        Math.max(0.01, object.scale[0] / 2),
+        Math.max(0.01, object.scale[1] / 2),
+        Math.max(0.01, object.scale[2] / 2),
+      ]}
+      {...common}
+    />
   );
 }
 
@@ -1542,6 +1600,8 @@ function Scene({
   soundRequests,
   soundVersion,
   playerSettings,
+  lighting,
+  shadows,
   spawn,
   onWorldTouched,
   onWorldTouchEnded,
@@ -1563,6 +1623,8 @@ function Scene({
   soundRequests: PolySoundRequest[];
   soundVersion: number;
   playerSettings: PolyPlayerSettings;
+  lighting: PolyLightingSettings;
+  shadows: boolean;
   spawn: { x: number; y: number; z: number };
   onWorldTouched?: (worldObjectId: string) => void;
   onWorldTouchEnded?: (worldObjectId: string) => void;
@@ -1607,7 +1669,7 @@ function Scene({
         onPointerLock={onPointerLock}
         playerSettings={playerSettings}
       />
-      <BaseplateWorld />
+      <LightingRig lighting={lighting} shadows={shadows} />
       <Physics gravity={[0, -24, 0]} timeStep="vary" colliders={false}>
         {death ? (
           <>
@@ -1994,6 +2056,7 @@ export default function BaseplateGame({
     sprintEnabled: true,
     sprintMultiplier: 1.5,
   },
+  lighting = DEFAULT_LIGHTING_SETTINGS,
   leaderstats = [],
   projectName = "Baseplate",
   localPlayer,
@@ -2020,6 +2083,7 @@ export default function BaseplateGame({
   soundVersion?: number;
   guiObjects?: PolyGuiObject[];
   playerSettings?: PolyPlayerSettings;
+  lighting?: PolyLightingSettings;
   leaderstats?: PolyLeaderstat[];
   projectName?: string;
   localPlayer?: {
@@ -2220,7 +2284,7 @@ export default function BaseplateGame({
           position: [0, 5.5, 12],
           fov: playerSettings.cameraFieldOfView,
           near: 0.1,
-          far: 140,
+          far: Math.max(300, lighting.fogEnd + 50),
         }}
         gl={{ antialias: true }}
       >
@@ -2240,6 +2304,8 @@ export default function BaseplateGame({
             soundRequests={[...soundRequests, ...localSoundRequests]}
             soundVersion={soundVersion + localSoundVersion}
             playerSettings={playerSettings}
+            lighting={lighting}
+            shadows={graphicsMode === "high"}
             spawn={spawn}
             onWorldTouched={onWorldTouched}
             onWorldTouchEnded={onWorldTouchEnded}

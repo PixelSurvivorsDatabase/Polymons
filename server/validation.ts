@@ -31,6 +31,10 @@ export const refreshSchema = z.object({
   refreshToken: z.string().min(1),
 });
 
+export const profileUpdateSchema = z.object({
+  description: z.string().trim().max(500),
+});
+
 export const playSessionSchema = z.object({
   gameId: z.string().trim().min(1).max(64),
 });

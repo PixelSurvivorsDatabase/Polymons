@@ -19,6 +19,7 @@ export type PolyWorldObject = {
   position: [number, number, number];
   rotation: [number, number, number];
   scale: [number, number, number];
+  shape?: "block" | "sphere" | "cylinder" | "stud";
   color: string;
   anchored: boolean;
   visible?: boolean;
@@ -119,6 +120,32 @@ export type PolyPlayerSettings = {
   sprintMultiplier: number;
 };
 
+export type PolyLightingSettings = {
+  clockTime: number;
+  brightness: number;
+  ambient: string;
+  outdoorAmbient: string;
+  skyColor: string;
+  fogColor: string;
+  fogStart: number;
+  fogEnd: number;
+  globalShadows: boolean;
+  shadowSoftness: number;
+};
+
+export const DEFAULT_LIGHTING_SETTINGS: PolyLightingSettings = {
+  clockTime: 14,
+  brightness: 2,
+  ambient: "#8A8A8A",
+  outdoorAmbient: "#A7B0A0",
+  skyColor: "#8EC8ED",
+  fogColor: "#A9D4EE",
+  fogStart: 90,
+  fogEnd: 260,
+  globalShadows: true,
+  shadowSoftness: 0.25,
+};
+
 export type PolyLeaderstat = {
   id: string;
   name: string;
@@ -168,6 +195,7 @@ export type PolyProject = {
   scripts: PolyScript[];
   gui: PolyGuiObject[];
   playerSettings: PolyPlayerSettings;
+  lighting?: PolyLightingSettings;
   leaderstats: PolyLeaderstat[];
   animations: PolyAnimation[];
   values: PolyValueObject[];
@@ -190,6 +218,7 @@ export type PolyDiagnostic = {
 
 export type PolyRuntimeResult = {
   project: PolyProject;
+  playerData: PolyPlayerData;
   diagnostics: Array<PolyDiagnostic & { scriptId: string; scriptName: string }>;
   output: Array<{
     level: "info" | "warning" | "error";
@@ -202,6 +231,12 @@ export type PolyRuntimeResult = {
   tweenVersion: number;
   soundRequests: PolySoundRequest[];
   soundVersion: number;
+};
+
+export type PolyPlayerData = {
+  userId: number;
+  username: string;
+  displayName: string;
 };
 
 export type PolySoundRequest = {
@@ -249,6 +284,7 @@ const WORLD_PROPERTIES = new Set([
   "Position",
   "Rotation",
   "Size",
+  "Shape",
   "Color",
   "Anchored",
   "Visible",
@@ -290,6 +326,9 @@ const GUI_PROPERTIES = new Set([
   "CanvasSize",
 ]);
 const PLAYER_PROPERTIES = new Set([
+  "UserId",
+  "Username",
+  "DisplayName",
   "Health",
   "WalkSpeed",
   "JumpPower",
@@ -300,6 +339,29 @@ const PLAYER_PROPERTIES = new Set([
   "SprintEnabled",
   "SprintMultiplier",
 ]);
+const LIGHTING_PROPERTIES = new Set([
+  "ClockTime",
+  "Brightness",
+  "Ambient",
+  "OutdoorAmbient",
+  "SkyColor",
+  "FogColor",
+  "FogStart",
+  "FogEnd",
+  "GlobalShadows",
+  "ShadowSoftness",
+]);
+const READ_ONLY_PLAYER_PROPERTIES = new Set([
+  "UserId",
+  "Username",
+  "DisplayName",
+]);
+const DEFAULT_PLAYER_DATA: PolyPlayerData = {
+  userId: 0,
+  username: "localplayer",
+  displayName: "LocalPlayer",
+};
+const projectPlayerData = new WeakMap<PolyProject, PolyPlayerData>();
 
 const SERVER_SCRIPT_PARENTS = new Set(["Workspace", "ServerScriptService"]);
 const LOCAL_SCRIPT_PARENTS = new Set(["StarterPlayerScripts", "StarterGui"]);
@@ -319,6 +381,7 @@ export function normalizePolyProject(project: PolyProject): PolyProject {
   const normalized = cloneProject(project);
   normalized.objects = normalized.objects.map((object) => ({
     ...object,
+    shape: object.shape ?? "block",
     visible: object.visible ?? true,
     transparency: object.transparency ?? 0,
     material: object.material ?? "plastic",
@@ -407,6 +470,44 @@ export function normalizePolyProject(project: PolyProject): PolyProject {
     sprintEnabled: normalized.playerSettings?.sprintEnabled ?? true,
     sprintMultiplier: normalized.playerSettings?.sprintMultiplier ?? 1.5,
   };
+  normalized.lighting = {
+    clockTime: Math.max(
+      0,
+      Math.min(24, normalized.lighting?.clockTime ?? DEFAULT_LIGHTING_SETTINGS.clockTime),
+    ),
+    brightness: Math.max(
+      0,
+      Math.min(8, normalized.lighting?.brightness ?? DEFAULT_LIGHTING_SETTINGS.brightness),
+    ),
+    ambient: normalized.lighting?.ambient ?? DEFAULT_LIGHTING_SETTINGS.ambient,
+    outdoorAmbient:
+      normalized.lighting?.outdoorAmbient ??
+      DEFAULT_LIGHTING_SETTINGS.outdoorAmbient,
+    skyColor: normalized.lighting?.skyColor ?? DEFAULT_LIGHTING_SETTINGS.skyColor,
+    fogColor: normalized.lighting?.fogColor ?? DEFAULT_LIGHTING_SETTINGS.fogColor,
+    fogStart: Math.max(
+      0,
+      normalized.lighting?.fogStart ?? DEFAULT_LIGHTING_SETTINGS.fogStart,
+    ),
+    fogEnd: Math.max(
+      Math.max(
+        0,
+        normalized.lighting?.fogStart ?? DEFAULT_LIGHTING_SETTINGS.fogStart,
+      ) + 1,
+      normalized.lighting?.fogEnd ?? DEFAULT_LIGHTING_SETTINGS.fogEnd,
+    ),
+    globalShadows:
+      normalized.lighting?.globalShadows ??
+      DEFAULT_LIGHTING_SETTINGS.globalShadows,
+    shadowSoftness: Math.max(
+      0,
+      Math.min(
+        1,
+        normalized.lighting?.shadowSoftness ??
+          DEFAULT_LIGHTING_SETTINGS.shadowSoftness,
+      ),
+    ),
+  };
   normalized.description ??= "";
   normalized.leaderstats = (normalized.leaderstats ?? []).map((stat) => ({
     ...stat,
@@ -486,6 +587,22 @@ function referenceByName(
     (item) => item.parent === container && item.name === name,
   );
   return value ? { kind: "value", id: value.id } : null;
+}
+
+function runtimeProject(
+  input: PolyProject,
+  playerData?: PolyPlayerData,
+): PolyProject {
+  const project = normalizePolyProject(input);
+  projectPlayerData.set(
+    project,
+    playerData ?? projectPlayerData.get(input) ?? DEFAULT_PLAYER_DATA,
+  );
+  return project;
+}
+
+function localPlayerData(project: PolyProject): PolyPlayerData {
+  return projectPlayerData.get(project) ?? DEFAULT_PLAYER_DATA;
 }
 
 function referenceForId(project: PolyProject, id: string): Reference | null {
@@ -611,6 +728,7 @@ function resolveReferenceExpression(
               "ServerScriptService",
               "StarterPlayerScripts",
               "Players",
+              "Lighting",
             ].includes(parts[0])
           ? { kind: "service", id: parts[0] }
           : null);
@@ -631,7 +749,7 @@ function findReferenceDeclaration(
   variables?: ReadonlyMap<string, Reference>,
 ): { variable: string; reference: Reference | null; requestedName: string } | null {
   const pathMatch = source.match(
-    /^\s*(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*((?:script|Script|Workspace|workspace|PlayerGui|StarterGui|ReplicatedStorage|ServerStorage|ServerScriptService|StarterPlayerScripts|Players)(?:(?::FindFirstChild|\.Find)\(\s*["'][A-Za-z_]\w*["']\s*\)|\.(?!Find\s*\()[A-Za-z_]\w*)+)\s*;?\s*$/,
+    /^\s*(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*((?:script|Script|Workspace|workspace|PlayerGui|StarterGui|ReplicatedStorage|ServerStorage|ServerScriptService|StarterPlayerScripts|Players|Lighting)(?:(?::FindFirstChild|\.Find)\(\s*["'][A-Za-z_]\w*["']\s*\)|\.(?!Find\s*\()[A-Za-z_]\w*)+)\s*;?\s*$/,
   );
   if (pathMatch) {
     const requestedName =
@@ -689,6 +807,16 @@ function findReferenceDeclaration(
       variable: playerMatch[1],
       reference: { kind: "player", id: "LocalPlayer" },
       requestedName: "LocalPlayer",
+    };
+  }
+  const lightingMatch = source.match(
+    /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*Lighting\s*;?/,
+  );
+  if (lightingMatch) {
+    return {
+      variable: lightingMatch[1],
+      reference: { kind: "service", id: "Lighting" },
+      requestedName: "Lighting",
     };
   }
   return null;
@@ -1293,6 +1421,7 @@ function referencePropertyValue(
   if (reference.kind === "world") {
     const object = project.objects.find((item) => item.id === reference.id);
     if (property === "Name") return object?.name;
+    if (property === "Shape") return object?.shape ?? "block";
     return undefined;
   }
   if (reference.kind === "gui") {
@@ -1302,7 +1431,25 @@ function referencePropertyValue(
     if (property === "Visible") return gui?.visible;
     return undefined;
   }
+  if (reference.kind === "service" && reference.id === "Lighting") {
+    const lighting = project.lighting ?? DEFAULT_LIGHTING_SETTINGS;
+    if (property === "ClockTime") return lighting.clockTime;
+    if (property === "Brightness") return lighting.brightness;
+    if (property === "Ambient") return lighting.ambient;
+    if (property === "OutdoorAmbient") return lighting.outdoorAmbient;
+    if (property === "SkyColor") return lighting.skyColor;
+    if (property === "FogColor") return lighting.fogColor;
+    if (property === "FogStart") return lighting.fogStart;
+    if (property === "FogEnd") return lighting.fogEnd;
+    if (property === "GlobalShadows") return lighting.globalShadows;
+    if (property === "ShadowSoftness") return lighting.shadowSoftness;
+    return undefined;
+  }
   if (reference.kind !== "player") return undefined;
+  const playerData = localPlayerData(project);
+  if (property === "UserId") return playerData.userId;
+  if (property === "Username") return playerData.username;
+  if (property === "DisplayName") return playerData.displayName;
   const leaderstat = project.leaderstats.find((stat) => stat.name === property);
   if (leaderstat) return leaderstat.defaultValue;
   if (property === "Health") return project.playerSettings.health;
@@ -1475,8 +1622,12 @@ function resolveExpressionValue(
   }
   const property = expression.match(/^(.+)\.([A-Za-z_]\w*)$/);
   if (property) {
+    const storedReference = values.get(property[1]);
     const reference =
       variables.get(property[1]) ??
+      (storedReference === "LocalPlayer"
+        ? ({ kind: "player", id: "LocalPlayer" } as const)
+        : null) ??
       resolveReferenceExpression(property[1], project, script, variables);
     if (reference) {
       const value = referencePropertyValue(project, reference, property[2]);
@@ -1484,6 +1635,27 @@ function resolveExpressionValue(
     }
   }
   return parseStoredValue(resolveRawValue(expression, values, modules));
+}
+
+function resolveDataStoreKey(
+  rawKey: string,
+  project: PolyProject,
+  variables: Map<string, Reference>,
+  values: Map<string, PolyStoredValue>,
+  modules: Map<string, Record<string, PolyStoredValue>>,
+  script?: PolyScript,
+): string | null {
+  const value = resolveExpressionValue(
+    rawKey,
+    project,
+    variables,
+    values,
+    modules,
+    script,
+  );
+  if (!["string", "number", "boolean"].includes(typeof value)) return null;
+  const key = String(value);
+  return key.length >= 1 && key.length <= 128 ? key : null;
 }
 
 function propertySetFor(
@@ -1494,11 +1666,10 @@ function propertySetFor(
   if (reference.kind === "gui") return GUI_PROPERTIES;
   if (reference.kind === "remote") return new Set();
   if (reference.kind === "value") return new Set(["Name", "Value"]);
-  if (
-    reference.kind === "model" ||
-    reference.kind === "script" ||
-    reference.kind === "service"
-  ) {
+  if (reference.kind === "service") {
+    return reference.id === "Lighting" ? LIGHTING_PROPERTIES : new Set();
+  }
+  if (reference.kind === "model" || reference.kind === "script") {
     return new Set();
   }
   return new Set([
@@ -1551,8 +1722,65 @@ function assignProperty(
   if (reference.kind === "remote") {
     return "Remote objects do not expose editable properties.";
   }
+  if (
+    reference.kind === "player" &&
+    READ_ONLY_PLAYER_PROPERTIES.has(property)
+  ) {
+    return `${property} is read-only.`;
+  }
   if (!propertySetFor(reference, project).has(property)) {
     return `${property} is not a supported property for this object.`;
+  }
+
+  if (reference.kind === "service" && reference.id === "Lighting") {
+    const lighting = project.lighting ?? { ...DEFAULT_LIGHTING_SETTINGS };
+    project.lighting = lighting;
+    if (
+      ["Ambient", "OutdoorAmbient", "SkyColor", "FogColor"].includes(property)
+    ) {
+      const value = parseString(rawValue);
+      if (!value || !/^#[0-9a-f]{6}$/i.test(value)) {
+        return `${property} must be a hex color string.`;
+      }
+      if (property === "Ambient") lighting.ambient = value;
+      if (property === "OutdoorAmbient") lighting.outdoorAmbient = value;
+      if (property === "SkyColor") lighting.skyColor = value;
+      if (property === "FogColor") lighting.fogColor = value;
+    } else if (property === "GlobalShadows") {
+      const value = parseBoolean(rawValue);
+      if (value === null) return "GlobalShadows must be true or false.";
+      lighting.globalShadows = value;
+    } else {
+      const value = parseNumber(rawValue);
+      if (value === null) return `${property} must be a number.`;
+      if (property === "ClockTime") {
+        if (value < 0 || value > 24) return "ClockTime must be between 0 and 24.";
+        lighting.clockTime = value;
+      }
+      if (property === "Brightness") {
+        if (value < 0 || value > 8) return "Brightness must be between 0 and 8.";
+        lighting.brightness = value;
+      }
+      if (property === "FogStart") {
+        if (value < 0 || value >= lighting.fogEnd) {
+          return "FogStart must be at least 0 and less than FogEnd.";
+        }
+        lighting.fogStart = value;
+      }
+      if (property === "FogEnd") {
+        if (value <= lighting.fogStart || value > 10_000) {
+          return "FogEnd must be greater than FogStart and no greater than 10000.";
+        }
+        lighting.fogEnd = value;
+      }
+      if (property === "ShadowSoftness") {
+        if (value < 0 || value > 1) {
+          return "ShadowSoftness must be between 0 and 1.";
+        }
+        lighting.shadowSoftness = value;
+      }
+    }
+    return null;
   }
 
   if (reference.kind === "world") {
@@ -1588,6 +1816,12 @@ function assignProperty(
         return "Material must be Plastic, Metal, Wood, or Neon.";
       }
       object.material = value as PolyWorldObject["material"];
+    } else if (property === "Shape") {
+      const value = parseString(rawValue)?.toLowerCase();
+      if (!value || !["block", "sphere", "cylinder", "stud"].includes(value)) {
+        return "Shape must be Block, Sphere, Cylinder, or Stud.";
+      }
+      object.shape = value as NonNullable<PolyWorldObject["shape"]>;
     } else if (property === "Texture") {
       const value = parseString(rawValue)?.toLowerCase();
       const textures = [
@@ -2188,15 +2422,17 @@ export function analyzePolyScript(
     }
   }
   const validationProject = cloneProject(project);
+  projectPlayerData.set(validationProject, localPlayerData(project));
   const variables = new Map<string, Reference>();
   const modules = new Map<string, Record<string, PolyStoredValue>>();
   const stores = new Map<string, string>();
   const values = new Map<string, PolyStoredValue>();
-  for (const handler of [
-    ...serverRemoteHandlers,
-    ...clientRemoteHandlers,
-    ...inputHandlers,
-  ]) {
+  for (const handler of serverRemoteHandlers) {
+    for (const [index, parameter] of handler.parameters.entries()) {
+      values.set(parameter, index === 0 ? "LocalPlayer" : null);
+    }
+  }
+  for (const handler of [...clientRemoteHandlers, ...inputHandlers]) {
     for (const parameter of handler.parameters) values.set(parameter, null);
   }
   const lines = script.source.split("\n");
@@ -2255,34 +2491,71 @@ export function analyzePolyScript(
     }
 
     const dataGet = source.match(
-      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)(?::|\.)(?:GetAsync|Get)\(\s*["']([^"']+)["']\s*\)\s*;?/,
+      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)(?::|\.)(?:GetAsync|Get)\(\s*(.+?)\s*\)\s*;?$/,
     );
     if (dataGet) {
       const storeName = stores.get(dataGet[2]);
+      const key = resolveDataStoreKey(
+        dataGet[3],
+        validationProject,
+        variables,
+        values,
+        modules,
+        script,
+      );
       if (!storeName) {
         diagnostics.push(
           lineDiagnostic(line, source, `Unknown data store variable ${dataGet[2]}.`),
         );
+      } else if (!key) {
+        diagnostics.push(
+          lineDiagnostic(
+            line,
+            source,
+            "Data store keys must be strings, numbers, or booleans.",
+          ),
+        );
       } else {
         values.set(
           dataGet[1],
-          validationProject.dataStores[storeName]?.[dataGet[3]] ?? null,
+          validationProject.dataStores[storeName]?.[key] ?? null,
         );
       }
       return;
     }
 
     const dataSet = source.match(
-      /^\s*([A-Za-z_]\w*)(?::|\.)(?:SetAsync|Set)\(\s*["']([^"']+)["']\s*,\s*(.+?)\s*\)\s*;?\s*$/,
+      /^\s*([A-Za-z_]\w*)(?::|\.)(?:SetAsync|Set)\(\s*([^,]+?)\s*,\s*(.+?)\s*\)\s*;?\s*$/,
     );
     if (dataSet) {
+      const key = resolveDataStoreKey(
+        dataSet[2],
+        validationProject,
+        variables,
+        values,
+        modules,
+        script,
+      );
       if (!stores.has(dataSet[1])) {
         diagnostics.push(
           lineDiagnostic(line, source, `Unknown data store variable ${dataSet[1]}.`),
         );
+      } else if (!key) {
+        diagnostics.push(
+          lineDiagnostic(
+            line,
+            source,
+            "Data store keys must be strings, numbers, or booleans.",
+          ),
+        );
       } else {
-        const value = parseStoredValue(
-          resolveRawValue(dataSet[3], values, modules),
+        const value = resolveExpressionValue(
+          dataSet[3],
+          validationProject,
+          variables,
+          values,
+          modules,
+          script,
         );
         if (value === undefined) {
           diagnostics.push(
@@ -2296,7 +2569,7 @@ export function analyzePolyScript(
         }
         const storeName = stores.get(dataSet[1])!;
         validationProject.dataStores[storeName] ??= {};
-        validationProject.dataStores[storeName][dataSet[2]] = value;
+        validationProject.dataStores[storeName][key] = value;
       }
       return;
     }
@@ -3267,11 +3540,19 @@ function executeScript(
       continue;
     }
     const dataDelete = source.match(
-      /^\s*([A-Za-z_]\w*)(?::|\.)(?:RemoveAsync|Delete)\(\s*["']([^"']+)["']\s*\)\s*;?\s*$/,
+      /^\s*([A-Za-z_]\w*)(?::|\.)(?:RemoveAsync|Delete)\(\s*(.+?)\s*\)\s*;?\s*$/,
     );
     if (dataDelete) {
       const storeName = stores.get(dataDelete[1]);
-      if (storeName) delete project.dataStores[storeName]?.[dataDelete[2]];
+      const key = resolveDataStoreKey(
+        dataDelete[2],
+        project,
+        variables,
+        values,
+        modules,
+        script,
+      );
+      if (storeName && key) delete project.dataStores[storeName]?.[key];
       continue;
     }
     const leaderstatCall = source.match(
@@ -3328,29 +3609,50 @@ function executeScript(
       continue;
     }
     const dataGet = source.match(
-      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)(?::|\.)(?:GetAsync|Get)\(\s*["']([^"']+)["']\s*\)\s*;?/,
+      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)(?::|\.)(?:GetAsync|Get)\(\s*(.+?)\s*\)\s*;?$/,
     );
     if (dataGet) {
       const storeName = stores.get(dataGet[2]);
-      if (storeName) {
+      const key = resolveDataStoreKey(
+        dataGet[3],
+        project,
+        variables,
+        values,
+        modules,
+        script,
+      );
+      if (storeName && key) {
         values.set(
           dataGet[1],
-          project.dataStores[storeName]?.[dataGet[3]] ?? null,
+          project.dataStores[storeName]?.[key] ?? null,
         );
       }
       continue;
     }
     const dataSet = source.match(
-      /^\s*([A-Za-z_]\w*)(?::|\.)(?:SetAsync|Set)\(\s*["']([^"']+)["']\s*,\s*(.+?)\s*\)\s*;?\s*$/,
+      /^\s*([A-Za-z_]\w*)(?::|\.)(?:SetAsync|Set)\(\s*([^,]+?)\s*,\s*(.+?)\s*\)\s*;?\s*$/,
     );
     if (dataSet) {
       const storeName = stores.get(dataSet[1]);
-      const value = parseStoredValue(
-        resolveRawValue(dataSet[3], values, modules),
+      const key = resolveDataStoreKey(
+        dataSet[2],
+        project,
+        variables,
+        values,
+        modules,
+        script,
       );
-      if (storeName && value !== undefined) {
+      const value = resolveExpressionValue(
+        dataSet[3],
+        project,
+        variables,
+        values,
+        modules,
+        script,
+      );
+      if (storeName && key && value !== undefined) {
         project.dataStores[storeName] ??= {};
-        project.dataStores[storeName][dataSet[2]] = value;
+        project.dataStores[storeName][key] = value;
       }
       continue;
     }
@@ -3729,8 +4031,9 @@ function applyNearestDamage(
 export function activatePolyGui(
   input: PolyProject,
   guiObjectId: string,
+  playerData?: PolyPlayerData,
 ): PolyRuntimeResult {
-  const project = normalizePolyProject(input);
+  const project = runtimeProject(input, playerData);
   const scripts = project.scripts.filter(
     (script) =>
       script.kind === "localScript" &&
@@ -3782,6 +4085,7 @@ export function activatePolyGui(
 
   return {
     project,
+    playerData: localPlayerData(project),
     diagnostics,
     output,
     animationRequests,
@@ -3796,8 +4100,9 @@ export function activatePolyGui(
 export function activatePolyTool(
   input: PolyProject,
   toolId: string,
+  playerData?: PolyPlayerData,
 ): PolyRuntimeResult {
-  const project = normalizePolyProject(input);
+  const project = runtimeProject(input, playerData);
   const tool = project.objects.find(
     (object) => object.id === toolId && object.type === "tool",
   );
@@ -3846,6 +4151,7 @@ export function activatePolyTool(
   }
   return {
     project,
+    playerData: localPlayerData(project),
     diagnostics,
     output,
     animationRequests,
@@ -3861,8 +4167,9 @@ export function activatePolyTouched(
   input: PolyProject,
   worldObjectId: string,
   event: "Touched" | "TouchEnded" = "Touched",
+  playerData?: PolyPlayerData,
 ): PolyRuntimeResult {
-  const project = normalizePolyProject(input);
+  const project = runtimeProject(input, playerData);
   const scripts = project.scripts.filter(
     (script) =>
       script.kind === "script" &&
@@ -3924,6 +4231,7 @@ export function activatePolyTouched(
 
   return {
     project,
+    playerData: localPlayerData(project),
     diagnostics,
     output,
     animationRequests,
@@ -3939,8 +4247,9 @@ export function activatePolyInput(
   input: PolyProject,
   keyCode: string,
   event: "InputBegan" | "InputEnded" = "InputBegan",
+  playerData?: PolyPlayerData,
 ): PolyRuntimeResult {
-  const project = normalizePolyProject(input);
+  const project = runtimeProject(input, playerData);
   const scripts = project.scripts.filter(
     (script) =>
       script.kind === "localScript" &&
@@ -3999,6 +4308,7 @@ export function activatePolyInput(
   }
   return {
     project,
+    playerData: localPlayerData(project),
     diagnostics,
     output,
     animationRequests,
@@ -4017,7 +4327,7 @@ export function executePolyCommand(
   const command = rawCommand.trim();
   if (!command) return input;
 
-  const project = normalizePolyProject(input.project);
+  const project = runtimeProject(input.project, input.playerData);
   const output = [...input.output];
   const reply = (
     message: string,
@@ -4113,8 +4423,11 @@ export function executePolyCommand(
   return { ...input, project, output };
 }
 
-export function runPolyProject(input: PolyProject): PolyRuntimeResult {
-  const project = normalizePolyProject(input);
+export function runPolyProject(
+  input: PolyProject,
+  playerData?: PolyPlayerData,
+): PolyRuntimeResult {
+  const project = runtimeProject(input, playerData);
   const diagnostics = project.scripts.flatMap((script) =>
     analyzePolyScript(script, project).map((diagnostic) => ({
       ...diagnostic,
@@ -4178,6 +4491,7 @@ export function runPolyProject(input: PolyProject): PolyRuntimeResult {
 
   return {
     project,
+    playerData: localPlayerData(project),
     diagnostics,
     output,
     animationRequests,

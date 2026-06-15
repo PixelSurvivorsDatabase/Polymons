@@ -1,7 +1,9 @@
 type PlayerUser = {
   id: string;
+  polymonsId: number;
   username: string;
   displayName: string;
+  description: string;
   avatarUrl: string | null;
   equippedShirtId:
     | "polymon-shirt"

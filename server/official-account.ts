@@ -64,6 +64,7 @@ export async function ensureOfficialAccount(
     const { error: renameError } = await admin
       .from("profiles")
       .update({
+        polymons_id: 1,
         username: OFFICIAL_ACCOUNT.username,
         display_name: OFFICIAL_ACCOUNT.displayName,
       })
@@ -73,6 +74,19 @@ export async function ensureOfficialAccount(
       await admin.auth.admin.deleteUser(user.id);
       throw renameError;
     }
+  }
+
+  const { error: repairProfileError } = await admin
+    .from("profiles")
+    .update({
+      polymons_id: 1,
+      username: OFFICIAL_ACCOUNT.username,
+      display_name: OFFICIAL_ACCOUNT.displayName,
+    })
+    .eq("id", user.id);
+
+  if (repairProfileError) {
+    throw repairProfileError;
   }
 
   const { error: lockError } = await admin.auth.admin.updateUserById(user.id, {

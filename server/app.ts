@@ -36,6 +36,7 @@ import {
   loginSchema,
   playerAccountLinkSchema,
   playSessionSchema,
+  profileUpdateSchema,
   publishGameSchema,
   refreshSchema,
   signUpSchema,
@@ -264,6 +265,17 @@ export function createApp(
     response.json({ user: await loadProfile(admin, user.id) });
   });
 
+  app.post("/v1/me/profile", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const input = parseBody(profileUpdateSchema, request.body);
+    const { error } = await admin
+      .from("profiles")
+      .update({ bio: input.description })
+      .eq("id", user.id);
+    if (error) throw error;
+    response.json({ user: await loadProfile(admin, user.id) });
+  });
+
   app.get("/v1/avatar/wardrobe", async (request, response) => {
     const user = await authenticatedUser(request, admin);
     const totalCreatorVisits = await syncAvatarUnlocks(admin, user.id);
@@ -373,7 +385,9 @@ export function createApp(
       userIds.length
         ? admin
             .from("profiles")
-            .select("id, username, display_name, avatar_url, equipped_shirt_id, created_at")
+            .select(
+              "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, created_at",
+            )
             .in("id", userIds)
         : Promise.resolve({ data: [], error: null }),
       admin.from("games").select("id, owner_id, visit_count"),
@@ -444,7 +458,9 @@ export function createApp(
         return {
           id: authUser.id,
           username: profile?.username ?? "unknown",
+          polymonsId: Number(profile?.polymons_id ?? 0),
           displayName: profile?.display_name ?? "Unknown player",
+          description: profile?.bio ?? "",
           avatarUrl: profile?.avatar_url ?? null,
           equippedShirtId: profile?.equipped_shirt_id ?? null,
           joinedAt: profile?.created_at ?? authUser.created_at,
@@ -808,26 +824,46 @@ export function createApp(
     const [usernames, displayNames] = await Promise.all([
       admin
         .from("profiles")
-        .select("id, username, display_name, avatar_url, equipped_shirt_id, created_at")
+        .select(
+          "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, created_at",
+        )
         .ilike("username", pattern)
         .order("username")
         .limit(12),
       admin
         .from("profiles")
-        .select("id, username, display_name, avatar_url, equipped_shirt_id, created_at")
+        .select(
+          "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, created_at",
+        )
         .ilike("display_name", pattern)
         .order("username")
         .limit(12),
     ]);
     if (usernames.error) throw usernames.error;
     if (displayNames.error) throw displayNames.error;
+    const { data: numericIds, error: numericIdsError } = /^\d+$/.test(query)
+      ? await admin
+          .from("profiles")
+          .select(
+            "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, created_at",
+          )
+          .eq("polymons_id", Number(query))
+          .limit(1)
+      : { data: [], error: null };
+    if (numericIdsError) throw numericIdsError;
     const players = new Map(
-      [...(usernames.data ?? []), ...(displayNames.data ?? [])].map((player) => [
+      [
+        ...(numericIds ?? []),
+        ...(usernames.data ?? []),
+        ...(displayNames.data ?? []),
+      ].map((player) => [
         player.id,
         {
           id: player.id,
+          polymonsId: Number(player.polymons_id),
           username: player.username,
           displayName: player.display_name,
+          description: player.bio ?? "",
           avatarUrl: player.avatar_url,
           equippedShirtId: player.equipped_shirt_id,
           joinedAt: player.created_at,
@@ -844,7 +880,9 @@ export function createApp(
     }
     const { data: player, error: playerError } = await admin
       .from("profiles")
-      .select("id, username, display_name, avatar_url, equipped_shirt_id, created_at")
+      .select(
+        "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, created_at",
+      )
       .eq("username", username)
       .maybeSingle();
     if (playerError) throw playerError;
@@ -885,8 +923,10 @@ export function createApp(
     response.json({
       player: {
         id: player.id,
+        polymonsId: Number(player.polymons_id),
         username: player.username,
         displayName: player.display_name,
+        description: player.bio ?? "",
         avatarUrl: player.avatar_url,
         equippedShirtId: player.equipped_shirt_id,
         joinedAt: player.created_at,
@@ -999,7 +1039,9 @@ export function createApp(
     const { data: profiles } = profileIds.length
       ? await admin
           .from("profiles")
-          .select("id, username, display_name, avatar_url, equipped_shirt_id")
+          .select(
+            "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id",
+          )
           .in("id", profileIds)
       : { data: [] };
     const profileById = new Map(
@@ -1028,8 +1070,10 @@ export function createApp(
           user: profile
             ? {
                 id: profile.id,
+                polymonsId: Number(profile.polymons_id),
                 username: profile.username,
                 displayName: profile.display_name,
+                description: profile.bio ?? "",
                 avatarUrl: profile.avatar_url,
                 equippedShirtId: profile.equipped_shirt_id,
               }

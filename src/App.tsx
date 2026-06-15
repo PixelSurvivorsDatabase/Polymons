@@ -47,9 +47,11 @@ import {
   type Friendship,
   type PlatformGame,
   type PlaySession,
+  type PolymonsUser,
   type PublicPlayer,
   type PublicPlayerProfile,
   type Wardrobe,
+  updateProfile,
 } from "./api";
 import type { ShirtId } from "./game/avatarCatalog";
 import { useAuth } from "./auth";
@@ -61,11 +63,24 @@ import {
   activatePolyTouched,
   activatePolyTool,
   runPolyProject,
+  type PolyPlayerData,
   type PolyRuntimeResult,
 } from "./game/polyProject";
 
 const BaseplateGame = lazy(() => import("./game/BaseplateGame"));
 const AvatarPreview = lazy(() => import("./game/AvatarPreview"));
+
+function runtimePlayerData(
+  user: Pick<PolymonsUser, "polymonsId" | "username" | "displayName"> | null | undefined,
+): PolyPlayerData | undefined {
+  return user
+    ? {
+        userId: user.polymonsId,
+        username: user.username,
+        displayName: user.displayName,
+      }
+    : undefined;
+}
 
 function displayGame(game: PlatformGame): Game {
   return {
@@ -299,7 +314,7 @@ function Header() {
                   <Avatar name={player.displayName} size="small" />
                   <span>
                     <strong>{player.displayName}</strong>
-                    <small>@{player.username}</small>
+                    <small>@{player.username} · ID {player.polymonsId}</small>
                   </span>
                 </Link>
               ))}
@@ -846,7 +861,9 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
     void getGame(playSession.game.id)
       .then((result) => {
         if (result.game.manifest) {
-          setRuntime(runPolyProject(result.game.manifest));
+          setRuntime(
+            runPolyProject(result.game.manifest, runtimePlayerData(user)),
+          );
         } else if (result.game.slug === "baseplate") {
           setRuntime(null);
         } else {
@@ -862,7 +879,7 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
         );
       })
       .finally(() => setGameLoading(false));
-  }, [playSession.game.id]);
+  }, [playSession.game.id, user]);
   const {
     connection,
     remotePlayers,
@@ -948,6 +965,7 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
           soundVersion={runtime?.soundVersion}
           guiObjects={runtime?.project.gui}
           playerSettings={runtime?.project.playerSettings}
+          lighting={runtime?.project.lighting}
           leaderstats={runtime?.project.leaderstats}
           projectName={runtime?.project.name}
           localPlayer={sessionPlayer ?? user ?? undefined}
@@ -957,7 +975,11 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
           onGuiActivated={(guiObjectId) => {
             setRuntime((current) => {
               if (!current) return current;
-              const activated = activatePolyGui(current.project, guiObjectId);
+              const activated = activatePolyGui(
+                current.project,
+                guiObjectId,
+                current.playerData,
+              );
               return {
                 ...activated,
                 diagnostics: [...current.diagnostics, ...activated.diagnostics],
@@ -983,7 +1005,11 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
           onToolActivated={(toolObjectId) => {
             setRuntime((current) => {
               if (!current) return current;
-              const activated = activatePolyTool(current.project, toolObjectId);
+              const activated = activatePolyTool(
+                current.project,
+                toolObjectId,
+                current.playerData,
+              );
               return {
                 ...activated,
                 diagnostics: [...current.diagnostics, ...activated.diagnostics],
@@ -1012,6 +1038,8 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
               const activated = activatePolyTouched(
                 current.project,
                 worldObjectId,
+                "Touched",
+                current.playerData,
               );
               return {
                 ...activated,
@@ -1038,7 +1066,12 @@ function BrowserGame({ playSession }: { playSession: PlaySession }) {
           onKeyInput={(keyCode, event) => {
             setRuntime((current) => {
               if (!current) return current;
-              const activated = activatePolyInput(current.project, keyCode, event);
+              const activated = activatePolyInput(
+                current.project,
+                keyCode,
+                event,
+                current.playerData,
+              );
               return {
                 ...activated,
                 diagnostics: [...current.diagnostics, ...activated.diagnostics],
@@ -1427,7 +1460,7 @@ function WardrobePage() {
 
 function ProfilePage() {
   const { username: routeUsername } = useParams();
-  const { user, session, logout, showAuth, refresh } = useAuth();
+  const { user, session, logout, showAuth, refresh, updateUser } = useAuth();
   const requestedUsername = routeUsername ?? user?.username;
   const ownProfile = Boolean(user && requestedUsername === user.username);
   const [profile, setProfile] = useState<PublicPlayerProfile | null>(null);
@@ -1438,6 +1471,10 @@ function ProfilePage() {
   const [syncError, setSyncError] = useState("");
   const [friendStatus, setFriendStatus] = useState("");
   const [sendingFriendRequest, setSendingFriendRequest] = useState(false);
+  const [editingDescription, setEditingDescription] = useState(false);
+  const [descriptionDraft, setDescriptionDraft] = useState("");
+  const [savingDescription, setSavingDescription] = useState(false);
+  const [descriptionStatus, setDescriptionStatus] = useState("");
   useEffect(() => {
     if (!requestedUsername) return;
     setProfile(null);
@@ -1496,6 +1533,44 @@ function ProfilePage() {
     }
   }
 
+  async function saveDescription() {
+    if (!session || !profile) return;
+    setSavingDescription(true);
+    setDescriptionStatus("");
+    try {
+      let result;
+      try {
+        result = await updateProfile(descriptionDraft, session.accessToken);
+      } catch {
+        const renewed = await refresh();
+        if (!renewed) throw new Error("Sign in again to update your profile.");
+        result = await updateProfile(descriptionDraft, renewed.accessToken);
+      }
+      updateUser(result.user);
+      setProfile((current) =>
+        current
+          ? {
+              ...current,
+              player: {
+                ...current.player,
+                description: result.user.description,
+              },
+            }
+          : current,
+      );
+      setEditingDescription(false);
+      setDescriptionStatus("Description saved.");
+    } catch (error) {
+      setDescriptionStatus(
+        error instanceof Error
+          ? error.message
+          : "Could not update your description.",
+      );
+    } finally {
+      setSavingDescription(false);
+    }
+  }
+
   return (
     <>
       <section className="profile-hero">
@@ -1503,8 +1578,66 @@ function ProfilePage() {
         <Avatar name={profile.player.displayName} size="large" />
         <div className="profile-copy">
           <h1>{profile.player.displayName}</h1>
-          <span>@{profile.player.username}</span>
-          <p>Joined {new Date(profile.player.joinedAt).toLocaleDateString()}.</p>
+          <span>
+            @{profile.player.username} · ID {profile.player.polymonsId}
+          </span>
+          {editingDescription ? (
+            <div className="profile-description-editor">
+              <textarea
+                aria-label="Profile description"
+                maxLength={500}
+                value={descriptionDraft}
+                onChange={(event) => setDescriptionDraft(event.target.value)}
+                placeholder="Tell people a little about yourself."
+              />
+              <small>{descriptionDraft.length}/500</small>
+              <div>
+                <button
+                  className="primary-button"
+                  disabled={savingDescription}
+                  onClick={() => void saveDescription()}
+                >
+                  {savingDescription ? "Saving..." : "Save"}
+                </button>
+                <button
+                  className="secondary-button"
+                  disabled={savingDescription}
+                  onClick={() => {
+                    setEditingDescription(false);
+                    setDescriptionStatus("");
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <p className="profile-description">
+                {profile.player.description || "No description yet."}
+              </p>
+              {ownProfile && (
+                <button
+                  className="profile-description-button"
+                  onClick={() => {
+                    setDescriptionDraft(profile.player.description);
+                    setDescriptionStatus("");
+                    setEditingDescription(true);
+                  }}
+                >
+                  Edit description
+                </button>
+              )}
+            </>
+          )}
+          {descriptionStatus && (
+            <small className="profile-description-status">
+              {descriptionStatus}
+            </small>
+          )}
+          <p className="profile-joined">
+            Joined {new Date(profile.player.joinedAt).toLocaleDateString()}.
+          </p>
         </div>
         {ownProfile && <div className="profile-actions">
           <button

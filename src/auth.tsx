@@ -122,6 +122,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     setReady(true);
+    if (
+      !Number.isInteger(auth.user.polymonsId) ||
+      typeof auth.user.description !== "string"
+    ) {
+      void refresh();
+    }
     const delay = Math.max(
       5_000,
       sessionExpiryMs(auth.session) - Date.now() - 2 * 60_000,

@@ -2,8 +2,10 @@ type StudioLanguage = "luau" | "cpp" | "csharp";
 
 type StudioUser = {
   id: string;
+  polymonsId: number;
   username: string;
   displayName: string;
+  description: string;
   avatarUrl: string | null;
   equippedShirtId:
     | "polymon-shirt"
@@ -37,6 +39,7 @@ type StudioObject = {
   position: [number, number, number];
   rotation: [number, number, number];
   scale: [number, number, number];
+  shape?: "block" | "sphere" | "cylinder" | "stud";
   color: string;
   anchored: boolean;
   visible?: boolean;
@@ -174,6 +177,18 @@ type StudioProject = {
     maxHealth: number;
     sprintEnabled: boolean;
     sprintMultiplier: number;
+  };
+  lighting: {
+    clockTime: number;
+    brightness: number;
+    ambient: string;
+    outdoorAmbient: string;
+    skyColor: string;
+    fogColor: string;
+    fogStart: number;
+    fogEnd: number;
+    globalShadows: boolean;
+    shadowSoftness: number;
   };
   leaderstats: Array<{
     id: string;
