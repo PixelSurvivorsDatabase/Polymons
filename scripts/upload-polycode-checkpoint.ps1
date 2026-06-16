@@ -1,7 +1,7 @@
 param(
-  [string]$File = "polycode/checkpoints-28m/checkpoint-latest.pt",
+  [string]$File = "polycode/checkpoints/checkpoint-final.pt",
   [string]$Bucket = "polycode-models",
-  [string]$Object = "checkpoints-28m/checkpoint-latest.pt"
+  [string]$Object = "checkpoints/checkpoint-final.pt"
 )
 
 $ErrorActionPreference = "Stop"

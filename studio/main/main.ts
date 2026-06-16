@@ -400,8 +400,8 @@ async function findPolyCodeRoot(): Promise<string | null> {
     if (
       (await pathExists(join(candidate, "complete.py"))) &&
       (await pathExists(join(candidate, "model.py"))) &&
-      (await pathExists(join(candidate, "checkpoints-28m", "checkpoint-latest.pt"))) &&
-      (await pathExists(join(candidate, "artifacts", "tokenizer-28m.json")))
+      (await pathExists(join(candidate, "checkpoints", "checkpoint-final.pt"))) &&
+      (await pathExists(join(candidate, "artifacts", "tokenizer.json")))
     ) {
       return candidate;
     }
@@ -422,6 +422,7 @@ async function completeWithLocalPolyCode(input: {
   language: StudioLanguage;
   prompt: string;
   tokens?: number;
+  model?: "polycode-13m" | "polycode-28m";
 }): Promise<{ suggestion: string; source: "polycode" | "unavailable" }> {
   if (!["luau", "cpp", "csharp"].includes(input.language)) {
     throw new Error("Choose a supported scripting language.");
@@ -432,6 +433,18 @@ async function completeWithLocalPolyCode(input: {
   }
   const root = await findPolyCodeRoot();
   if (!root) return { suggestion: "", source: "unavailable" };
+  const model = input.model ?? "polycode-13m";
+  const checkpoint =
+    model === "polycode-28m"
+      ? join(root, "checkpoints-28m", "checkpoint-latest.pt")
+      : join(root, "checkpoints", "checkpoint-final.pt");
+  const tokenizer =
+    model === "polycode-28m"
+      ? join(root, "artifacts", "tokenizer-28m.json")
+      : join(root, "artifacts", "tokenizer.json");
+  if (!(await pathExists(checkpoint)) || !(await pathExists(tokenizer))) {
+    return { suggestion: "", source: "unavailable" };
+  }
 
   const promptPath = join(
     app.getPath("temp"),
@@ -442,9 +455,9 @@ async function completeWithLocalPolyCode(input: {
   const args = [
     join(root, "complete.py"),
     "--checkpoint",
-    join(root, "checkpoints-28m", "checkpoint-latest.pt"),
+    checkpoint,
     "--tokenizer",
-    join(root, "artifacts", "tokenizer-28m.json"),
+    tokenizer,
     "--language",
     input.language,
     "--prompt-file",
@@ -499,6 +512,7 @@ async function completeCode(input: {
   language: StudioLanguage;
   prompt: string;
   tokens?: number;
+  model?: "polycode-13m" | "polycode-28m";
 }): Promise<{ suggestion: string; source: "polycode" | "unavailable" }> {
   if (auth) {
     try {
@@ -520,6 +534,7 @@ async function completeCode(input: {
           language: input.language,
           prompt: input.prompt.slice(-6_000),
           tokens: Math.max(8, Math.min(96, input.tokens ?? 48)),
+          model: input.model ?? "polycode-13m",
         },
       });
       if (result.source === "polycode" && result.suggestion.trim()) {

@@ -894,6 +894,7 @@ export default function CodeEditor({
                     language: projectRef.current.language,
                     prompt,
                     tokens: 48,
+                    model: "polycode-13m",
                   })
                   .then((result) =>
                     result.source === "polycode"

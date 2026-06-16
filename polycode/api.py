@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from typing import Literal
@@ -16,35 +17,70 @@ from .model import ModelConfig, PolyCodeModel
 
 
 BASE_DIR = Path(__file__).parent
-DEFAULT_CHECKPOINT = BASE_DIR / "runtime" / "checkpoint-latest.pt"
-DEFAULT_TOKENIZER = BASE_DIR / "artifacts" / "tokenizer-28m.json"
+DEFAULT_13M_CHECKPOINT = BASE_DIR / "runtime" / "checkpoint-final.pt"
+DEFAULT_28M_CHECKPOINT = BASE_DIR / "runtime" / "checkpoint-28m-latest.pt"
+DEFAULT_13M_TOKENIZER = BASE_DIR / "artifacts" / "tokenizer.json"
+DEFAULT_28M_TOKENIZER = BASE_DIR / "artifacts" / "tokenizer-28m.json"
 
-CHECKPOINT_PATH = Path(os.getenv("POLYCODE_CHECKPOINT", str(DEFAULT_CHECKPOINT)))
-TOKENIZER_PATH = Path(os.getenv("POLYCODE_TOKENIZER", str(DEFAULT_TOKENIZER)))
 MODEL_BUCKET = os.getenv("POLYCODE_SUPABASE_BUCKET", "polycode-models")
-MODEL_OBJECT = os.getenv(
-    "POLYCODE_SUPABASE_OBJECT",
-    "checkpoints-28m/checkpoint-latest.pt",
-)
 MAX_PROMPT_CHARS = int(os.getenv("POLYCODE_MAX_PROMPT_CHARS", "6000"))
 MAX_OUTPUT_TOKENS = int(os.getenv("POLYCODE_MAX_OUTPUT_TOKENS", "48"))
 TEMPERATURE = float(os.getenv("POLYCODE_TEMPERATURE", "0.18"))
 TOP_K = int(os.getenv("POLYCODE_TOP_K", "5"))
 
 
+@dataclass(frozen=True)
+class PolyCodeModelSpec:
+  checkpoint: Path
+  tokenizer: Path
+  object_path: str
+
+
+MODEL_SPECS: dict[str, PolyCodeModelSpec] = {
+  "polycode-13m": PolyCodeModelSpec(
+    checkpoint=Path(
+      os.getenv("POLYCODE_13M_CHECKPOINT", str(DEFAULT_13M_CHECKPOINT)),
+    ),
+    tokenizer=Path(
+      os.getenv("POLYCODE_13M_TOKENIZER", str(DEFAULT_13M_TOKENIZER)),
+    ),
+    object_path=os.getenv(
+      "POLYCODE_13M_SUPABASE_OBJECT",
+      os.getenv("POLYCODE_SUPABASE_OBJECT", "checkpoints/checkpoint-final.pt"),
+    ),
+  ),
+  "polycode-28m": PolyCodeModelSpec(
+    checkpoint=Path(
+      os.getenv("POLYCODE_28M_CHECKPOINT", str(DEFAULT_28M_CHECKPOINT)),
+    ),
+    tokenizer=Path(
+      os.getenv("POLYCODE_28M_TOKENIZER", str(DEFAULT_28M_TOKENIZER)),
+    ),
+    object_path=os.getenv(
+      "POLYCODE_28M_SUPABASE_OBJECT",
+      "checkpoints-28m/checkpoint-latest.pt",
+    ),
+  ),
+}
+
+
 class CompletionRequest(BaseModel):
   language: Literal["luau", "cpp", "csharp"]
   prompt: str = Field(min_length=1, max_length=MAX_PROMPT_CHARS)
   tokens: int = Field(default=MAX_OUTPUT_TOKENS, ge=8, le=96)
+  model: Literal["polycode-13m", "polycode-28m"] = "polycode-13m"
 
 
 class CompletionResponse(BaseModel):
   suggestion: str
   source: Literal["polycode"]
+  model: Literal["polycode-13m", "polycode-28m"]
 
 
 class PolyCodeRuntime:
-  def __init__(self) -> None:
+  def __init__(self, model_id: Literal["polycode-13m", "polycode-28m"]) -> None:
+    self.model_id = model_id
+    self.spec = MODEL_SPECS[model_id]
     self._loaded = False
     self._lock = Lock()
     self._generation_lock = asyncio.Lock()
@@ -53,7 +89,7 @@ class PolyCodeRuntime:
     self._blocked_tokens: set[int] = set()
 
   def ensure_checkpoint(self) -> None:
-    if CHECKPOINT_PATH.exists():
+    if self.spec.checkpoint.exists():
       return
     supabase_url = os.getenv("POLYCODE_SUPABASE_URL") or os.getenv("SUPABASE_URL")
     service_key = (
@@ -65,20 +101,20 @@ class PolyCodeRuntime:
       raise RuntimeError(
         "Checkpoint is missing and Supabase Storage credentials are not configured."
       )
-    CHECKPOINT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    self.spec.checkpoint.parent.mkdir(parents=True, exist_ok=True)
     client = create_client(supabase_url, service_key)
-    data = client.storage.from_(MODEL_BUCKET).download(MODEL_OBJECT)
-    CHECKPOINT_PATH.write_bytes(data)
+    data = client.storage.from_(MODEL_BUCKET).download(self.spec.object_path)
+    self.spec.checkpoint.write_bytes(data)
 
   def load(self) -> None:
     with self._lock:
       if self._loaded:
         return
       self.ensure_checkpoint()
-      if not TOKENIZER_PATH.exists():
-        raise RuntimeError(f"Tokenizer not found at {TOKENIZER_PATH}.")
-      tokenizer = Tokenizer.from_file(str(TOKENIZER_PATH))
-      saved = torch.load(CHECKPOINT_PATH, map_location="cpu", weights_only=False)
+      if not self.spec.tokenizer.exists():
+        raise RuntimeError(f"Tokenizer not found at {self.spec.tokenizer}.")
+      tokenizer = Tokenizer.from_file(str(self.spec.tokenizer))
+      saved = torch.load(self.spec.checkpoint, map_location="cpu", weights_only=False)
       model = PolyCodeModel(ModelConfig(**saved["model_config"]))
       model.load_state_dict(saved["model"])
       model.eval()
@@ -139,7 +175,10 @@ class PolyCodeRuntime:
       return await asyncio.to_thread(self.complete_sync, request)
 
 
-runtime = PolyCodeRuntime()
+runtimes = {
+  model_id: PolyCodeRuntime(model_id)
+  for model_id in ("polycode-13m", "polycode-28m")
+}
 app = FastAPI(title="PolyCode API", version="0.1.0")
 
 
@@ -163,7 +202,11 @@ async def complete(
 ) -> CompletionResponse:
   require_api_key(x_polycode_key)
   try:
-    suggestion = await runtime.complete(request)
+    suggestion = await runtimes[request.model].complete(request)
   except Exception as error:
     raise HTTPException(status_code=503, detail=str(error)) from error
-  return CompletionResponse(suggestion=suggestion, source="polycode")
+  return CompletionResponse(
+    suggestion=suggestion,
+    source="polycode",
+    model=request.model,
+  )

@@ -15,10 +15,10 @@ def main() -> None:
     parser.add_argument(
         "--checkpoint",
         type=Path,
-        default=base / "checkpoints-28m/checkpoint-final.pt",
+        default=base / "checkpoints/checkpoint-final.pt",
     )
     parser.add_argument(
-        "--tokenizer", type=Path, default=base / "artifacts/tokenizer-28m.json"
+        "--tokenizer", type=Path, default=base / "artifacts/tokenizer.json"
     )
     parser.add_argument("--language", choices=("luau", "cpp", "csharp"), default="luau")
     parser.add_argument(
@@ -42,7 +42,7 @@ def main() -> None:
 
     if not args.checkpoint.exists():
         raise SystemExit(
-            "The 28M checkpoint has not been trained yet. "
+            "The 13M checkpoint has not been trained yet. "
             "Run: python polycode/train.py"
         )
     tokenizer = Tokenizer.from_file(str(args.tokenizer))

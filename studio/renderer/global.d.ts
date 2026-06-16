@@ -358,6 +358,7 @@ interface Window {
       language: StudioLanguage;
       prompt: string;
       tokens?: number;
+      model?: "polycode-13m" | "polycode-28m";
     }) => Promise<{
       suggestion: string;
       source: "polycode" | "unavailable";

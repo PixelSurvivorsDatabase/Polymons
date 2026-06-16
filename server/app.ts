@@ -314,6 +314,7 @@ async function runPolyCodeCompletion(input: {
   language: "luau" | "cpp" | "csharp";
   prompt: string;
   tokens: number;
+  model: "polycode-13m" | "polycode-28m";
 }): Promise<{ suggestion: string; source: "polycode" | "unavailable" }> {
   const apiUrl = process.env.POLYCODE_API_URL;
   const apiKey = process.env.POLYCODE_API_KEY;
@@ -360,12 +361,20 @@ async function runPolyCodeCompletion(input: {
 
   const root = polyCodeRoot();
   const completeScript = join(root, "complete.py");
-  const checkpoint =
-    process.env.POLYCODE_CHECKPOINT ||
-    join(root, "checkpoints-28m", "checkpoint-latest.pt");
-  const tokenizer =
-    process.env.POLYCODE_TOKENIZER ||
-    join(root, "artifacts", "tokenizer-28m.json");
+  const checkpoint = input.model === "polycode-28m"
+    ? process.env.POLYCODE_28M_CHECKPOINT ||
+      process.env.POLYCODE_CHECKPOINT ||
+      join(root, "checkpoints-28m", "checkpoint-latest.pt")
+    : process.env.POLYCODE_13M_CHECKPOINT ||
+      process.env.POLYCODE_CHECKPOINT ||
+      join(root, "checkpoints", "checkpoint-final.pt");
+  const tokenizer = input.model === "polycode-28m"
+    ? process.env.POLYCODE_28M_TOKENIZER ||
+      process.env.POLYCODE_TOKENIZER ||
+      join(root, "artifacts", "tokenizer-28m.json")
+    : process.env.POLYCODE_13M_TOKENIZER ||
+      process.env.POLYCODE_TOKENIZER ||
+      join(root, "artifacts", "tokenizer.json");
   if (
     !(await fileExists(completeScript)) ||
     !(await fileExists(checkpoint)) ||

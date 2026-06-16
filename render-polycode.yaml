@@ -15,10 +15,14 @@ services:
       - key: POLYCODE_SUPABASE_BUCKET
         value: polycode-models
       - key: POLYCODE_SUPABASE_OBJECT
-        value: checkpoints-28m/checkpoint-latest.pt
-      - key: POLYCODE_CHECKPOINT
-        value: /opt/render/project/src/polycode/runtime/checkpoint-latest.pt
-      - key: POLYCODE_TOKENIZER
+        value: checkpoints/checkpoint-final.pt
+      - key: POLYCODE_13M_CHECKPOINT
+        value: /opt/render/project/src/polycode/runtime/checkpoint-final.pt
+      - key: POLYCODE_13M_TOKENIZER
+        value: /opt/render/project/src/polycode/artifacts/tokenizer.json
+      - key: POLYCODE_28M_CHECKPOINT
+        value: /opt/render/project/src/polycode/runtime/checkpoint-28m-latest.pt
+      - key: POLYCODE_28M_TOKENIZER
         value: /opt/render/project/src/polycode/artifacts/tokenizer-28m.json
       - key: POLYCODE_MAX_OUTPUT_TOKENS
         value: "48"

@@ -113,10 +113,11 @@ The main Polymons server keeps account auth and request limits. The separate
 PolyCode API owns PyTorch, loads the checkpoint once, and can fail without
 taking down games or accounts.
 
-### Upload the checkpoint to Supabase Storage
+### Upload the stable 13M checkpoint to Supabase Storage
 
 The migration `20260616134231_polycode_model_storage.sql` creates a private
-`polycode-models` bucket. After it is pushed, upload the latest checkpoint:
+`polycode-models` bucket. After it is pushed, upload the completed 13M
+checkpoint:
 
 ```powershell
 $env:SUPABASE_URL="https://YOUR_PROJECT.supabase.co"
@@ -125,6 +126,20 @@ $env:SUPABASE_SERVICE_ROLE_KEY="YOUR_SERVICE_ROLE_KEY"
 ```
 
 The default object path is:
+
+```text
+polycode-models/checkpoints/checkpoint-final.pt
+```
+
+The experimental 28M model can be uploaded later:
+
+```powershell
+.\scripts\upload-polycode-checkpoint.ps1 `
+  -File polycode/checkpoints-28m/checkpoint-latest.pt `
+  -Object checkpoints-28m/checkpoint-latest.pt
+```
+
+Its object path is:
 
 ```text
 polycode-models/checkpoints-28m/checkpoint-latest.pt
@@ -147,7 +162,7 @@ POLYCODE_API_KEY=long-random-secret
 POLYCODE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 POLYCODE_SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
 POLYCODE_SUPABASE_BUCKET=polycode-models
-POLYCODE_SUPABASE_OBJECT=checkpoints-28m/checkpoint-latest.pt
+POLYCODE_SUPABASE_OBJECT=checkpoints/checkpoint-final.pt
 ```
 
 Then add these to the main Polymons server:
@@ -159,3 +174,8 @@ POLYCODE_API_KEY=the-same-long-random-secret
 
 If those env vars are missing or the PolyCode service is down, Studio falls
 back to its built-in autocomplete snippets.
+
+The API accepts `model: "polycode-13m"` and `model: "polycode-28m"`. Studio
+currently asks for `polycode-13m` by default because it is the completed stable
+checkpoint. The 28M model is wired as a future preview model, not the default
+autosuggest path.
