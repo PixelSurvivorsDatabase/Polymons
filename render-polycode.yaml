@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: polymons-polycode
+    runtime: python
+    plan: free
+    buildCommand: pip install -r polycode/requirements-api.txt
+    startCommand: uvicorn polycode.api:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: POLYCODE_API_KEY
+        sync: false
+      - key: POLYCODE_SUPABASE_URL
+        sync: false
+      - key: POLYCODE_SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: POLYCODE_SUPABASE_BUCKET
+        value: polycode-models
+      - key: POLYCODE_SUPABASE_OBJECT
+        value: checkpoints-28m/checkpoint-latest.pt
+      - key: POLYCODE_CHECKPOINT
+        value: /opt/render/project/src/polycode/runtime/checkpoint-latest.pt
+      - key: POLYCODE_TOKENIZER
+        value: /opt/render/project/src/polycode/artifacts/tokenizer-28m.json
+      - key: POLYCODE_MAX_OUTPUT_TOKENS
+        value: "48"
+      - key: POLYCODE_TEMPERATURE
+        value: "0.18"
+      - key: POLYCODE_TOP_K
+        value: "5"

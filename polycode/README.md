@@ -100,3 +100,62 @@ in all three supported languages.
 
 The eventual inference service should key limits by numerical Polymons user ID.
 Unauthenticated requests should be rejected rather than sharing an IP bucket.
+
+## Separate API service
+
+The recommended production shape is:
+
+```text
+Poly Studio -> Polymons Server -> PolyCode API -> Supabase Storage checkpoint
+```
+
+The main Polymons server keeps account auth and request limits. The separate
+PolyCode API owns PyTorch, loads the checkpoint once, and can fail without
+taking down games or accounts.
+
+### Upload the checkpoint to Supabase Storage
+
+The migration `20260616134231_polycode_model_storage.sql` creates a private
+`polycode-models` bucket. After it is pushed, upload the latest checkpoint:
+
+```powershell
+$env:SUPABASE_URL="https://YOUR_PROJECT.supabase.co"
+$env:SUPABASE_SERVICE_ROLE_KEY="YOUR_SERVICE_ROLE_KEY"
+.\scripts\upload-polycode-checkpoint.ps1
+```
+
+The default object path is:
+
+```text
+polycode-models/checkpoints-28m/checkpoint-latest.pt
+```
+
+### Deploy the PolyCode API
+
+Create a separate Render Web Service using `render-polycode.yaml` as the
+reference:
+
+```text
+Build command: pip install -r polycode/requirements-api.txt
+Start command: uvicorn polycode.api:app --host 0.0.0.0 --port $PORT
+```
+
+Required env vars:
+
+```text
+POLYCODE_API_KEY=long-random-secret
+POLYCODE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+POLYCODE_SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
+POLYCODE_SUPABASE_BUCKET=polycode-models
+POLYCODE_SUPABASE_OBJECT=checkpoints-28m/checkpoint-latest.pt
+```
+
+Then add these to the main Polymons server:
+
+```text
+POLYCODE_API_URL=https://YOUR_POLYCODE_SERVICE.onrender.com
+POLYCODE_API_KEY=the-same-long-random-secret
+```
+
+If those env vars are missing or the PolyCode service is down, Studio falls
+back to its built-in autocomplete snippets.

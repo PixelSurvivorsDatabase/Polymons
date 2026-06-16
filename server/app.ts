@@ -315,6 +315,49 @@ async function runPolyCodeCompletion(input: {
   prompt: string;
   tokens: number;
 }): Promise<{ suggestion: string; source: "polycode" | "unavailable" }> {
+  const apiUrl = process.env.POLYCODE_API_URL;
+  const apiKey = process.env.POLYCODE_API_KEY;
+  if (apiUrl && apiKey) {
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      Number(process.env.POLYCODE_API_TIMEOUT_MS || 20_000),
+    );
+    try {
+      const response = await fetch(
+        `${apiUrl.replace(/\/+$/, "")}/complete`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-PolyCode-Key": apiKey,
+          },
+          body: JSON.stringify(input),
+          signal: controller.signal,
+        },
+      );
+      if (response.ok) {
+        const result = (await response.json()) as {
+          suggestion?: unknown;
+          source?: unknown;
+        };
+        if (
+          typeof result.suggestion === "string" &&
+          result.source === "polycode"
+        ) {
+          return {
+            suggestion: result.suggestion.slice(0, 2_000),
+            source: "polycode",
+          };
+        }
+      }
+    } catch {
+      // Fall through to the local fallback below.
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   const root = polyCodeRoot();
   const completeScript = join(root, "complete.py");
   const checkpoint =

@@ -429,18 +429,9 @@ export function R6Avatar({
         />
       </mesh>
 
-      <group ref={head} name="Neck" position={[0, 2.24, 0]}>
+      <group ref={head} name="HeadMotor" position={[0, 2.14, 0]}>
         <R6Head color={colors.head} />
       </group>
-      <mesh name="Neck Joint" position={[0, 1.55, 0]} castShadow receiveShadow>
-        <cylinderGeometry args={[0.28, 0.28, 0.2, 16]} />
-        <meshStandardMaterial
-          color={colors.head}
-          roughness={0.86}
-          metalness={0}
-          envMapIntensity={0.16}
-        />
-      </mesh>
 
       {children}
 
