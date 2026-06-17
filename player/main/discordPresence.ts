@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 const DISCORD_CLIENT_ID =
   process.env.POLYMONS_DISCORD_CLIENT_ID?.trim() ||
-  "PUT_DISCORD_CLIENT_ID_HERE";
+  "1516848234591551568";
 
 type DiscordActivity = {
   details?: string;
@@ -105,7 +105,7 @@ export class DiscordPresenceClient {
   private connecting = false;
   private ready = false;
   private disabled =
-    !DISCORD_CLIENT_ID || DISCORD_CLIENT_ID === "PUT_DISCORD_CLIENT_ID_HERE";
+    !DISCORD_CLIENT_ID;
   private lastPresence: PolymonsPresence = {
     kind: "idle",
     details: "Browsing games",
