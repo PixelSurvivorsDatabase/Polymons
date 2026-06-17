@@ -37,21 +37,8 @@ type StudioUser = {
   description: string;
   tix: number;
   avatarUrl: string | null;
-  equippedShirtId:
-    | "polymon-shirt"
-    | "beta-tester-shirt"
-    | "creators-shirt"
-    | "orange-polymons-shirt"
-    | "polymons-varsity-jacket"
-    | null;
-  equippedPantsId:
-    | "classic-denim-pants"
-    | "polymon-pants"
-    | "beta-tester-pants"
-    | "creators-pants"
-    | "orange-polymons-pants"
-    | "polymons-varsity-pants"
-    | null;
+  equippedShirtId: string | null;
+  equippedPantsId: string | null;
   avatarAppearance: {
     face: "classic-smile";
     bodyColors: {

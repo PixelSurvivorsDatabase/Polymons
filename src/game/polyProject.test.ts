@@ -2064,6 +2064,110 @@ created:Destroy()`,
   );
 });
 
+test("runs server-created hitboxes with Touched damage", () => {
+  const fixture = project();
+  fixture.remotes = [
+    {
+      id: "swing-remote",
+      name: "Swing",
+      kind: "remoteEvent",
+    },
+  ];
+  fixture.scripts = [
+    {
+      id: "sword-server",
+      name: "SwordServer",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `local swing = ReplicatedStorage.Swing
+local damage = 25
+
+swing.OnServerEvent:Connect(function(player)
+    local character = player.Character
+    local root = character.HumanoidRootPart
+    local hitbox = Instance.new("Part")
+    hitbox.Name = "SwordHitbox"
+    hitbox.Size = Vector3.new(5, 4, 5)
+    hitbox.CanCollide = false
+    hitbox.Anchored = true
+    hitbox.Position = root.Position + root.LookVector * 4
+    hitbox.Touched:Connect(function(hit)
+        local targetCharacter = hit.Parent
+        local humanoid = targetCharacter.Humanoid
+        local targetPlayer = Players:GetPlayerFromCharacter(targetCharacter)
+        if targetPlayer == player then
+            return
+        end
+        humanoid.Health = humanoid.Health - damage
+    end)
+    hitbox.Parent = Workspace
+    hitbox:Destroy()
+end)`,
+    },
+    {
+      id: "sword-client",
+      name: "SwordClient",
+      kind: "localScript",
+      parent: "StarterPlayerScripts",
+      source: `local swing = ReplicatedStorage.Swing
+swing:FireServer()`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0, JSON.stringify(result.diagnostics));
+  assert.equal(result.project.playerSettings.health, 100);
+  assert.equal(result.project.dataStores.__poly_runtime__?.OtherPlayerHealth, 75);
+  assert.equal(
+    result.project.objects.some((object) => object.name === "SwordHitbox"),
+    false,
+  );
+});
+
+test("supports player loops and vector magnitude range checks", () => {
+  const fixture = project();
+  fixture.remotes = [
+    {
+      id: "range-remote",
+      name: "RangeCheck",
+      kind: "remoteEvent",
+    },
+  ];
+  fixture.scripts = [
+    {
+      id: "range-check",
+      name: "RangeCheck",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `local rangeCheck = ReplicatedStorage.RangeCheck
+
+rangeCheck.OnServerEvent:Connect(function(player)
+local root = player.Character.HumanoidRootPart
+for _, otherPlayer in pairs(Players:GetPlayers()) do
+    if otherPlayer ~= player then
+        local otherRoot = otherPlayer.Character.HumanoidRootPart
+        if (root.Position - otherRoot.Position).Magnitude <= 8 then
+            local humanoid = otherPlayer.Character.Humanoid
+            humanoid.Health = humanoid.Health - 10
+        end
+    end
+end
+end)`,
+    },
+    {
+      id: "range-client",
+      name: "RangeClient",
+      kind: "localScript",
+      parent: "StarterPlayerScripts",
+      source: "ReplicatedStorage.RangeCheck:FireServer()",
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0, JSON.stringify(result.diagnostics));
+  assert.equal(result.project.dataStores.__poly_runtime__?.OtherPlayerHealth, 90);
+});
+
 test("schedules task.delay and requests configured badges", () => {
   const fixture = project();
   fixture.badges = [

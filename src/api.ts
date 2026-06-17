@@ -143,6 +143,25 @@ export type Wardrobe = {
   items: import("./game/avatarCatalog").AvatarCatalogItem[];
 };
 
+export type MarketplaceCatalogItem = {
+  id: string;
+  itemType: "shirt" | "pants";
+  name: string;
+  description: string;
+  unlockType: "free" | "creator_visits" | "tix";
+  unlockThreshold: number | null;
+  priceTix: number;
+  bundleKey: string | null;
+  textureUrl: string | null;
+  creatorId: string | null;
+  createdFromUpload: boolean;
+  createdAt: string | null;
+  creator: {
+    username: string;
+    displayName: string;
+  } | null;
+};
+
 export type AvatarCatalogSubmission = {
   id: string;
   name: string;
@@ -342,6 +361,12 @@ export function getWardrobe(
   accessToken: string,
 ): Promise<Wardrobe> {
   return apiRequest("/v1/avatar/wardrobe", { accessToken });
+}
+
+export function listAvatarCatalog(): Promise<{
+  items: MarketplaceCatalogItem[];
+}> {
+  return apiRequest("/v1/avatar/catalog");
 }
 
 export function listAvatarUploads(

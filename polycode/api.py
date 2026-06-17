@@ -94,6 +94,7 @@ class PolyCodeRuntime:
     supabase_url = os.getenv("POLYCODE_SUPABASE_URL") or os.getenv("SUPABASE_URL")
     service_key = (
       os.getenv("POLYCODE_SUPABASE_SERVICE_ROLE_KEY")
+      or os.getenv("POLYCODE_SERVICE_ROLE_KEY")
       or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
       or os.getenv("SUPABASE_SECRET_KEY")
     )

@@ -121,10 +121,13 @@ export function ShirtMaterials({
     },
     [templateTextures],
   );
+  const hasTexture =
+    Boolean(templateTextures) ||
+    Boolean(textures.front || textures.back || textures.side);
   const material = (attach: string, map: Texture | null) => (
     <meshStandardMaterial
       attach={attach}
-      color={shirtId || templateTextures ? "#ffffff" : fallbackColor}
+      color={hasTexture ? "#ffffff" : fallbackColor}
       map={map}
       roughness={0.82}
       metalness={0}
@@ -198,10 +201,13 @@ export function PantsMaterials({
     },
     [templateTextures],
   );
+  const hasTexture =
+    Boolean(templateTextures) ||
+    Boolean(textures.front || textures.back || textures.side);
   const material = (attach: string, map: Texture | null) => (
     <meshStandardMaterial
       attach={attach}
-      color={pantsId || templateTextures ? "#ffffff" : fallbackColor}
+      color={hasTexture ? "#ffffff" : fallbackColor}
       map={map}
       roughness={0.86}
       metalness={0}
@@ -419,7 +425,7 @@ export function R6Avatar({
         rotation={[-Math.PI / 2, 0, 0]}
         renderOrder={-1}
       >
-        <circleGeometry args={[1.05, 28]} />
+        <circleGeometry args={[1.14, 28]} />
         <meshBasicMaterial
           color="#09080d"
           transparent
@@ -445,23 +451,6 @@ export function R6Avatar({
             fallbackColor={colors.torso}
           />
         </mesh>
-        {pantsId && (
-          <mesh
-            name="Pants Waist"
-            position={[0, -0.19, 0]}
-            castShadow
-            receiveShadow
-          >
-            <boxGeometry args={[2.015, 0.62, 1.015]} />
-            <PantsMaterials
-              pantsId={pantsId}
-              textureUrl={pantsTextureUrl}
-              bodyPart="waist"
-              waist
-              fallbackColor={colors.torso}
-            />
-          </mesh>
-        )}
         <group name="BackAttachment" position={[0, 0.65, 0.54]} />
         <group name="WaistAttachment" position={[0, -0.52, 0]} />
       </group>
@@ -469,10 +458,10 @@ export function R6Avatar({
       <group
         ref={leftArm}
         name="Left Shoulder"
-        position={[-1.54, 1.5, 0]}
+        position={[-1.57, 1.52, 0]}
       >
-        <mesh name="Left Arm" position={[0, -1.04, 0]} castShadow receiveShadow>
-          <boxGeometry args={[1, 2, 1]} />
+        <mesh name="Left Arm" position={[0, -1.07, 0]} castShadow receiveShadow>
+          <boxGeometry args={[1.08, 2.12, 1.04]} />
           <ShirtMaterials
             shirtId={shirtId}
             textureUrl={shirtTextureUrl}
@@ -486,10 +475,10 @@ export function R6Avatar({
       <group
         ref={rightArm}
         name="Right Shoulder"
-        position={[1.54, 1.5, 0]}
+        position={[1.57, 1.52, 0]}
       >
-        <mesh name="Right Arm" position={[0, -1.04, 0]} castShadow receiveShadow>
-          <boxGeometry args={[1, 2, 1]} />
+        <mesh name="Right Arm" position={[0, -1.07, 0]} castShadow receiveShadow>
+          <boxGeometry args={[1.08, 2.12, 1.04]} />
           <ShirtMaterials
             shirtId={shirtId}
             textureUrl={shirtTextureUrl}
@@ -501,9 +490,9 @@ export function R6Avatar({
         <group name="RightShoulderAttachment" position={[0, -0.08, 0]} />
       </group>
 
-      <group ref={leftLeg} name="Left Hip" position={[-0.51, -0.54, 0]}>
-        <mesh name="Left Leg" position={[0, -1, 0]} castShadow receiveShadow>
-          <boxGeometry args={[1, 2, 1]} />
+      <group ref={leftLeg} name="Left Hip" position={[-0.53, -0.56, 0]}>
+        <mesh name="Left Leg" position={[0, -1.04, 0]} castShadow receiveShadow>
+          <boxGeometry args={[1.06, 2.08, 1.04]} />
           <PantsMaterials
             pantsId={pantsId}
             textureUrl={pantsTextureUrl}
@@ -512,9 +501,9 @@ export function R6Avatar({
           />
         </mesh>
       </group>
-      <group ref={rightLeg} name="Right Hip" position={[0.51, -0.54, 0]}>
-        <mesh name="Right Leg" position={[0, -1, 0]} castShadow receiveShadow>
-          <boxGeometry args={[1, 2, 1]} />
+      <group ref={rightLeg} name="Right Hip" position={[0.53, -0.56, 0]}>
+        <mesh name="Right Leg" position={[0, -1.04, 0]} castShadow receiveShadow>
+          <boxGeometry args={[1.06, 2.08, 1.04]} />
           <PantsMaterials
             pantsId={pantsId}
             textureUrl={pantsTextureUrl}

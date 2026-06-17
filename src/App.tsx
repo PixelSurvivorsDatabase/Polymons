@@ -12,6 +12,7 @@ import {
   Plus,
   Search,
   Shirt,
+  ShoppingCart,
   Tickets,
   UserRound,
   Users,
@@ -41,6 +42,7 @@ import {
   getGameEntitlements,
   getPlayerProfile,
   getWardrobe,
+  listAvatarCatalog,
   listAvatarUploads,
   listFriendServers,
   listGameServers,
@@ -59,6 +61,7 @@ import {
   submitAvatarUpload,
   type AvatarCatalogSubmission,
   type Friendship,
+  type MarketplaceCatalogItem,
   type PlatformGame,
   type PlaySession,
   type PolymonsUser,
@@ -258,6 +261,7 @@ const navItems = [
   { to: "/", label: "Home", icon: Home },
   { to: "/discover", label: "Discover", icon: Compass },
   { to: "/friends", label: "Friends", icon: Users },
+  { to: "/catalog", label: "Catalog", icon: ShoppingCart },
   { to: "/avatar", label: "Avatar", icon: Shirt },
   { to: "/profile", label: "Profile", icon: UserRound },
   { to: "/create", label: "Create", icon: Plus },
@@ -492,6 +496,8 @@ function Layout() {
             <Route path="/discover" element={<DiscoverPage />} />
             <Route path="/games/:gameId" element={<GamePage />} />
             <Route path="/friends" element={<FriendsPage />} />
+            <Route path="/catalog" element={<MarketplacePage />} />
+            <Route path="/catalog/:itemId" element={<MarketplaceItemPage />} />
             <Route path="/avatar" element={<WardrobePage />} />
             <Route path="/profile" element={<ProfilePage />} />
             <Route path="/players/:username" element={<ProfilePage />} />
@@ -1697,6 +1703,411 @@ function FriendsPage() {
   );
 }
 
+function catalogItemCreator(item: MarketplaceCatalogItem) {
+  return item.creator?.displayName ?? "Polymons";
+}
+
+function catalogPriceLabel(item: MarketplaceCatalogItem) {
+  if (item.unlockType === "free") return "Free";
+  if (item.unlockType === "tix") return `${item.priceTix.toLocaleString()} Tix`;
+  return `${item.unlockThreshold ?? 100}+ visits`;
+}
+
+function CatalogTextureTile({
+  item,
+  large = false,
+}: {
+  item:
+    | MarketplaceCatalogItem
+    | (Wardrobe["items"][number] & {
+        createdAt?: string | null;
+        creator?: null;
+      });
+  large?: boolean;
+}) {
+  return (
+    <span className={`marketplace-texture-tile ${large ? "large" : ""}`}>
+      {item.textureUrl ? (
+        <img src={item.textureUrl} alt="" />
+      ) : (
+        <span className={`shirt-texture shirt-texture-${item.id}`}>
+          {item.itemType === "pants" ? <b>PANTS</b> : <b>SHIRT</b>}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function MarketplacePage() {
+  const { user, session, refresh } = useAuth();
+  const [items, setItems] = useState<MarketplaceCatalogItem[]>([]);
+  const [wardrobe, setWardrobe] = useState<Wardrobe | null>(null);
+  const [query, setQuery] = useState("");
+  const [itemType, setItemType] = useState<"all" | "shirt" | "pants">("all");
+  const [priceFilter, setPriceFilter] = useState<"all" | "free" | "tix">("all");
+  const [status, setStatus] = useState("");
+
+  const loadCatalog = useCallback(async () => {
+    setStatus("");
+    try {
+      const [catalog, closet] = await Promise.all([
+        listAvatarCatalog(),
+        session
+          ? getWardrobe(session.accessToken).catch(async () => {
+              const renewed = await refresh();
+              return renewed ? getWardrobe(renewed.accessToken) : null;
+            })
+          : Promise.resolve(null),
+      ]);
+      setItems(catalog.items);
+      setWardrobe(closet);
+    } catch (error) {
+      setStatus(
+        error instanceof Error ? error.message : "Could not load the catalog.",
+      );
+    }
+  }, [refresh, session]);
+
+  useEffect(() => {
+    void loadCatalog();
+  }, [loadCatalog]);
+
+  const wardrobeById = new Map(
+    (wardrobe?.items ?? []).map((item) => [item.id, item]),
+  );
+  const filteredItems = items.filter((item) => {
+    const search = query.trim().toLowerCase();
+    const matchesQuery =
+      !search ||
+      item.name.toLowerCase().includes(search) ||
+      item.description.toLowerCase().includes(search) ||
+      catalogItemCreator(item).toLowerCase().includes(search);
+    const matchesType = itemType === "all" || item.itemType === itemType;
+    const matchesPrice = priceFilter === "all" || item.unlockType === priceFilter;
+    return matchesQuery && matchesType && matchesPrice;
+  });
+  const chips = ["shirts", "pants", "free", "tix", "creator made", "classic", "new"];
+
+  return (
+    <>
+      <section className="marketplace-hero">
+        <div>
+          <span className="eyebrow">Catalog</span>
+          <h1>Marketplace</h1>
+        </div>
+        <label className="marketplace-search">
+          <Search size={18} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.currentTarget.value)}
+            placeholder="Search clothing"
+            aria-label="Search catalog"
+          />
+        </label>
+        <select
+          value={itemType}
+          onChange={(event) =>
+            setItemType(event.currentTarget.value as "all" | "shirt" | "pants")
+          }
+          aria-label="Catalog type"
+        >
+          <option value="all">All items</option>
+          <option value="shirt">Shirts</option>
+          <option value="pants">Pants</option>
+        </select>
+        <select
+          value={priceFilter}
+          onChange={(event) =>
+            setPriceFilter(event.currentTarget.value as "all" | "free" | "tix")
+          }
+          aria-label="Catalog price"
+        >
+          <option value="all">Any price</option>
+          <option value="free">Free</option>
+          <option value="tix">Tix</option>
+        </select>
+        <Link className="marketplace-balance" to="/avatar">
+          <Tickets size={18} />
+          {(wardrobe?.tix ?? user?.tix ?? 0).toLocaleString()} Tix
+        </Link>
+      </section>
+      <div className="marketplace-chip-row">
+        {chips.map((chip) => (
+          <button
+            key={chip}
+            type="button"
+            onClick={() => {
+              if (chip === "shirts") setItemType("shirt");
+              else if (chip === "pants") setItemType("pants");
+              else if (chip === "free") setPriceFilter("free");
+              else if (chip === "tix") setPriceFilter("tix");
+              else setQuery(chip);
+            }}
+          >
+            {chip}
+          </button>
+        ))}
+      </div>
+      {status && <p className="wardrobe-status">{status}</p>}
+      <section className="marketplace-grid">
+        {filteredItems.map((item) => {
+          const closetItem = wardrobeById.get(item.id);
+          return (
+            <Link key={item.id} className="marketplace-card" to={`/catalog/${item.id}`}>
+              <CatalogTextureTile item={item} />
+              <strong>{item.name}</strong>
+              <span>By {catalogItemCreator(item)}</span>
+              <small>
+                <Tickets size={14} />
+                {closetItem?.equipped
+                  ? "Equipped"
+                  : closetItem?.owned
+                    ? "Owned"
+                    : catalogPriceLabel(item)}
+              </small>
+            </Link>
+          );
+        })}
+        {filteredItems.length === 0 && (
+          <div className="large-empty-state marketplace-empty">
+            <ShoppingCart size={42} />
+            <h2>No items found.</h2>
+            <p>Try a different search or filter.</p>
+          </div>
+        )}
+      </section>
+    </>
+  );
+}
+
+function MarketplaceItemPage() {
+  const { itemId } = useParams();
+  const { user, session, showAuth, refresh, updateUser } = useAuth();
+  const [item, setItem] = useState<MarketplaceCatalogItem | null>(null);
+  const [wardrobe, setWardrobe] = useState<Wardrobe | null>(null);
+  const [status, setStatus] = useState("");
+  const [working, setWorking] = useState(false);
+
+  const loadItem = useCallback(async () => {
+    if (!itemId) return;
+    setStatus("");
+    try {
+      const [catalog, closet] = await Promise.all([
+        listAvatarCatalog(),
+        session
+          ? getWardrobe(session.accessToken).catch(async () => {
+              const renewed = await refresh();
+              return renewed ? getWardrobe(renewed.accessToken) : null;
+            })
+          : Promise.resolve(null),
+      ]);
+      setItem(catalog.items.find((nextItem) => nextItem.id === itemId) ?? null);
+      setWardrobe(closet);
+    } catch (error) {
+      setStatus(
+        error instanceof Error ? error.message : "Could not load this item.",
+      );
+    }
+  }, [itemId, refresh, session]);
+
+  useEffect(() => {
+    void loadItem();
+  }, [loadItem]);
+
+  async function withCurrentToken<T>(
+    request: (accessToken: string) => Promise<T>,
+  ): Promise<T> {
+    if (!session) throw new Error("Sign in to use the catalog.");
+    try {
+      return await request(session.accessToken);
+    } catch {
+      const renewed = await refresh();
+      if (!renewed) throw new Error("Sign in again to use the catalog.");
+      return request(renewed.accessToken);
+    }
+  }
+
+  async function claimItem() {
+    if (!item) return;
+    setWorking(true);
+    setStatus("");
+    try {
+      const purchase = await withCurrentToken((accessToken) =>
+        claimAvatarItem(item.id, accessToken),
+      );
+      if (user) updateUser({ ...user, tix: purchase.tix });
+      await loadItem();
+      setStatus(`${item.name} was added to your inventory.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not buy this item.");
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function equipItem() {
+    if (!item) return;
+    setWorking(true);
+    setStatus("");
+    try {
+      const result =
+        item.itemType === "pants"
+          ? await withCurrentToken((accessToken) =>
+              equipPants(item.id as PantsId, accessToken),
+            )
+          : await withCurrentToken((accessToken) =>
+              equipShirt(item.id as ShirtId, accessToken),
+            );
+      updateUser(result.user);
+      await loadItem();
+      setStatus(`${item.name} equipped.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not equip this item.");
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  if (!item) {
+    return (
+      <section className="large-empty-state">
+        <ShoppingCart size={44} />
+        <h2>{status || "Catalog item not found."}</h2>
+        <Link className="primary-button" to="/catalog">
+          Back to catalog
+        </Link>
+      </section>
+    );
+  }
+
+  const closetItem = wardrobe?.items.find((nextItem) => nextItem.id === item.id);
+  const owned = closetItem?.owned === true;
+  const equipped = closetItem?.equipped === true;
+  const previewShirtId =
+    item.itemType === "shirt"
+      ? (item.id as ShirtId)
+      : wardrobe?.equippedShirtId ?? user?.equippedShirtId ?? null;
+  const previewPantsId =
+    item.itemType === "pants"
+      ? (item.id as PantsId)
+      : wardrobe?.equippedPantsId ?? user?.equippedPantsId ?? null;
+  const previewShirtTextureUrl =
+    item.itemType === "shirt"
+      ? item.textureUrl
+      : wardrobe?.items.find((nextItem) => nextItem.id === wardrobe.equippedShirtId)
+          ?.textureUrl ??
+        user?.equippedShirtTextureUrl ??
+        null;
+  const previewPantsTextureUrl =
+    item.itemType === "pants"
+      ? item.textureUrl
+      : wardrobe?.items.find((nextItem) => nextItem.id === wardrobe.equippedPantsId)
+          ?.textureUrl ??
+        user?.equippedPantsTextureUrl ??
+        null;
+
+  return (
+    <section className="marketplace-detail">
+      <div className="marketplace-detail-preview">
+        <div className="marketplace-avatar-preview">
+          <Suspense fallback={<span>Loading preview...</span>}>
+            <AvatarPreview
+              shirtId={previewShirtId}
+              pantsId={previewPantsId}
+              shirtTextureUrl={previewShirtTextureUrl}
+              pantsTextureUrl={previewPantsTextureUrl}
+              appearance={wardrobe?.avatarAppearance ?? user?.avatarAppearance}
+            />
+          </Suspense>
+        </div>
+        <div className="marketplace-preview-footer">
+          <CatalogTextureTile item={item} large />
+          <span>{item.itemType === "pants" ? "Pants" : "Shirt"} template</span>
+        </div>
+      </div>
+      <div className="marketplace-detail-copy">
+        <Link className="text-button" to="/catalog">
+          <ChevronLeft size={16} /> Back to catalog
+        </Link>
+        <h1>{item.name}</h1>
+        <p className="marketplace-byline">By {catalogItemCreator(item)}</p>
+        <div className="marketplace-price-table">
+          <span>Original Price</span>
+          <strong>
+            <Tickets size={18} />
+            {catalogPriceLabel(item)}
+          </strong>
+          <span>Best Price</span>
+          <strong>
+            <Tickets size={18} />
+            {catalogPriceLabel(item)}
+          </strong>
+        </div>
+        {!session ? (
+          <button className="primary-button" onClick={() => showAuth()}>
+            Sign in to get item
+          </button>
+        ) : owned ? (
+          <button
+            className={equipped ? "secondary-button" : "primary-button"}
+            disabled={working || equipped}
+            onClick={() => void equipItem()}
+          >
+            {equipped ? "Equipped" : "Equip"}
+          </button>
+        ) : (
+          <button
+            className="primary-button"
+            disabled={
+              working ||
+              (item.unlockType === "tix" &&
+                (wardrobe?.tix ?? user?.tix ?? 0) < item.priceTix) ||
+              item.unlockType === "creator_visits"
+            }
+            onClick={() => void claimItem()}
+          >
+            {item.unlockType === "free"
+              ? "Get"
+              : item.unlockType === "tix"
+                ? `Buy for ${item.priceTix.toLocaleString()} Tix`
+                : "Visit unlock"}
+          </button>
+        )}
+        <button className="secondary-button" disabled>
+          Add to cart
+        </button>
+        {status && <p className="wardrobe-status">{status}</p>}
+        <dl className="marketplace-item-facts">
+          <div>
+            <dt>Tradable</dt>
+            <dd>No</dd>
+          </div>
+          <div>
+            <dt>Type</dt>
+            <dd>{item.itemType === "pants" ? "Pants" : "Shirt"}</dd>
+          </div>
+          <div>
+            <dt>Materials</dt>
+            <dd>Classic clothing</dd>
+          </div>
+          <div>
+            <dt>Created</dt>
+            <dd>
+              {item.createdAt
+                ? new Date(item.createdAt).toLocaleDateString()
+                : "Polymons"}
+            </dd>
+          </div>
+          <div>
+            <dt>Description</dt>
+            <dd>{item.description || "No description yet."}</dd>
+          </div>
+        </dl>
+      </div>
+    </section>
+  );
+}
+
 function WardrobePage() {
   const { user, session, showAuth, refresh, updateUser } = useAuth();
   const [wardrobe, setWardrobe] = useState<Wardrobe | null>(null);
@@ -1729,7 +2140,7 @@ function WardrobePage() {
           ? current
           : result.equippedShirtId ??
             result.equippedPantsId ??
-            result.items[0]?.id ??
+            result.items.find((item) => item.owned)?.id ??
             null,
       );
     } catch (error) {
@@ -1762,8 +2173,8 @@ function WardrobePage() {
     wardrobe?.items.filter(
       (item) =>
         (view === "inventory" && item.owned) ||
-        (view === "shirts" && item.itemType === "shirt") ||
-        (view === "pants" && item.itemType === "pants"),
+        (view === "shirts" && item.itemType === "shirt" && item.owned) ||
+        (view === "pants" && item.itemType === "pants" && item.owned),
     ) ?? [];
   const activeSession = session;
 
@@ -2042,6 +2453,10 @@ function WardrobePage() {
                 <Download size={17} />
                 Pants
               </a>
+              <Link className="secondary-button shirt-template-download" to="/catalog">
+                <ShoppingCart size={17} />
+                Catalog
+              </Link>
             </div>
           </div>
           <div className="wardrobe-tabs">

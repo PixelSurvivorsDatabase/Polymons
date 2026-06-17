@@ -230,6 +230,14 @@ function cleanPolyCodeSuggestion(value: string): string | null {
   return cleaned;
 }
 
+function shouldRequestPolyCode(prompt: string, currentLine: string): boolean {
+  if (prompt.trim().length < 8) return false;
+  if (currentLine.trim().length >= 1) return true;
+  const lines = prompt.replace(/\r\n/g, "\n").split("\n");
+  const previousLine = lines.at(-2)?.trim() ?? "";
+  return previousLine.length >= 4;
+}
+
 export default function CodeEditor({
   script,
   project,
@@ -252,6 +260,7 @@ export default function CodeEditor({
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const modelRef = useRef<monaco.editor.ITextModel | null>(null);
   const trainingTimerRef = useRef<number | null>(null);
+  const inlineSuggestTimerRef = useRef<number | null>(null);
   const polyCodeCacheRef = useRef<{
     key: string;
     promise: Promise<string | null>;
@@ -312,7 +321,10 @@ export default function CodeEditor({
       acceptSuggestionOnEnter: "on",
       acceptSuggestionOnCommitCharacter: true,
       parameterHints: { enabled: true, cycle: true },
-      inlineSuggest: { enabled: settingsRef.current.autoSuggestEnabled },
+      inlineSuggest: {
+        enabled: settingsRef.current.autoSuggestEnabled,
+        suppressSuggestions: settingsRef.current.autoSuggestEnabled,
+      },
     });
     editorRef.current = editor;
     editor.addCommand(
@@ -342,10 +354,35 @@ export default function CodeEditor({
     };
     updateDiagnostics(scriptRef.current.source);
 
+    const scheduleInlineSuggest = () => {
+      if (inlineSuggestTimerRef.current !== null) {
+        window.clearTimeout(inlineSuggestTimerRef.current);
+      }
+      if (!settingsRef.current.autoSuggestEnabled) return;
+      inlineSuggestTimerRef.current = window.setTimeout(() => {
+        const currentEditor = editorRef.current;
+        const currentModel = modelRef.current;
+        if (!currentEditor || !currentModel) return;
+        const position = currentEditor.getPosition();
+        if (!position) return;
+        const currentLine = currentModel
+          .getLineContent(position.lineNumber)
+          .slice(0, position.column - 1);
+        const prompt = polyCodePrompt(currentModel, position);
+        if (!shouldRequestPolyCode(prompt, currentLine)) return;
+        currentEditor.trigger(
+          "polycode",
+          "editor.action.inlineSuggest.trigger",
+          undefined,
+        );
+      }, 260);
+    };
+
     const changeSubscription = model.onDidChangeContent(() => {
       const source = model.getValue();
       if (!externalUpdate.current) onChangeRef.current(source);
       updateDiagnostics(source);
+      scheduleInlineSuggest();
       if (trainingTimerRef.current !== null) {
         window.clearTimeout(trainingTimerRef.current);
       }
@@ -358,6 +395,9 @@ export default function CodeEditor({
           });
         }, 2_000);
       }
+    });
+    const cursorSubscription = editor.onDidChangeCursorPosition(() => {
+      scheduleInlineSuggest();
     });
     const completionSubscription = monaco.languages.registerCompletionItemProvider(
       language,
@@ -876,8 +916,7 @@ export default function CodeEditor({
           let insertText: string | null = null;
           if (
             window.polyStudio?.completeCode &&
-            currentLine.trim().length >= 2 &&
-            prompt.trim().length >= 8
+            shouldRequestPolyCode(prompt, currentLine)
           ) {
             const cacheKey = [
               projectRef.current.language,
@@ -929,7 +968,11 @@ export default function CodeEditor({
       if (trainingTimerRef.current !== null) {
         window.clearTimeout(trainingTimerRef.current);
       }
+      if (inlineSuggestTimerRef.current !== null) {
+        window.clearTimeout(inlineSuggestTimerRef.current);
+      }
       changeSubscription.dispose();
+      cursorSubscription.dispose();
       completionSubscription.dispose();
       inlineCompletionSubscription.dispose();
       monaco.editor.setModelMarkers(model, "poly-script-analysis", []);
@@ -946,8 +989,15 @@ export default function CodeEditor({
         ? { other: true, comments: false, strings: false }
         : false,
       suggestOnTriggerCharacters: settings.autoSuggestEnabled,
-      inlineSuggest: { enabled: settings.autoSuggestEnabled },
+      inlineSuggest: {
+        enabled: settings.autoSuggestEnabled,
+        suppressSuggestions: settings.autoSuggestEnabled,
+      },
     });
+    if (!settings.autoSuggestEnabled && inlineSuggestTimerRef.current !== null) {
+      window.clearTimeout(inlineSuggestTimerRef.current);
+      inlineSuggestTimerRef.current = null;
+    }
   }, [settings.autoSuggestEnabled]);
 
   useEffect(() => {

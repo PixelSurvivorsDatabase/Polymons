@@ -335,6 +335,8 @@ export type PolyTweenRequest = {
   };
 };
 
+type RuntimePlayerId = "LocalPlayer" | "OtherPlayer";
+
 type Reference =
   | { kind: "world"; id: string }
   | { kind: "model"; id: string }
@@ -342,7 +344,14 @@ type Reference =
   | { kind: "script"; id: string }
   | { kind: "value"; id: string }
   | { kind: "service"; id: string }
-  | { kind: "player"; id: "LocalPlayer" }
+  | { kind: "player"; id: RuntimePlayerId }
+  | { kind: "character"; id: RuntimePlayerId }
+  | {
+      kind: "characterPart";
+      id: RuntimePlayerId;
+      part: "HumanoidRootPart";
+    }
+  | { kind: "humanoid"; id: RuntimePlayerId }
   | { kind: "remote"; id: string };
 
 let soundRequestSequence = 0;
@@ -355,6 +364,7 @@ let activePurchaseRequests:
   | null = null;
 const MATH_RANDOM_STATE = "__poly_math_random_state__";
 const RANDOM_GENERATOR_PREFIX = "__poly_random_generator__";
+const RUNTIME_STORE = "__poly_runtime__";
 
 function collectScheduledScripts<T>(
   scheduledScripts: PolyScheduledScript[],
@@ -539,7 +549,7 @@ function runtimeWorldObject(
     autoplay: false,
     parentId: null,
     modelId: null,
-    attributes: {},
+    attributes: { __runtimeCreated: true },
     tags: [],
   };
 }
@@ -874,6 +884,74 @@ function localPlayerData(project: PolyProject): PolyPlayerData {
   return projectPlayerData.get(project) ?? DEFAULT_PLAYER_DATA;
 }
 
+function playerName(id: RuntimePlayerId): string {
+  return id === "LocalPlayer" ? "localplayer" : "otherplayer";
+}
+
+function playerDisplayName(id: RuntimePlayerId): string {
+  return id === "LocalPlayer" ? "LocalPlayer" : "OtherPlayer";
+}
+
+function characterPosition(id: RuntimePlayerId): [number, number, number] {
+  return id === "LocalPlayer" ? [0, 2, 0] : [0, 2, -4];
+}
+
+function characterLookVector(_id: RuntimePlayerId): [number, number, number] {
+  return [0, 0, -1];
+}
+
+function runtimePlayerHealth(project: PolyProject, id: RuntimePlayerId): number {
+  if (id === "LocalPlayer") return project.playerSettings.health;
+  const value = project.dataStores[RUNTIME_STORE]?.OtherPlayerHealth;
+  return typeof value === "number" ? value : project.playerSettings.maxHealth;
+}
+
+function runtimePlayerMaxHealth(project: PolyProject, id: RuntimePlayerId): number {
+  if (id === "LocalPlayer") return project.playerSettings.maxHealth;
+  const value = project.dataStores[RUNTIME_STORE]?.OtherPlayerMaxHealth;
+  return typeof value === "number" ? value : project.playerSettings.maxHealth;
+}
+
+function setRuntimePlayerHealth(
+  project: PolyProject,
+  id: RuntimePlayerId,
+  value: number,
+): void {
+  const clamped = Math.max(0, Math.min(value, runtimePlayerMaxHealth(project, id)));
+  if (id === "LocalPlayer") {
+    project.playerSettings.health = clamped;
+    return;
+  }
+  project.dataStores[RUNTIME_STORE] ??= {};
+  project.dataStores[RUNTIME_STORE].OtherPlayerHealth = clamped;
+}
+
+function setRuntimePlayerMaxHealth(
+  project: PolyProject,
+  id: RuntimePlayerId,
+  value: number,
+): void {
+  const clamped = Math.max(1, Math.min(value, 500));
+  if (id === "LocalPlayer") {
+    project.playerSettings.maxHealth = clamped;
+    project.playerSettings.health = Math.min(project.playerSettings.health, clamped);
+    return;
+  }
+  project.dataStores[RUNTIME_STORE] ??= {};
+  project.dataStores[RUNTIME_STORE].OtherPlayerMaxHealth = clamped;
+  project.dataStores[RUNTIME_STORE].OtherPlayerHealth = Math.min(
+    runtimePlayerHealth(project, id),
+    clamped,
+  );
+}
+
+function referenceKey(reference: Reference): string {
+  if (reference.kind === "characterPart") {
+    return `${reference.kind}:${reference.id}:${reference.part}`;
+  }
+  return `${reference.kind}:${reference.id}`;
+}
+
 function referenceForId(project: PolyProject, id: string): Reference | null {
   if (project.objects.some((item) => item.id === id)) return { kind: "world", id };
   if (project.models.some((item) => item.id === id)) return { kind: "model", id };
@@ -928,6 +1006,12 @@ function parentReference(
   if (reference.kind === "player") {
     return { kind: "service", id: "Players" };
   }
+  if (reference.kind === "characterPart" || reference.kind === "humanoid") {
+    return { kind: "character", id: reference.id };
+  }
+  if (reference.kind === "character") {
+    return { kind: "service", id: "Workspace" };
+  }
   return null;
 }
 
@@ -945,6 +1029,17 @@ function childReference(
       parent.id as Parameters<typeof referenceByName>[1],
       name,
     );
+  }
+  if (parent.kind === "player" && name === "Character") {
+    return { kind: "character", id: parent.id };
+  }
+  if (parent.kind === "character") {
+    if (name === "HumanoidRootPart") {
+      return { kind: "characterPart", id: parent.id, part: "HumanoidRootPart" };
+    }
+    if (name === "Humanoid") {
+      return { kind: "humanoid", id: parent.id };
+    }
   }
   const parentId = parent.id;
   const object = project.objects.find(
@@ -1176,6 +1271,7 @@ function callbackEndIndex(
       const line = lines[index].trim();
       if (
         /^(?:local\s+)?function\b/.test(line) ||
+        /\.(?:MouseButton1Click|Activated|Touched|TouchEnded|OnServerEvent|OnClientEvent|InputBegan|InputEnded)\s*:\s*Connect\s*\(\s*function\b/.test(line) ||
         /^if\b.*\bthen\s*$/.test(line) ||
         /^(?:for|while)\b.*\bdo\s*$/.test(line) ||
         /^repeat\b/.test(line)
@@ -1454,6 +1550,36 @@ function scriptEventHandlers(script: PolyScript): ScriptEventHandler[] {
   return handlers;
 }
 
+function inlineScriptEventHandlers(script: PolyScript, source: string): ScriptEventHandler[] {
+  const lines = source.split("\n");
+  const handlers: ScriptEventHandler[] = [];
+  const startPattern =
+    /^\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.(MouseButton1Click|Activated|Touched|TouchEnded)\s*:\s*Connect\s*\(\s*function\s*\(([^)]*)\)\s*$/;
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(startPattern);
+    if (!match) continue;
+    const { endIndex, closed } = callbackEndIndex(
+      lines,
+      index,
+      "luau",
+      /^\s*end\s*\)\s*;?\s*$/,
+    );
+    handlers.push({
+      target: match[1],
+      event: match[2] as ScriptEventHandler["event"],
+      parameters: parameterNames(match[3] ?? ""),
+      prelude: lines.slice(0, index).join("\n"),
+      body: lines.slice(index + 1, closed ? endIndex : lines.length).join("\n"),
+      line: index + 1,
+      closed,
+      startIndex: index,
+      endIndex,
+    });
+    index = endIndex;
+  }
+  return handlers;
+}
+
 function guiEventHandlers(script: PolyScript): ScriptEventHandler[] {
   return scriptEventHandlers(script).filter(
     (handler) => handler.event !== "Touched" && handler.event !== "TouchEnded",
@@ -1563,6 +1689,13 @@ function eventTargetReference(
     script,
     project,
   );
+}
+
+function handlerTargetsRuntimePart(handler: ScriptEventHandler): boolean {
+  const escapedTarget = handler.target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    String.raw`(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+${escapedTarget}\s*=\s*Instance(?::|\.|::)new\(\s*["']Part["']\s*\)`,
+  ).test(handler.prelude);
 }
 
 function parseNumbers(value: string, count: number): number[] | null {
@@ -1676,6 +1809,10 @@ function rawStoredValue(value: PolyStoredValue): string {
   return String(value);
 }
 
+function vectorToConstructor(vector: readonly number[]): string {
+  return `Vector${vector.length}.new(${vector.join(", ")})`;
+}
+
 function moduleExports(script: PolyScript): Record<string, PolyStoredValue> {
   const exports: Record<string, PolyStoredValue> = {};
   const source =
@@ -1756,6 +1893,22 @@ function referencePropertyValue(
     if (property === "Shape") return object?.shape ?? "block";
     return undefined;
   }
+  if (reference.kind === "character") {
+    if (property === "Name") return `${playerName(reference.id)}Character`;
+    return undefined;
+  }
+  if (reference.kind === "characterPart") {
+    if (property === "Name") return reference.part;
+    if (property === "Health") return runtimePlayerHealth(project, reference.id);
+    if (property === "MaxHealth") return runtimePlayerMaxHealth(project, reference.id);
+    return undefined;
+  }
+  if (reference.kind === "humanoid") {
+    if (property === "Name") return "Humanoid";
+    if (property === "Health") return runtimePlayerHealth(project, reference.id);
+    if (property === "MaxHealth") return runtimePlayerMaxHealth(project, reference.id);
+    return undefined;
+  }
   if (reference.kind === "gui") {
     const gui = project.gui.find((item) => item.id === reference.id);
     if (property === "Name") return gui?.name;
@@ -1789,9 +1942,16 @@ function referencePropertyValue(
   }
   if (reference.kind !== "player") return undefined;
   const playerData = localPlayerData(project);
-  if (property === "UserId") return playerData.userId;
+  if (property === "UserId") {
+    return reference.id === "LocalPlayer" ? playerData.userId : 999_999;
+  }
+  if (property === "Name") return playerName(reference.id);
   if (property === "Username") return playerData.username;
-  if (property === "DisplayName") return playerData.displayName;
+  if (property === "DisplayName") {
+    return reference.id === "LocalPlayer"
+      ? playerData.displayName
+      : playerDisplayName(reference.id);
+  }
   const leaderstat = project.leaderstats.find((stat) => stat.name === property);
   if (leaderstat) return leaderstat.defaultValue;
   if (property === "Health") return project.playerSettings.health;
@@ -1816,6 +1976,109 @@ function referencePropertyValue(
   return undefined;
 }
 
+function referenceVectorValue(
+  project: PolyProject,
+  reference: Reference,
+  property: string,
+): [number, number, number] | null {
+  if (reference.kind === "world") {
+    const object = project.objects.find((item) => item.id === reference.id);
+    if (!object) return null;
+    if (property === "Position") return [...object.position];
+    if (property === "Rotation") return [...object.rotation];
+    if (property === "Size") return [...object.scale];
+    if (property === "Velocity") return [...(object.velocity ?? [0, 0, 0])];
+    if (property === "AngularVelocity") {
+      return [...(object.angularVelocity ?? [0, 0, 0])];
+    }
+    if (property === "LookVector") {
+      const yaw = ((object.rotation[1] ?? 0) * Math.PI) / 180;
+      return [Math.sin(yaw), 0, -Math.cos(yaw)];
+    }
+    return null;
+  }
+  if (reference.kind === "characterPart") {
+    if (property === "Position") return characterPosition(reference.id);
+    if (property === "LookVector") return characterLookVector(reference.id);
+  }
+  return null;
+}
+
+function resolveVectorExpression(
+  rawValue: string,
+  project: PolyProject,
+  variables: Map<string, Reference>,
+  values: Map<string, PolyStoredValue>,
+  modules: Map<string, Record<string, PolyStoredValue>>,
+  script?: PolyScript,
+): [number, number, number] | null {
+  let expression = rawValue.trim().replace(/;$/, "");
+  if (expression.startsWith("(") && expression.endsWith(")")) {
+    expression = expression.slice(1, -1).trim();
+  }
+  const direct = parseNumbers(expression, 3);
+  if (direct) return direct as [number, number, number];
+  const property = expression.match(/^(.+)\.([A-Za-z_]\w*)$/);
+  if (property) {
+    const reference =
+      variables.get(property[1]) ??
+      resolveReferenceExpression(property[1], project, script, variables);
+    if (reference) {
+      return referenceVectorValue(project, reference, property[2]);
+    }
+  }
+  const binary = splitBinaryExpression(expression);
+  if (!binary) return null;
+  const leftVector = resolveVectorExpression(
+    binary[0],
+    project,
+    variables,
+    values,
+    modules,
+    script,
+  );
+  const rightVector = resolveVectorExpression(
+    binary[2],
+    project,
+    variables,
+    values,
+    modules,
+    script,
+  );
+  const leftNumber = resolveExpressionValue(
+    binary[0],
+    project,
+    variables,
+    values,
+    modules,
+    script,
+  );
+  const rightNumber = resolveExpressionValue(
+    binary[2],
+    project,
+    variables,
+    values,
+    modules,
+    script,
+  );
+  if (leftVector && rightVector && (binary[1] === "+" || binary[1] === "-")) {
+    return leftVector.map((value, index) =>
+      binary[1] === "+" ? value + rightVector[index] : value - rightVector[index],
+    ) as [number, number, number];
+  }
+  if (leftVector && typeof rightNumber === "number" && ["*", "/"].includes(binary[1])) {
+    const divisor = binary[1] === "/" ? rightNumber : 1;
+    if (divisor === 0) return null;
+    return leftVector.map((value) =>
+      binary[1] === "*" ? value * rightNumber : value / divisor,
+    ) as [number, number, number];
+  }
+  if (rightVector && typeof leftNumber === "number" && binary[1] === "*") {
+    return rightVector.map((value) => value * leftNumber) as [number, number, number];
+  }
+  return null;
+}
+
 function resolveAssignmentValue(
   rawValue: string,
   project: PolyProject,
@@ -1824,6 +2087,14 @@ function resolveAssignmentValue(
   modules: Map<string, Record<string, PolyStoredValue>>,
 ): string {
   const expression = rawValue.trim().replace(/;$/, "");
+  const vector = resolveVectorExpression(
+    expression,
+    project,
+    variables,
+    values,
+    modules,
+  );
+  if (vector) return vectorToConstructor(vector);
   const arithmetic = expression.match(
     /^([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*([+\-*/])\s*(.+)$/,
   );
@@ -2056,6 +2327,20 @@ function resolveExpressionValue(
     );
     return value === false || value === null || value === undefined;
   }
+  const magnitude =
+    expression.match(/^\((.+)\)\.Magnitude$/) ??
+    expression.match(/^(.+)\.Magnitude$/);
+  if (magnitude) {
+    const vector = resolveVectorExpression(
+      magnitude[1],
+      project,
+      variables,
+      values,
+      modules,
+      script,
+    );
+    return vector ? Math.hypot(...vector) : undefined;
+  }
   const binary = splitBinaryExpression(expression);
   if (binary) {
     const left = resolveExpressionValue(
@@ -2089,6 +2374,15 @@ function resolveExpressionValue(
   }
   const property = expression.match(/^(.+)\.([A-Za-z_]\w*)$/);
   if (property) {
+    const vector = resolveVectorExpression(
+      expression,
+      project,
+      variables,
+      values,
+      modules,
+      script,
+    );
+    if (vector) return vectorToConstructor(vector);
     const storedReference = values.get(property[1]);
     const reference =
       variables.get(property[1]) ??
@@ -2135,6 +2429,15 @@ function propertySetFor(
   if (reference.kind === "value") return new Set(["Name", "Value"]);
   if (reference.kind === "service") {
     return reference.id === "Lighting" ? LIGHTING_PROPERTIES : new Set();
+  }
+  if (reference.kind === "humanoid") {
+    return new Set(["Name", "Health", "MaxHealth"]);
+  }
+  if (reference.kind === "characterPart") {
+    return new Set(["Name", "Position", "Health", "MaxHealth"]);
+  }
+  if (reference.kind === "character") {
+    return new Set(["Name"]);
   }
   if (reference.kind === "model" || reference.kind === "script") {
     return new Set();
@@ -2491,6 +2794,33 @@ function assignProperty(
     return null;
   }
 
+  if (reference.kind === "humanoid") {
+    if (property === "Name") return "Name is read-only for Humanoid.";
+    const value = parseNumber(rawValue);
+    if (value === null || value < 0 || value > 500) {
+      return `${property} must be between 0 and 500.`;
+    }
+    if (property === "Health") setRuntimePlayerHealth(project, reference.id, value);
+    if (property === "MaxHealth") setRuntimePlayerMaxHealth(project, reference.id, value);
+    return null;
+  }
+
+  if (reference.kind === "characterPart") {
+    if (property === "Name") return "Name is read-only for character parts.";
+    if (property === "Health" || property === "MaxHealth") {
+      const value = parseNumber(rawValue);
+      if (value === null || value < 0 || value > 500) {
+        return `${property} must be between 0 and 500.`;
+      }
+      if (property === "Health") setRuntimePlayerHealth(project, reference.id, value);
+      if (property === "MaxHealth") setRuntimePlayerMaxHealth(project, reference.id, value);
+      return null;
+    }
+    const value = parseNumbers(rawValue, 3);
+    if (!value) return `${property} must be Vector3.new(x, y, z).`;
+    return null;
+  }
+
   const leaderstat = project.leaderstats.find((stat) => stat.name === property);
   if (leaderstat) {
     if (leaderstat.type === "number") {
@@ -2802,7 +3132,7 @@ export function analyzePolyScript(
   }
   for (const handler of touchHandlers) {
     const reference = eventTargetReference(handler, script, project);
-    if (reference?.kind !== "world") {
+    if (reference?.kind !== "world" && !handlerTargetsRuntimePart(handler)) {
       diagnostics.push({
         line: handler.line,
         column: 1,
@@ -3754,6 +4084,24 @@ function expressionTruth(
   }
   const comparison = source.match(/^(.+?)\s*(==|~=|!=|>=|<=|>|<)\s*(.+)$/);
   if (comparison) {
+    if (comparison[2] === "==" || comparison[2] === "~=" || comparison[2] === "!=") {
+      const leftReference = resolveReferenceExpression(
+        comparison[1],
+        project,
+        script,
+        context.variables,
+      );
+      const rightReference = resolveReferenceExpression(
+        comparison[3],
+        project,
+        script,
+        context.variables,
+      );
+      if (leftReference && rightReference) {
+        const same = referenceKey(leftReference) === referenceKey(rightReference);
+        return comparison[2] === "==" ? same : !same;
+      }
+    }
     const left = resolveExpressionValue(
       comparison[1],
       project,
@@ -3787,6 +4135,34 @@ function expressionTruth(
     script,
   );
   return value !== false && value !== null && value !== undefined;
+}
+
+function worldObjectOverlapsCharacter(
+  object: PolyWorldObject,
+  playerId: RuntimePlayerId,
+): boolean {
+  const position = characterPosition(playerId);
+  const avatarHalfSize: [number, number, number] = [1.1, 2.4, 1.1];
+  return object.position.every(
+    (value, index) =>
+      Math.abs(value - position[index]) <=
+      Math.max(0.1, object.scale[index] / 2) + avatarHalfSize[index],
+  );
+}
+
+function touchedHitReferences(
+  project: PolyProject,
+  objectId: string,
+): Reference[] {
+  const object = project.objects.find((item) => item.id === objectId);
+  if (!object) return [];
+  return (["LocalPlayer", "OtherPlayer"] as const)
+    .filter((playerId) => worldObjectOverlapsCharacter(object, playerId))
+    .map((playerId) => ({
+      kind: "characterPart" as const,
+      id: playerId,
+      part: "HumanoidRootPart" as const,
+    }));
 }
 
 function luauBlockEnd(lines: string[], start: number): number {
@@ -3872,6 +4248,24 @@ function executeLuauControlFlow(
         if (branch) {
           const result = runRange(branch.start, branch.end);
           if (result.kind !== "normal") return result;
+        }
+        index = blockEnd;
+        continue;
+      }
+
+      const playersLoopMatch = line.match(
+        /^for\s+(?:[A-Za-z_]\w*|_)\s*,\s*([A-Za-z_]\w*)\s+in\s+(?:pairs|ipairs)\(\s*Players(?::|\.|::)GetPlayers\(\s*\)\s*\)\s+do\s*$/,
+      );
+      if (playersLoopMatch) {
+        const blockEnd = luauBlockEnd(lines, index);
+        for (const playerId of ["LocalPlayer", "OtherPlayer"] as const) {
+          context.variables.set(playersLoopMatch[1], {
+            kind: "player",
+            id: playerId,
+          });
+          const result = runRange(index + 1, blockEnd);
+          if (result.kind === "return") return result;
+          if (result.kind === "break") break;
         }
         index = blockEnd;
         continue;
@@ -4007,17 +4401,33 @@ function executeScript(
     }
   }
   const sourceText = sourceOverride ?? withoutEventHandlers(script);
+  const inlineEventHandlers = sourceOverride
+    ? inlineScriptEventHandlers(script, sourceText)
+    : [];
+  const ignoredInlineEventLines = new Set<number>();
+  for (const handler of inlineEventHandlers) {
+    for (let index = handler.startIndex; index <= handler.endIndex; index += 1) {
+      ignoredInlineEventLines.add(index);
+    }
+  }
+  const immediateSourceText =
+    ignoredInlineEventLines.size > 0
+      ? sourceText
+          .split("\n")
+          .filter((_, index) => !ignoredInlineEventLines.has(index))
+          .join("\n")
+      : sourceText;
   if (!executionContext) {
-    tweenRequests.push(...requestedTweens(sourceText, script, project));
+    tweenRequests.push(...requestedTweens(immediateSourceText, script, project));
   }
   if (
     project.language === "luau" &&
     /(^|\n)\s*(?:if\b.*\bthen|for\b.*\bdo|while\b.*\bdo|repeat)\s*(?:\n|$)/.test(
-      sourceText,
+      immediateSourceText,
     )
   ) {
     return executeLuauControlFlow(
-      sourceText.split("\n"),
+      immediateSourceText.split("\n"),
       script,
       project,
       output,
@@ -4027,7 +4437,7 @@ function executeScript(
       soundRequests,
     );
   }
-  const sourceLines = sourceText.split("\n");
+  const sourceLines = immediateSourceText.split("\n");
   for (let sourceIndex = 0; sourceIndex < sourceLines.length; sourceIndex += 1) {
     const source = sourceLines[sourceIndex];
     const taskDelay = source.match(
@@ -4474,6 +4884,21 @@ function executeScript(
       }
       continue;
     }
+    const playerFromCharacter = source.match(
+      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*Players(?::|\.|::)GetPlayerFromCharacter\(\s*([A-Za-z_]\w*)\s*\)\s*;?\s*$/,
+    );
+    if (playerFromCharacter) {
+      const character = variables.get(playerFromCharacter[2]);
+      if (character?.kind === "character") {
+        variables.set(playerFromCharacter[1], {
+          kind: "player",
+          id: character.id,
+        });
+      } else {
+        values.set(playerFromCharacter[1], null);
+      }
+      continue;
+    }
     const genericReferenceDeclaration = source.match(
       /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*(.+?)\s*;?\s*$/,
     );
@@ -4721,6 +5146,46 @@ function executeScript(
           if (parent.kind === "service" && parent.id === "Workspace") {
             object.parentId = null;
             object.modelId = null;
+            if (object.attributes.__runtimeCreated === true) {
+              for (const hitReference of touchedHitReferences(project, object.id)) {
+                for (const handler of inlineEventHandlers) {
+                  if (handler.event !== "Touched" || !handler.closed) continue;
+                  const target =
+                    variables.get(handler.target) ??
+                    resolveReferenceExpression(
+                      handler.target,
+                      project,
+                      script,
+                      variables,
+                    );
+                  if (target?.kind !== "world" || target.id !== object.id) {
+                    continue;
+                  }
+                  const nestedVariables = new Map(variables);
+                  const nestedValues = new Map(values);
+                  if (handler.parameters[0]) {
+                    nestedVariables.set(handler.parameters[0], hitReference);
+                  }
+                  executeScript(
+                    script,
+                    project,
+                    output,
+                    handler.body,
+                    undefined,
+                    remoteDepth,
+                    undefined,
+                    tweenRequests,
+                    soundRequests,
+                    {
+                      variables: nestedVariables,
+                      modules: new Map(modules),
+                      stores: new Map(stores),
+                      values: nestedValues,
+                    },
+                  );
+                }
+              }
+            }
           } else if (parent.kind === "world") {
             object.parentId = parent.id;
             object.modelId =
@@ -5053,7 +5518,11 @@ export function activatePolyTouched(
             ? new Map([
                 [
                   handler.parameters[0],
-                  { kind: "player", id: "LocalPlayer" } as const,
+                  {
+                    kind: "characterPart",
+                    id: "LocalPlayer",
+                    part: "HumanoidRootPart",
+                  } as const,
                 ],
               ])
             : undefined,

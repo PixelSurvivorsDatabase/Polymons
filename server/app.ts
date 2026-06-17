@@ -736,6 +736,64 @@ export function createApp(
     });
   });
 
+  app.get("/v1/avatar/catalog", async (_request, response) => {
+    const { data: items, error } = await admin
+      .from("avatar_items")
+      .select(
+        "id, name, description, item_type, unlock_type, unlock_threshold, price_tix, bundle_key, sort_order, texture_url, creator_id, created_from_upload, created_at",
+      )
+      .eq("review_status", "approved")
+      .order("sort_order")
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+
+    const creatorIds = [
+      ...new Set(
+        (items ?? [])
+          .map((item) => item.creator_id)
+          .filter((creatorId): creatorId is string => Boolean(creatorId)),
+      ),
+    ];
+    const { data: creators, error: creatorsError } = creatorIds.length
+      ? await admin
+          .from("profiles")
+          .select("id, username, display_name")
+          .in("id", creatorIds)
+      : { data: [], error: null };
+    if (creatorsError) throw creatorsError;
+
+    const creatorById = new Map(
+      (creators ?? []).map((creator) => [creator.id, creator]),
+    );
+    response.json({
+      items: (items ?? []).map((item) => {
+        const creator = item.creator_id
+          ? creatorById.get(item.creator_id)
+          : null;
+        return {
+          id: item.id,
+          itemType: item.item_type,
+          name: item.name,
+          description: item.description,
+          unlockType: item.unlock_type,
+          unlockThreshold: item.unlock_threshold,
+          priceTix: Number(item.price_tix ?? 0),
+          bundleKey: item.bundle_key,
+          textureUrl: item.texture_url ?? null,
+          creatorId: item.creator_id ?? null,
+          createdFromUpload: item.created_from_upload === true,
+          createdAt: item.created_at ?? null,
+          creator: creator
+            ? {
+                username: creator.username,
+                displayName: creator.display_name,
+              }
+            : null,
+        };
+      }),
+    });
+  });
+
   app.get("/v1/avatar/uploads", async (request, response) => {
     const user = await authenticatedUser(request, admin);
     const { data, error } = await admin

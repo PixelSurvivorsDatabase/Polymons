@@ -277,6 +277,10 @@ function MouseLook({
 
   useEffect(() => {
     const canvas = gl.domElement;
+    const previousTouchAction = canvas.style.touchAction;
+    const previousUserSelect = canvas.style.userSelect;
+    canvas.style.touchAction = "none";
+    canvas.style.userSelect = "none";
     const touchPoints = new Map<number, { x: number; y: number }>();
     let touchPointer: number | null = null;
     let lastTouchX = 0;
@@ -343,10 +347,10 @@ function MouseLook({
       }
       if (event.pointerId !== touchPointer) return;
       input.current.yaw -=
-        (event.clientX - lastTouchX) * 0.006 * lookDirection;
+        (event.clientX - lastTouchX) * 0.0052 * lookDirection;
       input.current.pitch = clampCameraPitch(
-        input.current.pitch -
-          (event.clientY - lastTouchY) * 0.0045 * lookDirection,
+        input.current.pitch +
+          (event.clientY - lastTouchY) * 0.0042 * lookDirection,
       );
       lastTouchX = event.clientX;
       lastTouchY = event.clientY;
@@ -391,16 +395,16 @@ function MouseLook({
       const deltaY = event.clientY - lastMouseY;
       lastMouseX = event.clientX;
       lastMouseY = event.clientY;
-      input.current.yaw -= deltaX * 0.0042 * lookDirection;
+      input.current.yaw -= deltaX * 0.0036 * lookDirection;
       input.current.pitch = clampCameraPitch(
-        input.current.pitch - deltaY * 0.0036 * lookDirection,
+        input.current.pitch + deltaY * 0.0032 * lookDirection,
       );
     };
     const onMouseMove = (event: MouseEvent) => {
       if (document.pointerLockElement !== canvas) return;
       input.current.yaw -= event.movementX * 0.0024 * lookDirection;
       input.current.pitch = clampCameraPitch(
-        input.current.pitch - event.movementY * 0.0018 * lookDirection,
+        input.current.pitch + event.movementY * 0.0018 * lookDirection,
       );
     };
     const onLockChange = () => {
@@ -432,11 +436,11 @@ function MouseLook({
           input.current.yaw -= step * direction;
         } else if (event.code === "ArrowUp") {
           input.current.pitch = clampCameraPitch(
-            input.current.pitch + step * direction,
+            input.current.pitch - step * direction,
           );
         } else {
           input.current.pitch = clampCameraPitch(
-            input.current.pitch - step * direction,
+            input.current.pitch + step * direction,
           );
         }
       }
@@ -470,6 +474,8 @@ function MouseLook({
     window.addEventListener("keydown", onKeyDown);
     return () => {
       canvas.style.cursor = "";
+      canvas.style.touchAction = previousTouchAction;
+      canvas.style.userSelect = previousUserSelect;
       if (mousePointer !== null && canvas.hasPointerCapture(mousePointer)) {
         canvas.releasePointerCapture(mousePointer);
       }
@@ -1086,7 +1092,7 @@ function PlayerController({
 
     const velocity = rigidBody.linvel();
     verticalVelocity.current = velocity.y;
-    const walkSpeed = Math.max(1, playerSettings.walkSpeed / 3);
+    const walkSpeed = Math.max(1, playerSettings.walkSpeed / 2.75);
     const targetSpeed =
       input.current.sprint && playerSettings.sprintEnabled
         ? walkSpeed * playerSettings.sprintMultiplier
@@ -1094,11 +1100,11 @@ function PlayerController({
     const accelerating = movement.lengthSq() > 0.001;
     const acceleration = grounded.current
       ? accelerating
-        ? 24
-        : 34
+        ? 20
+        : 42
       : accelerating
-        ? 7
-        : 2.5;
+        ? 5.5
+        : 1.5;
     const smoothing = 1 - Math.exp(-acceleration * frameDelta);
     const targetX = movement.x * targetSpeed;
     const targetZ = movement.z * targetSpeed;
@@ -1139,7 +1145,7 @@ function PlayerController({
       return;
     }
 
-    cameraTarget.set(position.x, position.y + 0.45, position.z);
+    cameraTarget.set(position.x, position.y + 1.05, position.z);
     const zoomBounds = cameraZoomBounds(playerSettings);
     input.current.zoomDistance = MathUtils.clamp(
       input.current.zoomDistance,
@@ -1183,12 +1189,11 @@ function PlayerController({
           cameraRayDirection,
           cameraCollisionDistance.current,
         );
-      camera.position.copy(desiredCameraPosition);
     } else {
       cameraCollisionDistance.current = null;
-      const cameraSmoothing = 1 - Math.exp(-10.5 * frameDelta);
-      camera.position.lerp(desiredCameraPosition, cameraSmoothing);
     }
+    const cameraSmoothing = 1 - Math.exp(-12 * frameDelta);
+    camera.position.lerp(desiredCameraPosition, cameraSmoothing);
     camera.lookAt(cameraTarget);
 
     if (state.clock.elapsedTime - lastTelemetry.current > 0.15) {
@@ -1216,7 +1221,7 @@ function PlayerController({
       position={[spawn.x, spawn.y, spawn.z]}
       colliders={false}
       lockRotations
-      linearDamping={0.12}
+      linearDamping={0.04}
       friction={0}
       ccd
       enabledRotations={[false, false, false]}

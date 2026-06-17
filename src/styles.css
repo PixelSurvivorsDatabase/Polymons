@@ -3364,6 +3364,247 @@ h3,
   color: var(--muted);
 }
 
+.marketplace-hero {
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) minmax(280px, 1.2fr) 200px 180px auto;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.marketplace-hero h1 {
+  margin: 0;
+}
+
+.marketplace-search,
+.marketplace-hero select,
+.marketplace-balance {
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(28, 27, 35, 0.94);
+  color: #fff;
+}
+
+.marketplace-search {
+  gap: 10px;
+  padding: 0 14px;
+}
+
+.marketplace-search input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+}
+
+.marketplace-hero select {
+  cursor: pointer;
+  padding: 0 14px;
+}
+
+.marketplace-balance {
+  justify-content: center;
+  gap: 8px;
+  background: linear-gradient(145deg, #6544e8, #3563ff);
+  font-weight: 800;
+  padding: 0 18px;
+  text-decoration: none;
+}
+
+.marketplace-chip-row {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  margin-bottom: 22px;
+  padding-bottom: 4px;
+}
+
+.marketplace-chip-row button {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 999px;
+  background: #27262d;
+  color: #f4f1ff;
+  cursor: pointer;
+  font-weight: 800;
+  padding: 10px 26px;
+  text-transform: capitalize;
+}
+
+.marketplace-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.marketplace-card {
+  display: grid;
+  gap: 7px;
+  overflow: hidden;
+  color: inherit;
+  text-decoration: none;
+}
+
+.marketplace-card strong {
+  padding: 0 3px;
+}
+
+.marketplace-card > span:not(.marketplace-texture-tile) {
+  color: #d8d4df;
+  font-size: 13px;
+  padding: 0 3px;
+}
+
+.marketplace-card small {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #f4f1ff;
+  font-weight: 800;
+  padding: 0 3px 8px;
+}
+
+.marketplace-texture-tile {
+  display: grid;
+  min-height: 250px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 8px;
+  background:
+    radial-gradient(circle at 50% 35%, rgba(255, 255, 255, 0.06), transparent 42%),
+    #1b1b22;
+}
+
+.marketplace-texture-tile.large {
+  width: 92px;
+  min-height: 92px;
+  border: 1px solid var(--line);
+}
+
+.marketplace-texture-tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 10px;
+}
+
+.marketplace-texture-tile .shirt-texture {
+  width: 100%;
+  min-height: 100%;
+  border-radius: 0;
+}
+
+.marketplace-empty {
+  grid-column: 1 / -1;
+}
+
+.marketplace-detail {
+  display: grid;
+  grid-template-columns: minmax(360px, 0.82fr) minmax(360px, 1fr);
+  gap: 28px;
+}
+
+.marketplace-detail-preview {
+  display: grid;
+  gap: 14px;
+}
+
+.marketplace-avatar-preview {
+  height: 520px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background:
+    radial-gradient(circle at 50% 35%, rgba(130, 76, 244, 0.2), transparent 42%),
+    #202128;
+}
+
+.marketplace-preview-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.marketplace-detail-copy {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.marketplace-detail-copy .text-button {
+  width: fit-content;
+}
+
+.marketplace-detail-copy h1 {
+  margin: 0;
+  font-size: clamp(34px, 4.8vw, 56px);
+  letter-spacing: -2px;
+  line-height: 0.98;
+}
+
+.marketplace-byline {
+  margin: 0 0 8px;
+  color: #f1eff7;
+  font-weight: 800;
+}
+
+.marketplace-price-table {
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  gap: 14px 26px;
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+  padding-top: 18px;
+}
+
+.marketplace-price-table span,
+.marketplace-item-facts dt {
+  color: #d8d4df;
+  font-weight: 800;
+}
+
+.marketplace-price-table strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 20px;
+}
+
+.marketplace-detail-copy > .primary-button,
+.marketplace-detail-copy > .secondary-button {
+  width: min(100%, 420px);
+  min-height: 52px;
+  font-size: 17px;
+}
+
+.marketplace-item-facts {
+  display: grid;
+  gap: 12px;
+  margin: 8px 0 0;
+}
+
+.marketplace-item-facts div {
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  gap: 26px;
+}
+
+.marketplace-item-facts dt,
+.marketplace-item-facts dd {
+  margin: 0;
+}
+
+.marketplace-item-facts dd {
+  color: #fff;
+}
+
 .profile-stats strong,
 .profile-stats span {
   display: block;
