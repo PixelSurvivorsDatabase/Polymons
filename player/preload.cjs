@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld("polymons", {
   saveStudioDataStores: (id, dataStores) =>
     ipcRenderer.invoke("studio:save-data", { id, dataStores }),
   getLaunch: () => ipcRenderer.invoke("launch:get"),
+  setPresence: (presence) => ipcRenderer.invoke("presence:set", presence),
   onLaunch: (callback) => {
     const listener = (_event, launch) => callback(launch);
     ipcRenderer.on("launch:open", listener);

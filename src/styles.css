@@ -1311,6 +1311,14 @@ h3,
   position: relative;
 }
 
+.browser-game-wrap:has(.baseplate-player[data-mobile="true"]) {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  overflow: hidden;
+  background: #050509;
+}
+
 .connection-pill {
   position: absolute;
   z-index: 8;
@@ -4279,9 +4287,26 @@ h3,
 }
 
 @media (pointer: coarse) and (max-width: 1100px) {
+  .browser-game-wrap {
+    position: fixed;
+    z-index: 1000;
+    inset: 0;
+    overflow: hidden;
+    background: #050509;
+  }
+
   .baseplate-player {
+    width: 100vw;
+    height: 100svh;
     min-height: 0;
+    border: 0;
+    border-radius: 0;
     touch-action: none;
+  }
+
+  .baseplate-player canvas {
+    width: 100vw;
+    height: 100svh;
   }
 
   .touch-controls {
@@ -4298,6 +4323,13 @@ h3,
     transform: none;
   }
 
+  .connection-pill {
+    right: max(12px, env(safe-area-inset-right));
+    bottom: max(12px, env(safe-area-inset-bottom));
+    font-size: 10px;
+    padding: 6px 9px;
+  }
+
   .mouse-capture-hint,
   .game-hud-right {
     display: none;
@@ -4305,6 +4337,10 @@ h3,
 }
 
 @media (pointer: coarse) and (max-width: 1100px) and (orientation: landscape) {
+  .baseplate-player {
+    height: 100svh;
+  }
+
   :fullscreen .baseplate-player,
   :-webkit-full-screen .baseplate-player {
     position: fixed;

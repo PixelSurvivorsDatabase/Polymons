@@ -78,6 +78,15 @@ export default function StudioApp() {
     });
   }, [reloadProjects]);
 
+  useEffect(() => {
+    if (!ready || !auth || project) return;
+    void window.polyStudio.setPresence({
+      kind: "idle",
+      details: "Managing projects",
+      state: "In Poly Studio",
+    });
+  }, [auth, project, ready]);
+
   if (!ready) return <div className="studio-loading">Opening Poly Studio...</div>;
   if (!auth) {
     return (

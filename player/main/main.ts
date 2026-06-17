@@ -10,6 +10,10 @@ import {
   safeStorage,
   shell,
 } from "electron";
+import {
+  DiscordPresenceClient,
+  type PolymonsPresence,
+} from "./discordPresence.js";
 import { registerUpdater } from "./updater.js";
 
 const API_URL = "https://polymons-server.onrender.com";
@@ -85,6 +89,7 @@ type ProtocolRequest = {
 let mainWindow: BrowserWindow | null = null;
 let pendingLaunch: LaunchRequest | null = null;
 let auth: StoredAuth | null = null;
+const discordPresence = new DiscordPresenceClient();
 const captureArgument = !app.isPackaged
   ? process.argv.find((argument) =>
       argument.startsWith("--player-capture-studio="),
@@ -468,6 +473,11 @@ if (!hasLock) {
       assetName: "PolymonsPlayer.exe",
       productName: "Polymons Player",
     });
+    discordPresence.setPresence({
+      kind: "idle",
+      details: "Browsing games",
+      state: "In Polymons Player",
+    });
     ipcMain.handle("auth:get", () => auth);
     ipcMain.handle(
       "auth:login",
@@ -524,6 +534,52 @@ if (!hasLock) {
       }
     });
     ipcMain.handle("launch:get", () => pendingLaunch);
+    ipcMain.handle(
+      "presence:set",
+      (_event, input: PolymonsPresence) => {
+        if (!input || typeof input !== "object") return;
+        if (input.kind === "playing" && typeof input.gameTitle === "string") {
+          discordPresence.setPresence({
+            kind: "playing",
+            gameTitle: input.gameTitle.slice(0, 128),
+            playerCount:
+              typeof input.playerCount === "number" &&
+              Number.isFinite(input.playerCount)
+                ? Math.max(0, Math.floor(input.playerCount))
+                : undefined,
+            gameUrl:
+              typeof input.gameUrl === "string" &&
+              input.gameUrl.startsWith("https://")
+                ? input.gameUrl.slice(0, 256)
+                : undefined,
+          });
+          return;
+        }
+        if (
+          input.kind === "studio-test" &&
+          typeof input.projectName === "string"
+        ) {
+          discordPresence.setPresence({
+            kind: "studio-test",
+            projectName: input.projectName.slice(0, 128),
+          });
+          return;
+        }
+        if (input.kind === "idle") {
+          discordPresence.setPresence({
+            kind: "idle",
+            details:
+              typeof input.details === "string"
+                ? input.details.slice(0, 128)
+                : undefined,
+            state:
+              typeof input.state === "string"
+                ? input.state.slice(0, 128)
+                : undefined,
+          });
+        }
+      },
+    );
     ipcMain.handle(
       "studio:project",
       (_event, input: { id: string }) => loadStudioProject(input.id),
@@ -630,6 +686,10 @@ if (!hasLock) {
     });
   });
 }
+
+app.on("before-quit", () => {
+  discordPresence.destroy();
+});
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();

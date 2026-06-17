@@ -18,7 +18,15 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Link,
   NavLink,
@@ -1218,10 +1226,23 @@ function BrowserGame({
   const [reconnectError, setReconnectError] = useState("");
   const submittedBadges = useRef(new Set<string>());
   const submittedPurchases = useRef(new Set<string>());
+  const localPlayerProfile = useMemo(
+    () =>
+      user
+        ? {
+            polymonsId: user.polymonsId,
+            username: user.username,
+            displayName: user.displayName,
+          }
+        : null,
+    [user?.displayName, user?.polymonsId, user?.username],
+  );
   useEffect(() => setActiveSession(playSession), [playSession]);
   useEffect(() => {
+    let cancelled = false;
     setGameLoading(true);
     setGameError("");
+    setRuntime(null);
     void (async () => {
       const result = await getGame(playSession.game.id);
       let entitlements:
@@ -1237,20 +1258,22 @@ function BrowserGame({
           entitlements = null;
         }
       }
-        if (result.game.manifest) {
-          setRuntime(
-            runPolyProject(
-              result.game.manifest,
-              runtimePlayerData(user, entitlements ?? undefined),
-            ),
-          );
-        } else if (result.game.slug === "baseplate") {
-          setRuntime(null);
-        } else {
-          throw new Error("This game does not have a published world.");
-        }
+      if (cancelled) return;
+      if (result.game.manifest) {
+        setRuntime(
+          runPolyProject(
+            result.game.manifest,
+            runtimePlayerData(localPlayerProfile, entitlements ?? undefined),
+          ),
+        );
+      } else if (result.game.slug === "baseplate") {
+        setRuntime(null);
+      } else {
+        throw new Error("This game does not have a published world.");
+      }
     })()
       .catch((loadError: unknown) => {
+        if (cancelled) return;
         setRuntime(null);
         setGameError(
           loadError instanceof Error
@@ -1258,8 +1281,17 @@ function BrowserGame({
             : "Could not load this game.",
         );
       })
-      .finally(() => setGameLoading(false));
-  }, [playSession.game.id, session, user]);
+      .finally(() => {
+        if (!cancelled) setGameLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    localPlayerProfile,
+    playSession.game.id,
+    session?.accessToken,
+  ]);
   const {
     connection,
     remotePlayers,

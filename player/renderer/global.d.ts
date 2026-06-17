@@ -198,6 +198,24 @@ interface Window {
       dataStores: import("../../src/game/polyProject").PolyProject["dataStores"],
     ) => Promise<void>;
     getLaunch: () => Promise<PlayerLaunch | null>;
+    setPresence: (
+      presence:
+        | {
+            kind: "idle";
+            details?: string;
+            state?: string;
+          }
+        | {
+            kind: "playing";
+            gameTitle: string;
+            playerCount?: number;
+            gameUrl?: string;
+          }
+        | {
+            kind: "studio-test";
+            projectName: string;
+          },
+    ) => Promise<void>;
     onLaunch: (callback: (launch: PlayerLaunch) => void) => () => void;
     onAuthChanged: (callback: (auth: PlayerAuth) => void) => () => void;
     onProtocolError: (callback: (message: string) => void) => () => void;

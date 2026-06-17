@@ -295,6 +295,20 @@ interface Window {
     login: (username: string, password: string) => Promise<StudioAuth>;
     logout: () => Promise<void>;
     openWebsite: () => Promise<void>;
+    setPresence: (
+      presence:
+        | {
+            kind: "idle";
+            details?: string;
+            state?: string;
+          }
+        | {
+            kind: "editing";
+            projectName: string;
+            language: StudioLanguage;
+            published?: boolean;
+          },
+    ) => Promise<void>;
     listProjects: () => Promise<ProjectSummary[]>;
     createProject: (input: {
       name: string;

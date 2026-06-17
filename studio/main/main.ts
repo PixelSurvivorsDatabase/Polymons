@@ -18,12 +18,17 @@ import {
   safeStorage,
   shell,
 } from "electron";
+import {
+  DiscordPresenceClient,
+  type StudioPresence,
+} from "./discordPresence.js";
 import { registerUpdater } from "./updater.js";
 
 const API_URL = "https://polymons-server.onrender.com";
 const WEBSITE_URL = "https://pixelsurvivorsdatabase.github.io/Polymons/";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const POLYCODE_TIMEOUT_MS = 25_000;
+const discordPresence = new DiscordPresenceClient();
 
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 
@@ -2541,6 +2546,13 @@ void app.whenReady().then(async () => {
         assetName: "PolyStudio.exe",
         productName: "Poly Studio",
       });
+  if (!previewMode) {
+    discordPresence.setPresence({
+      kind: "idle",
+      details: "Managing projects",
+      state: "In Poly Studio",
+    });
+  }
   if (
     auth &&
     (!Number.isInteger(auth.user.polymonsId) ||
@@ -2565,6 +2577,35 @@ void app.whenReady().then(async () => {
   );
   ipcMain.handle("auth:logout", async () => saveAuth(null));
   ipcMain.handle("website:open", () => shell.openExternal(WEBSITE_URL));
+  ipcMain.handle("presence:set", (_event, input: StudioPresence) => {
+    if (previewMode || !input || typeof input !== "object") return;
+    if (
+      input.kind === "editing" &&
+      typeof input.projectName === "string" &&
+      ["luau", "cpp", "csharp"].includes(input.language)
+    ) {
+      discordPresence.setPresence({
+        kind: "editing",
+        projectName: input.projectName.slice(0, 128),
+        language: input.language,
+        published: Boolean(input.published),
+      });
+      return;
+    }
+    if (input.kind === "idle") {
+      discordPresence.setPresence({
+        kind: "idle",
+        details:
+          typeof input.details === "string"
+            ? input.details.slice(0, 128)
+            : undefined,
+        state:
+          typeof input.state === "string"
+            ? input.state.slice(0, 128)
+            : undefined,
+      });
+    }
+  });
   ipcMain.handle("projects:list", listProjects);
   ipcMain.handle(
     "projects:create",
@@ -2763,4 +2804,8 @@ void app.whenReady().then(async () => {
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
+});
+
+app.on("before-quit", () => {
+  discordPresence.destroy();
 });

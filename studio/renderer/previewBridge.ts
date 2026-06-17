@@ -268,6 +268,7 @@ if (isPreview && !window.polyStudio) {
     login: async () => previewAuth,
     logout: async () => undefined,
     openWebsite: async () => undefined,
+    setPresence: async () => undefined,
     listProjects: async () =>
       [...projects.values()].map((project) => ({
         id: project.id,

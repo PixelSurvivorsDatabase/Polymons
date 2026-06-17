@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld("polyStudio", {
     ipcRenderer.invoke("auth:login", { username, password }),
   logout: () => ipcRenderer.invoke("auth:logout"),
   openWebsite: () => ipcRenderer.invoke("website:open"),
+  setPresence: (presence) => ipcRenderer.invoke("presence:set", presence),
   listProjects: () => ipcRenderer.invoke("projects:list"),
   createProject: (input) => ipcRenderer.invoke("projects:create", input),
   loadProject: (id) => ipcRenderer.invoke("projects:load", { id }),

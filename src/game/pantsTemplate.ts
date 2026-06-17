@@ -2,6 +2,7 @@ import { CanvasTexture, SRGBColorSpace, type Texture } from "three";
 
 export const PANTS_TEMPLATE_WIDTH = 585;
 export const PANTS_TEMPLATE_HEIGHT = 559;
+const TEMPLATE_FACE_INSET = 2;
 
 export type PantsBodyPart = "waist" | "rightLeg" | "leftLeg";
 export type PantsSurfaceFace =
@@ -18,6 +19,20 @@ export type PantsTemplateRegion = {
   width: number;
   height: number;
 };
+
+function getTemplateFaceSource(region: PantsTemplateRegion): PantsTemplateRegion {
+  const inset = Math.min(
+    TEMPLATE_FACE_INSET,
+    Math.floor(region.width / 8),
+    Math.floor(region.height / 8),
+  );
+  return {
+    x: region.x + inset,
+    y: region.y + inset,
+    width: region.width - inset * 2,
+    height: region.height - inset * 2,
+  };
+}
 
 export const PANTS_TEMPLATE_REGIONS: Record<
   PantsBodyPart,
@@ -61,12 +76,13 @@ export function createPantsTemplateFaceTexture(
   const context = canvas.getContext("2d");
   if (!context) return null;
 
+  const source = getTemplateFaceSource(region);
   context.drawImage(
     image,
-    region.x,
-    region.y,
-    region.width,
-    region.height,
+    source.x,
+    source.y,
+    source.width,
+    source.height,
     0,
     0,
     region.width,

@@ -320,6 +320,7 @@ function MouseLook({
         return;
       }
       if (!controlsEnabled) return;
+      event.preventDefault();
       touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
       canvas.setPointerCapture(event.pointerId);
       if (touchPoints.size === 1) {
@@ -333,6 +334,7 @@ function MouseLook({
     };
     const onPointerMove = (event: PointerEvent) => {
       if (!touchPoints.has(event.pointerId)) return;
+      event.preventDefault();
       touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
       if (touchPoints.size >= 2) {
         const nextPinchDistance = currentPinchDistance();
@@ -381,6 +383,12 @@ function MouseLook({
       } else {
         touchPointer = null;
       }
+    };
+    const clearTouchLook = (event?: PointerEvent) => {
+      if (event && event.pointerType !== "touch") return;
+      touchPoints.clear();
+      touchPointer = null;
+      pinchDistance = null;
     };
     const onCanvasMouseMove = (event: PointerEvent) => {
       if (
@@ -467,6 +475,7 @@ function MouseLook({
     canvas.addEventListener("pointermove", onCanvasMouseMove);
     canvas.addEventListener("pointerup", onPointerUp);
     canvas.addEventListener("pointercancel", onPointerUp);
+    canvas.addEventListener("lostpointercapture", clearTouchLook);
     canvas.addEventListener("wheel", onWheel, { passive: false });
     canvas.addEventListener("contextmenu", onContextMenu);
     document.addEventListener("mousemove", onMouseMove);
@@ -484,6 +493,7 @@ function MouseLook({
       canvas.removeEventListener("pointermove", onCanvasMouseMove);
       canvas.removeEventListener("pointerup", onPointerUp);
       canvas.removeEventListener("pointercancel", onPointerUp);
+      canvas.removeEventListener("lostpointercapture", clearTouchLook);
       canvas.removeEventListener("wheel", onWheel);
       canvas.removeEventListener("contextmenu", onContextMenu);
       document.removeEventListener("mousemove", onMouseMove);
@@ -2251,6 +2261,17 @@ export default function BaseplateGame({
     };
   }, []);
   useEffect(() => {
+    if (!mobileDevice) return;
+    const previousOverflow = document.body.style.overflow;
+    const previousOverscroll = document.body.style.overscrollBehavior;
+    document.body.style.overflow = "hidden";
+    document.body.style.overscrollBehavior = "none";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.body.style.overscrollBehavior = previousOverscroll;
+    };
+  }, [mobileDevice]);
+  useEffect(() => {
     const update = () =>
       setFullscreen(
         Boolean(
@@ -2332,6 +2353,12 @@ export default function BaseplateGame({
     value: boolean,
   ) => {
     input.current[key] = value;
+  };
+  const clearTouchMovement = () => {
+    setMove("forward", false);
+    setMove("backward", false);
+    setMove("left", false);
+    setMove("right", false);
   };
   const enterMobileFullscreen = async () => {
     const root = document.documentElement as HTMLElement & {
@@ -2810,7 +2837,13 @@ export default function BaseplateGame({
               90
             </span>
             <strong>Rotate to landscape</strong>
-            <p>Turn your phone sideways to continue playing.</p>
+            <p>
+              Turn your phone sideways for the best controls. If your browser
+              gets stuck, you can still play in portrait.
+            </p>
+            <button type="button" onClick={() => setLandscape(true)}>
+              Continue anyway
+            </button>
           </div>
         </div>
       )}
@@ -2818,6 +2851,10 @@ export default function BaseplateGame({
       <div className="touch-controls touch-movement" aria-label="Movement controls">
         <MobileJoystick
           onChange={(x, y) => {
+            if (gameMenuOpen || dead) {
+              clearTouchMovement();
+              return;
+            }
             setMove("left", x < -0.22);
             setMove("right", x > 0.22);
             setMove("forward", y < -0.22);
@@ -2828,6 +2865,7 @@ export default function BaseplateGame({
       <div className="touch-controls touch-actions">
         <button
           onPointerDown={() => {
+            if (gameMenuOpen || dead) return;
             input.current.jumpQueued = true;
           }}
         >
@@ -2835,15 +2873,19 @@ export default function BaseplateGame({
         </button>
         {playerSettings.sprintEnabled && (
           <button
-            onPointerDown={() => setMove("sprint", true)}
+            onPointerDown={() => {
+              if (!gameMenuOpen && !dead) setMove("sprint", true);
+            }}
             onPointerUp={() => setMove("sprint", false)}
             onPointerCancel={() => setMove("sprint", false)}
+            onLostPointerCapture={() => setMove("sprint", false)}
           >
             Sprint
           </button>
         )}
         <button
           onPointerDown={() => {
+            if (gameMenuOpen || dead) return;
             input.current.resetQueued = true;
           }}
         >

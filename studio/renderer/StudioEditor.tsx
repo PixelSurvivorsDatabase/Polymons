@@ -465,6 +465,15 @@ export default function StudioEditor({
     return issues;
   }, [project]);
 
+  useEffect(() => {
+    void window.polyStudio.setPresence({
+      kind: "editing",
+      projectName: project.name,
+      language: project.language,
+      published: Boolean(project.publication),
+    });
+  }, [project.language, project.name, project.publication]);
+
   const save = useCallback(async (): Promise<StudioProject | null> => {
     setSaving(true);
     setMessage("Saving...");

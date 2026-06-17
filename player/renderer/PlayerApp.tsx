@@ -122,6 +122,11 @@ export default function PlayerApp() {
 
   useEffect(() => {
     if (!auth || launch) return;
+    void window.polymons.setPresence({
+      kind: "idle",
+      details: "Browsing games",
+      state: "In Polymons Player",
+    });
     setGamesLoading(true);
     void Promise.allSettled([
       window.polymons.listGames(),
@@ -539,9 +544,15 @@ function OnlinePlayerGame({
   const [gameLoading, setGameLoading] = useState(true);
   const [gameError, setGameError] = useState("");
   const [gameThumbnail, setGameThumbnail] = useState<string | null>(null);
+  const [presenceGame, setPresenceGame] = useState<{
+    title: string;
+    url: string;
+  } | null>(null);
   useEffect(() => {
+    let cancelled = false;
     setGameLoading(true);
     setGameError("");
+    setPresenceGame(null);
     void (async () => {
       const result = await window.polymons.getGame(launch.game);
         if (result.game.id !== launch.game) {
@@ -555,6 +566,11 @@ function OnlinePlayerGame({
         } catch {
           entitlements = undefined;
         }
+        if (cancelled) return;
+        setPresenceGame({
+          title: result.game.title,
+          url: `https://pixelsurvivorsdatabase.github.io/Polymons/#/games/${result.game.slug}`,
+        });
         if (result.game.manifest) {
           setGameThumbnail(result.game.thumbnailUrl);
           setRuntime(
@@ -570,6 +586,7 @@ function OnlinePlayerGame({
         }
     })()
       .catch((loadError: unknown) => {
+        if (cancelled) return;
         setRuntime(null);
         setGameError(
           loadError instanceof Error
@@ -577,8 +594,22 @@ function OnlinePlayerGame({
             : "Could not load this game.",
         );
       })
-      .finally(() => setGameLoading(false));
+      .finally(() => {
+        if (!cancelled) setGameLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [auth?.user, launch.game]);
+  useEffect(() => {
+    if (!presenceGame) return;
+    void window.polymons.setPresence({
+      kind: "playing",
+      gameTitle: presenceGame.title,
+      playerCount: remotePlayers.length + 1,
+      gameUrl: presenceGame.url,
+    });
+  }, [presenceGame, remotePlayers.length]);
 
   return (
     <main className="game-screen">
@@ -720,7 +751,13 @@ function StudioPlayerGame({
   useEffect(() => {
     void window.polymons
       .loadStudioProject(launch.projectId)
-      .then(setProject)
+      .then((next) => {
+        setProject(next);
+        void window.polymons.setPresence({
+          kind: "studio-test",
+          projectName: next.name,
+        });
+      })
       .catch((loadError: unknown) => {
         setError(
           loadError instanceof Error
