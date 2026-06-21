@@ -33,6 +33,7 @@ import {
   syncAvatarUnlocks,
 } from "./supabase.js";
 import { isLoginDisabled } from "./official-account.js";
+import { isAllowedClientOrigin } from "./origins.js";
 import type { PresenceSnapshot } from "./websocket.js";
 import {
   adminCatalogReviewSchema,
@@ -501,7 +502,8 @@ export function createApp(
   app.use(helmet());
   app.use(
     cors({
-      origin: config.webOrigin,
+      origin: (origin, callback) =>
+        callback(null, isAllowedClientOrigin(config.webOrigin, origin)),
       methods: ["GET", "POST", "OPTIONS"],
       allowedHeaders: ["Authorization", "Content-Type"],
     }),

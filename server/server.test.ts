@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readConfig } from "./config.js";
 import { OFFICIAL_ACCOUNT, isLoginDisabled } from "./official-account.js";
+import { isAllowedClientOrigin } from "./origins.js";
 import {
   createPlayTicket,
   createPlayerAccountTicket,
@@ -37,6 +38,15 @@ test("normalizes usernames and builds internal account identifiers", () => {
   );
   assert.equal(isReservedUsername("POLYMONS"), true);
   assert.equal(isReservedUsername("nova_7"), false);
+});
+
+test("allows the website and packaged mobile client origins", () => {
+  const website = "https://polymons.example";
+  assert.equal(isAllowedClientOrigin(website, website), true);
+  assert.equal(isAllowedClientOrigin(website, "https://localhost"), true);
+  assert.equal(isAllowedClientOrigin(website, "http://localhost"), true);
+  assert.equal(isAllowedClientOrigin(website, "capacitor://localhost"), true);
+  assert.equal(isAllowedClientOrigin(website, "https://example.com"), false);
 });
 
 test("normalizes Supabase session expiry values", () => {
