@@ -17,8 +17,14 @@ export type PublicProfile = {
   avatarUrl: string | null;
   equippedShirtId: string | null;
   equippedPantsId: string | null;
+  equippedHairId: string | null;
+  equippedHatId: string | null;
   equippedShirtTextureUrl: string | null;
   equippedPantsTextureUrl: string | null;
+  equippedHairModelUrl: string | null;
+  equippedHairModelFormat: string | null;
+  equippedHatModelUrl: string | null;
+  equippedHatModelFormat: string | null;
   avatarAppearance: AvatarAppearance;
 };
 
@@ -127,7 +133,7 @@ export async function loadProfile(
   const { data, error } = await client
     .from("profiles")
     .select(
-      "id, polymons_id, username, display_name, bio, tix, avatar_url, equipped_shirt_id, equipped_pants_id, avatar_appearance",
+      "id, polymons_id, username, display_name, bio, tix, avatar_url, equipped_shirt_id, equipped_pants_id, equipped_hair_id, equipped_hat_id, avatar_appearance",
     )
     .eq("id", userId)
     .single();
@@ -138,18 +144,27 @@ export async function loadProfile(
   const equippedIds = [
     data.equipped_shirt_id,
     data.equipped_pants_id,
+    data.equipped_hair_id,
+    data.equipped_hat_id,
   ].filter((itemId): itemId is string => typeof itemId === "string");
   const { data: avatarItems, error: avatarItemsError } = equippedIds.length
     ? await client
         .from("avatar_items")
-        .select("id, texture_url, review_status")
+        .select("id, texture_url, model_url, model_format, review_status")
         .in("id", equippedIds)
     : { data: [], error: null };
   if (avatarItemsError) throw avatarItemsError;
-  const textureById = new Map(
+  const assetById = new Map(
     (avatarItems ?? [])
       .filter((item) => item.review_status === "approved")
-      .map((item) => [item.id, item.texture_url ?? null]),
+      .map((item) => [
+        item.id,
+        {
+          textureUrl: item.texture_url ?? null,
+          modelUrl: item.model_url ?? null,
+          modelFormat: item.model_format ?? null,
+        },
+      ]),
   );
 
   return {
@@ -162,11 +177,25 @@ export async function loadProfile(
     avatarUrl: data.avatar_url,
     equippedShirtId: data.equipped_shirt_id,
     equippedPantsId: data.equipped_pants_id,
+    equippedHairId: data.equipped_hair_id,
+    equippedHatId: data.equipped_hat_id,
     equippedShirtTextureUrl: data.equipped_shirt_id
-      ? textureById.get(data.equipped_shirt_id) ?? null
+      ? assetById.get(data.equipped_shirt_id)?.textureUrl ?? null
       : null,
     equippedPantsTextureUrl: data.equipped_pants_id
-      ? textureById.get(data.equipped_pants_id) ?? null
+      ? assetById.get(data.equipped_pants_id)?.textureUrl ?? null
+      : null,
+    equippedHairModelUrl: data.equipped_hair_id
+      ? assetById.get(data.equipped_hair_id)?.modelUrl ?? null
+      : null,
+    equippedHairModelFormat: data.equipped_hair_id
+      ? assetById.get(data.equipped_hair_id)?.modelFormat ?? null
+      : null,
+    equippedHatModelUrl: data.equipped_hat_id
+      ? assetById.get(data.equipped_hat_id)?.modelUrl ?? null
+      : null,
+    equippedHatModelFormat: data.equipped_hat_id
+      ? assetById.get(data.equipped_hat_id)?.modelFormat ?? null
       : null,
     avatarAppearance: normalizeAvatarAppearance(data.avatar_appearance),
   };

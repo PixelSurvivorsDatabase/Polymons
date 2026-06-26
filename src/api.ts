@@ -1,10 +1,83 @@
 export const POLYMONS_API_URL =
   import.meta.env.VITE_POLYMONS_API_URL ??
   "https://polymons-server.onrender.com";
-export const POLYMONS_PLAYER_DOWNLOAD_URL =
-  "https://github.com/PixelSurvivorsDatabase/Polymons/releases/latest/download/PolymonsPlayer.exe";
-export const POLY_STUDIO_DOWNLOAD_URL =
-  "https://github.com/PixelSurvivorsDatabase/Polymons/releases/latest/download/PolyStudio.exe";
+const RELEASE_DOWNLOAD_BASE =
+  "https://github.com/PixelSurvivorsDatabase/Polymons/releases/latest/download";
+
+function isMobileBrowser(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return (
+    /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || "") ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
+}
+
+function isAndroidBrowser(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /Android/i.test(navigator.userAgent || "");
+}
+
+function isIosBrowser(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return (
+    /iPhone|iPad|iPod/i.test(navigator.userAgent || "") ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
+}
+
+function isMacDesktopBrowser(): boolean {
+  if (typeof navigator === "undefined" || isMobileBrowser()) return false;
+  return /Mac/i.test(navigator.platform || navigator.userAgent);
+}
+
+function isLikelyAppleSiliconBrowser(): boolean {
+  if (!isMacDesktopBrowser() || typeof navigator === "undefined") return false;
+  const userAgent = navigator.userAgent || "";
+  if (/\b(?:x86_64|x64)\b/i.test(userAgent)) return false;
+  if (/\b(?:arm64|aarch64)\b/i.test(userAgent)) return true;
+  // Modern Safari masks Apple Silicon as MacIntel, so prefer the current Mac
+  // architecture while keeping the explicit Intel link available beside it.
+  return true;
+}
+
+export const IS_MOBILE_BROWSER = isMobileBrowser();
+export const IS_ANDROID_BROWSER = isAndroidBrowser();
+export const IS_IOS_BROWSER = isIosBrowser();
+export const IS_MAC_DESKTOP_BROWSER = isMacDesktopBrowser();
+export const IS_LIKELY_APPLE_SILICON_BROWSER =
+  isLikelyAppleSiliconBrowser();
+
+export const POLYMONS_PLAYER_WINDOWS_DOWNLOAD_URL =
+  `${RELEASE_DOWNLOAD_BASE}/PolymonsPlayer.exe`;
+export const POLYMONS_PLAYER_ANDROID_DOWNLOAD_URL =
+  `${RELEASE_DOWNLOAD_BASE}/Polymons%20Player.apk`;
+export const POLYMONS_PLAYER_MAC_ARM64_DOWNLOAD_URL =
+  `${RELEASE_DOWNLOAD_BASE}/PolymonsPlayer-mac-arm64.dmg`;
+export const POLYMONS_PLAYER_MAC_X64_DOWNLOAD_URL =
+  `${RELEASE_DOWNLOAD_BASE}/PolymonsPlayer-mac-x64.dmg`;
+export const POLY_STUDIO_WINDOWS_DOWNLOAD_URL =
+  `${RELEASE_DOWNLOAD_BASE}/PolyStudio.exe`;
+export const POLY_STUDIO_ANDROID_DOWNLOAD_URL =
+  `${RELEASE_DOWNLOAD_BASE}/Poly%20Studio.apk`;
+export const POLY_STUDIO_MAC_ARM64_DOWNLOAD_URL =
+  `${RELEASE_DOWNLOAD_BASE}/PolyStudio-mac-arm64.dmg`;
+export const POLY_STUDIO_MAC_X64_DOWNLOAD_URL =
+  `${RELEASE_DOWNLOAD_BASE}/PolyStudio-mac-x64.dmg`;
+
+export const POLYMONS_PLAYER_DOWNLOAD_URL = IS_ANDROID_BROWSER
+  ? POLYMONS_PLAYER_ANDROID_DOWNLOAD_URL
+  : IS_MAC_DESKTOP_BROWSER
+    ? IS_LIKELY_APPLE_SILICON_BROWSER
+      ? POLYMONS_PLAYER_MAC_ARM64_DOWNLOAD_URL
+      : POLYMONS_PLAYER_MAC_X64_DOWNLOAD_URL
+    : POLYMONS_PLAYER_WINDOWS_DOWNLOAD_URL;
+export const POLY_STUDIO_DOWNLOAD_URL = IS_ANDROID_BROWSER
+  ? POLY_STUDIO_ANDROID_DOWNLOAD_URL
+  : IS_MAC_DESKTOP_BROWSER
+    ? IS_LIKELY_APPLE_SILICON_BROWSER
+      ? POLY_STUDIO_MAC_ARM64_DOWNLOAD_URL
+      : POLY_STUDIO_MAC_X64_DOWNLOAD_URL
+    : POLY_STUDIO_WINDOWS_DOWNLOAD_URL;
 
 export type PolymonsUser = {
   id: string;
@@ -16,8 +89,14 @@ export type PolymonsUser = {
   avatarUrl: string | null;
   equippedShirtId: import("./game/avatarCatalog").ShirtId | null;
   equippedPantsId: import("./game/avatarCatalog").PantsId | null;
+  equippedHairId?: import("./game/avatarCatalog").HairId | null;
+  equippedHatId?: import("./game/avatarCatalog").HatId | null;
   equippedShirtTextureUrl?: string | null;
   equippedPantsTextureUrl?: string | null;
+  equippedHairModelUrl?: string | null;
+  equippedHairModelFormat?: import("./game/avatarCatalog").AvatarModelFormat | null;
+  equippedHatModelUrl?: string | null;
+  equippedHatModelFormat?: import("./game/avatarCatalog").AvatarModelFormat | null;
   avatarAppearance: import("./game/avatarAppearance").AvatarAppearance;
 };
 
@@ -137,6 +216,8 @@ export type Friendship = {
 export type Wardrobe = {
   equippedShirtId: import("./game/avatarCatalog").ShirtId | null;
   equippedPantsId: import("./game/avatarCatalog").PantsId | null;
+  equippedHairId: import("./game/avatarCatalog").HairId | null;
+  equippedHatId: import("./game/avatarCatalog").HatId | null;
   avatarAppearance: import("./game/avatarAppearance").AvatarAppearance;
   tix: number;
   totalCreatorVisits: number;
@@ -145,7 +226,7 @@ export type Wardrobe = {
 
 export type MarketplaceCatalogItem = {
   id: string;
-  itemType: "shirt" | "pants";
+  itemType: import("./game/avatarCatalog").AvatarItemType;
   name: string;
   description: string;
   unlockType: "free" | "creator_visits" | "tix";
@@ -153,6 +234,9 @@ export type MarketplaceCatalogItem = {
   priceTix: number;
   bundleKey: string | null;
   textureUrl: string | null;
+  modelUrl: string | null;
+  modelFormat: import("./game/avatarCatalog").AvatarModelFormat | null;
+  modelPreviewUrl: string | null;
   creatorId: string | null;
   createdFromUpload: boolean;
   createdAt: string | null;
@@ -166,10 +250,13 @@ export type AvatarCatalogSubmission = {
   id: string;
   name: string;
   description: string;
-  itemType: "shirt" | "pants";
+  itemType: import("./game/avatarCatalog").AvatarItemType;
   unlockType: "free" | "creator_visits" | "tix";
   priceTix: number;
   textureUrl: string | null;
+  modelUrl: string | null;
+  modelFormat: import("./game/avatarCatalog").AvatarModelFormat | null;
+  modelPreviewUrl: string | null;
   reviewStatus: "pending" | "approved" | "rejected";
   rejectionReason: string;
   createdAt: string;
@@ -377,11 +464,13 @@ export function listAvatarUploads(
 
 export function submitAvatarUpload(
   input: {
-    itemType: "shirt" | "pants";
+    itemType: import("./game/avatarCatalog").AvatarItemType;
     name: string;
     description: string;
     priceTix: number;
-    textureData: string;
+    textureData?: string;
+    modelData?: string;
+    modelFormat?: import("./game/avatarCatalog").AvatarModelFormat;
   },
   accessToken: string,
 ): Promise<{ submission: AvatarCatalogSubmission }> {
@@ -577,6 +666,34 @@ export function equipPants(
     method: "POST",
     accessToken,
     body: { pantsId },
+  });
+}
+
+export function equipHair(
+  hairId: import("./game/avatarCatalog").HairId | null,
+  accessToken: string,
+): Promise<{
+  equippedHairId: import("./game/avatarCatalog").HairId | null;
+  user: PolymonsUser;
+}> {
+  return apiRequest("/v1/avatar/equip-hair", {
+    method: "POST",
+    accessToken,
+    body: { itemId: hairId },
+  });
+}
+
+export function equipHat(
+  hatId: import("./game/avatarCatalog").HatId | null,
+  accessToken: string,
+): Promise<{
+  equippedHatId: import("./game/avatarCatalog").HatId | null;
+  user: PolymonsUser;
+}> {
+  return apiRequest("/v1/avatar/equip-hat", {
+    method: "POST",
+    accessToken,
+    body: { itemId: hatId },
   });
 }
 

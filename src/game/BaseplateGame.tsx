@@ -47,7 +47,25 @@ import {
   PantsMaterials,
   ShirtMaterials,
 } from "./R6Avatar";
-import { R6_AVATAR_SCALE } from "./r6Geometry";
+import {
+  R6_ARM_CENTER_Y,
+  R6_ARM_SIZE,
+  R6_AVATAR_SCALE,
+  R6_COLLIDER_HALF_HEIGHT,
+  R6_COLLIDER_RADIUS,
+  R6_GROUND_SENSOR_Y,
+  R6_HEAD_CENTER_Y,
+  R6_HEAD_SIZE,
+  R6_HIP_X,
+  R6_HIP_Y,
+  R6_LEG_CENTER_Y,
+  R6_LEG_SIZE,
+  R6_SHOULDER_X,
+  R6_SHOULDER_Y,
+  R6_TORSO_CENTER_Y,
+  R6_TORSO_SIZE,
+  R6_VISUAL_OFFSET,
+} from "./r6Geometry";
 import type {
   ChatMessage,
   PlayerTransform,
@@ -66,13 +84,27 @@ import type {
 import { DEFAULT_LIGHTING_SETTINGS } from "./polyProject";
 import { LightingRig } from "./LightingRig";
 import { createSurfaceTexture } from "./surfaceTextures";
+import { hasPartImageFaces } from "./partImageFaces";
+import { usePartImageTextures } from "./usePartImageTextures";
+import {
+  cameraArrowDelta,
+  movementAxis,
+  normalizeJoystickAxis,
+  shouldPreventGameplayDefault,
+} from "./gameInput";
 
 type InputState = {
   forward: boolean;
   backward: boolean;
   left: boolean;
   right: boolean;
+  analogX: number;
+  analogY: number;
+  arrowForward: boolean;
+  arrowBackward: boolean;
   sprint: boolean;
+  cameraLeft: boolean;
+  cameraRight: boolean;
   jumpQueued: boolean;
   resetQueued: boolean;
   yaw: number;
@@ -95,6 +127,13 @@ type Telemetry = {
   rotationY: number;
 };
 
+type GameSpawn = {
+  x: number;
+  y: number;
+  z: number;
+  rotationY?: number;
+};
+
 const SPAWN = { x: 0, y: 2.7, z: 7 };
 const WORLD_UP = new Vector3(0, 1, 0);
 const movement = new Vector3();
@@ -106,9 +145,43 @@ const cameraRayDirection = new Vector3();
 const CAMERA_DISTANCE_SCALE = 0.37;
 const CAMERA_MIN_PITCH = -0.82;
 const CAMERA_MAX_PITCH = 1.12;
+const FULL_TURN = Math.PI * 2;
+const MOBILE_VIEWPORT_HEIGHT_VAR = "--polymons-mobile-vh";
+const MOBILE_VIEWPORT_WIDTH_VAR = "--polymons-mobile-vw";
+const MOBILE_VIEWPORT_TOP_VAR = "--polymons-mobile-top";
+const DEATH_RESPAWN_DELAY_MS = 1_650;
+let defaultDeathAudio: HTMLAudioElement | null = null;
+
+function isIosLikeDevice(): boolean {
+  const platform = navigator.platform || "";
+  const userAgent = navigator.userAgent || "";
+  return (
+    /iPad|iPhone|iPod/.test(userAgent) ||
+    (platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
+}
+
+function isLikelyMobileDevice(): boolean {
+  if (typeof window === "undefined") return false;
+  const viewport = window.visualViewport;
+  const width = viewport?.width ?? window.innerWidth;
+  const height = viewport?.height ?? window.innerHeight;
+  return (
+    window.matchMedia("(pointer: coarse)").matches ||
+    Math.min(width, height) <= 820
+  );
+}
 
 function clampCameraPitch(value: number): number {
   return MathUtils.clamp(value, CAMERA_MIN_PITCH, CAMERA_MAX_PITCH);
+}
+
+function shortestAngleDelta(from: number, to: number): number {
+  return MathUtils.euclideanModulo(to - from + Math.PI, FULL_TURN) - Math.PI;
+}
+
+function dampAngle(from: number, to: number, smoothing: number): number {
+  return from + shortestAngleDelta(from, to) * smoothing;
 }
 
 function createInputState(): InputState {
@@ -117,7 +190,13 @@ function createInputState(): InputState {
     backward: false,
     left: false,
     right: false,
+    analogX: 0,
+    analogY: 0,
+    arrowForward: false,
+    arrowBackward: false,
     sprint: false,
+    cameraLeft: false,
+    cameraRight: false,
     jumpQueued: false,
     resetQueued: false,
     yaw: 0,
@@ -204,6 +283,18 @@ function useKeyboard(
         case "ControlRight":
           input.current.sprint = pressed;
           break;
+        case "ArrowLeft":
+          input.current.cameraLeft = pressed;
+          break;
+        case "ArrowRight":
+          input.current.cameraRight = pressed;
+          break;
+        case "ArrowUp":
+          input.current.arrowForward = pressed;
+          break;
+        case "ArrowDown":
+          input.current.arrowBackward = pressed;
+          break;
         case "Space":
           if (pressed && !repeat) input.current.jumpQueued = true;
           break;
@@ -225,11 +316,7 @@ function useKeyboard(
         return;
       }
       if (!controlsEnabled) return;
-      if (
-        ["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(
-          event.code,
-        )
-      ) {
+      if (shouldPreventGameplayDefault(event.code)) {
         event.preventDefault();
       }
       setKey(event.code, true, event.repeat);
@@ -244,9 +331,18 @@ function useKeyboard(
       input.current.backward = false;
       input.current.left = false;
       input.current.right = false;
+      input.current.analogX = 0;
+      input.current.analogY = 0;
+      input.current.arrowForward = false;
+      input.current.arrowBackward = false;
       input.current.sprint = false;
+      input.current.cameraLeft = false;
+      input.current.cameraRight = false;
+      input.current.jumpQueued = false;
+      input.current.resetQueued = false;
     };
 
+    if (!controlsEnabled) clearKeys();
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", clearKeys);
@@ -274,6 +370,11 @@ function MouseLook({
   onShiftLockChange: (active: boolean) => void;
 }) {
   const { gl } = useThree();
+  const cameraSettingsRef = useRef(cameraSettings);
+
+  useEffect(() => {
+    cameraSettingsRef.current = cameraSettings;
+  }, [cameraSettings]);
 
   useEffect(() => {
     const canvas = gl.domElement;
@@ -288,9 +389,11 @@ function MouseLook({
     let pinchDistance: number | null = null;
     let mouseLooking = false;
     let mousePointer: number | null = null;
+    let rightMouseHeld = false;
     let lastMouseX = 0;
     let lastMouseY = 0;
-    const lookDirection = cameraSettings.inverted ? -1 : 1;
+    const lookDirection = () =>
+      cameraSettingsRef.current.inverted ? -1 : 1;
     const setZoom = (value: number) => {
       const bounds = cameraZoomBounds(playerSettings);
       input.current.zoomDistance = MathUtils.clamp(
@@ -311,12 +414,27 @@ function MouseLook({
       if (event.pointerType !== "touch") {
         if (!controlsEnabled || event.button !== 2) return;
         event.preventDefault();
+        rightMouseHeld = true;
         mouseLooking = true;
         mousePointer = event.pointerId;
         lastMouseX = event.clientX;
         lastMouseY = event.clientY;
-        canvas.setPointerCapture(event.pointerId);
         canvas.style.cursor = "grabbing";
+        const captureFallback = () => {
+          if (
+            rightMouseHeld &&
+            mousePointer === event.pointerId &&
+            !canvas.hasPointerCapture(event.pointerId)
+          ) {
+            canvas.setPointerCapture(event.pointerId);
+          }
+        };
+        try {
+          const lockRequest = canvas.requestPointerLock();
+          if (lockRequest) void lockRequest.catch(captureFallback);
+        } catch {
+          captureFallback();
+        }
         return;
       }
       if (!controlsEnabled) return;
@@ -349,10 +467,10 @@ function MouseLook({
       }
       if (event.pointerId !== touchPointer) return;
       input.current.yaw -=
-        (event.clientX - lastTouchX) * 0.0052 * lookDirection;
+        (event.clientX - lastTouchX) * 0.0052 * lookDirection();
       input.current.pitch = clampCameraPitch(
         input.current.pitch +
-          (event.clientY - lastTouchY) * 0.0042 * lookDirection,
+          (event.clientY - lastTouchY) * 0.0042 * lookDirection(),
       );
       lastTouchX = event.clientX;
       lastTouchY = event.clientY;
@@ -363,9 +481,16 @@ function MouseLook({
         if (canvas.hasPointerCapture(event.pointerId)) {
           canvas.releasePointerCapture(event.pointerId);
         }
+        rightMouseHeld = false;
         mouseLooking = false;
         mousePointer = null;
         canvas.style.cursor = "";
+        if (
+          document.pointerLockElement === canvas &&
+          !cameraSettingsRef.current.shiftLockActive
+        ) {
+          void document.exitPointerLock();
+        }
         return;
       }
       touchPoints.delete(event.pointerId);
@@ -395,7 +520,8 @@ function MouseLook({
         !controlsEnabled ||
         event.pointerType === "touch" ||
         !mouseLooking ||
-        event.pointerId !== mousePointer
+        event.pointerId !== mousePointer ||
+        document.pointerLockElement === canvas
       ) {
         return;
       }
@@ -403,24 +529,51 @@ function MouseLook({
       const deltaY = event.clientY - lastMouseY;
       lastMouseX = event.clientX;
       lastMouseY = event.clientY;
-      input.current.yaw -= deltaX * 0.0036 * lookDirection;
+      input.current.yaw -= deltaX * 0.0036 * lookDirection();
       input.current.pitch = clampCameraPitch(
-        input.current.pitch + deltaY * 0.0032 * lookDirection,
+        input.current.pitch + deltaY * 0.0032 * lookDirection(),
       );
     };
     const onMouseMove = (event: MouseEvent) => {
       if (document.pointerLockElement !== canvas) return;
-      input.current.yaw -= event.movementX * 0.0024 * lookDirection;
+      if (!rightMouseHeld && !cameraSettingsRef.current.shiftLockActive) return;
+      input.current.yaw -= event.movementX * 0.0024 * lookDirection();
       input.current.pitch = clampCameraPitch(
-        input.current.pitch + event.movementY * 0.0018 * lookDirection,
+        input.current.pitch + event.movementY * 0.0018 * lookDirection(),
       );
+    };
+    const onMouseUp = (event: MouseEvent) => {
+      if (event.button !== 2 || !rightMouseHeld) return;
+      rightMouseHeld = false;
+      mouseLooking = false;
+      mousePointer = null;
+      canvas.style.cursor = "";
+      if (
+        document.pointerLockElement === canvas &&
+        !cameraSettingsRef.current.shiftLockActive
+      ) {
+        void document.exitPointerLock();
+      }
+    };
+    const clearMouseLook = () => {
+      rightMouseHeld = false;
+      mouseLooking = false;
+      mousePointer = null;
+      canvas.style.cursor = "";
+      if (document.pointerLockElement === canvas) {
+        void document.exitPointerLock();
+      }
     };
     const onLockChange = () => {
       const locked = document.pointerLockElement === canvas;
       onPointerLock(locked);
-      if (!locked && cameraSettings.shiftLockActive) {
+      if (!locked && cameraSettingsRef.current.shiftLockActive) {
         onShiftLockChange(false);
       }
+    };
+    const onLockError = () => {
+      onPointerLock(false);
+      onShiftLockChange(false);
     };
     const onWheel = (event: WheelEvent) => {
       if (!controlsEnabled) return;
@@ -430,37 +583,14 @@ function MouseLook({
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (
-        controlsEnabled &&
-        ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(
-          event.code,
-        )
-      ) {
-        event.preventDefault();
-        const direction = cameraSettings.inverted ? -1 : 1;
-        const step = event.repeat ? 0.035 : 0.07;
-        if (event.code === "ArrowLeft") {
-          input.current.yaw += step * direction;
-        } else if (event.code === "ArrowRight") {
-          input.current.yaw -= step * direction;
-        } else if (event.code === "ArrowUp") {
-          input.current.pitch = clampCameraPitch(
-            input.current.pitch - step * direction,
-          );
-        } else {
-          input.current.pitch = clampCameraPitch(
-            input.current.pitch + step * direction,
-          );
-        }
-      }
-      if (
         !controlsEnabled ||
-        !cameraSettings.shiftLockEnabled ||
+        !cameraSettingsRef.current.shiftLockEnabled ||
         event.repeat ||
         !["ShiftLeft", "ShiftRight"].includes(event.code)
       ) {
         return;
       }
-      const next = !cameraSettings.shiftLockActive;
+      const next = !cameraSettingsRef.current.shiftLockActive;
       onShiftLockChange(next);
       if (next) {
         void canvas.requestPointerLock();
@@ -479,10 +609,13 @@ function MouseLook({
     canvas.addEventListener("wheel", onWheel, { passive: false });
     canvas.addEventListener("contextmenu", onContextMenu);
     document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
     document.addEventListener("pointerlockchange", onLockChange);
+    document.addEventListener("pointerlockerror", onLockError);
     window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("blur", clearMouseLook);
     return () => {
-      canvas.style.cursor = "";
+      clearMouseLook();
       canvas.style.touchAction = previousTouchAction;
       canvas.style.userSelect = previousUserSelect;
       if (mousePointer !== null && canvas.hasPointerCapture(mousePointer)) {
@@ -497,11 +630,13 @@ function MouseLook({
       canvas.removeEventListener("wheel", onWheel);
       canvas.removeEventListener("contextmenu", onContextMenu);
       document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
       document.removeEventListener("pointerlockchange", onLockChange);
+      document.removeEventListener("pointerlockerror", onLockError);
       window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("blur", clearMouseLook);
     };
   }, [
-    cameraSettings,
     controlsEnabled,
     gl,
     input,
@@ -597,9 +732,28 @@ function playSynthesizedDeathSound() {
   oscillator.addEventListener("ended", () => void context.close());
 }
 
-function playDefaultDeathSound() {
+function preloadDefaultDeathSound() {
+  if (defaultDeathAudio) return;
   const audio = new Audio(defaultDeathSoundUrl);
+  audio.preload = "auto";
   audio.volume = 0.9;
+  audio.load();
+  defaultDeathAudio = audio;
+}
+
+function playDefaultDeathSound() {
+  preloadDefaultDeathSound();
+  const audio = defaultDeathAudio;
+  if (!audio) {
+    playSynthesizedDeathSound();
+    return;
+  }
+  audio.pause();
+  try {
+    audio.currentTime = 0;
+  } catch {
+    // Metadata can still be loading during an immediate first death.
+  }
   void audio.play().catch(() => playSynthesizedDeathSound());
 }
 
@@ -610,6 +764,8 @@ function DeathPart({
   velocity,
   shirtId,
   pantsId,
+  shirtTextureUrl,
+  pantsTextureUrl,
   fallbackColor,
   sleeve = false,
   head = false,
@@ -620,6 +776,8 @@ function DeathPart({
   velocity: [number, number, number];
   shirtId?: ShirtId | null;
   pantsId?: PantsId | null;
+  shirtTextureUrl?: string | null;
+  pantsTextureUrl?: string | null;
   fallbackColor?: string;
   sleeve?: boolean;
   head?: boolean;
@@ -644,14 +802,14 @@ function DeathPart({
       ref={body}
       position={position}
       colliders={false}
-      linearDamping={0.08}
-      angularDamping={0.14}
+      linearDamping={0.62}
+      angularDamping={0.58}
       ccd
     >
       <CuboidCollider
         args={[size[0] / 2, size[1] / 2, size[2] / 2]}
-        restitution={0.25}
-        friction={0.68}
+        restitution={0.12}
+        friction={0.78}
         mass={Math.max(0.25, size[0] * size[1] * size[2] * 0.35)}
       />
       {head ? (
@@ -664,11 +822,13 @@ function DeathPart({
           {pantsId !== undefined ? (
             <PantsMaterials
               pantsId={pantsId}
+              textureUrl={pantsTextureUrl}
               fallbackColor={fallbackColor ?? color}
             />
           ) : shirtId !== undefined ? (
             <ShirtMaterials
               shirtId={shirtId}
+              textureUrl={shirtTextureUrl}
               sleeve={sleeve}
               fallbackColor={fallbackColor ?? color}
             />
@@ -689,6 +849,8 @@ function DeathParts({
   player?: {
     equippedShirtId?: ShirtId | null;
     equippedPantsId?: PantsId | null;
+    equippedShirtTextureUrl?: string | null;
+    equippedPantsTextureUrl?: string | null;
     avatarAppearance?: AvatarAppearance;
   };
 }) {
@@ -699,56 +861,86 @@ function DeathParts({
   ): [number, number, number] => [origin[0] + x, origin[1] + y, origin[2] + z];
   const shirtId = player?.equippedShirtId ?? null;
   const pantsId = player?.equippedPantsId ?? null;
+  const shirtTextureUrl = player?.equippedShirtTextureUrl ?? null;
+  const pantsTextureUrl = player?.equippedPantsTextureUrl ?? null;
   const colors = normalizeAvatarAppearance(player?.avatarAppearance).bodyColors;
+  const scaledSize = (
+    size: [number, number, number],
+  ): [number, number, number] => [
+    size[0] * R6_AVATAR_SCALE,
+    size[1] * R6_AVATAR_SCALE,
+    size[2] * R6_AVATAR_SCALE,
+  ];
+  const scaledPosition = (
+    x: number,
+    y: number,
+  ): [number, number, number] => [
+    x * R6_AVATAR_SCALE,
+    R6_VISUAL_OFFSET + y * R6_AVATAR_SCALE,
+    0,
+  ];
   return (
     <>
       <DeathPart
-        position={at(0, 0.24, 0)}
-        size={[1.76, 1.6, 0.96]}
+        position={at(...scaledPosition(0, R6_TORSO_CENTER_Y))}
+        size={scaledSize(R6_TORSO_SIZE)}
         color={colors.torso}
-        velocity={[0.5, 4.8, -1.1]}
+        velocity={[0.2, 2.15, -0.4]}
         shirtId={shirtId}
+        shirtTextureUrl={shirtTextureUrl}
         fallbackColor={colors.torso}
       />
       <DeathPart
-        position={at(0, 1.66, 0)}
-        size={[1.36, 1.16, 1.36]}
+        position={at(...scaledPosition(0, R6_HEAD_CENTER_Y))}
+        size={scaledSize(R6_HEAD_SIZE)}
         color={colors.head}
-        velocity={[-0.4, 6.4, 0.8]}
+        velocity={[-0.18, 3.15, 0.35]}
         head
       />
       <DeathPart
-        position={at(-1.28, 0.2, 0)}
-        size={[0.8, 1.68, 0.84]}
+        position={at(
+          ...scaledPosition(-R6_SHOULDER_X, R6_SHOULDER_Y + R6_ARM_CENTER_Y),
+        )}
+        size={scaledSize(R6_ARM_SIZE)}
         color={colors.leftArm}
-        velocity={[-5.2, 4.3, 1.8]}
+        velocity={[-2.25, 2.35, 0.72]}
         shirtId={shirtId}
+        shirtTextureUrl={shirtTextureUrl}
         sleeve
         fallbackColor={colors.leftArm}
       />
       <DeathPart
-        position={at(1.28, 0.2, 0)}
-        size={[0.8, 1.68, 0.84]}
+        position={at(
+          ...scaledPosition(R6_SHOULDER_X, R6_SHOULDER_Y + R6_ARM_CENTER_Y),
+        )}
+        size={scaledSize(R6_ARM_SIZE)}
         color={colors.rightArm}
-        velocity={[5.2, 4.6, -1.5]}
+        velocity={[2.25, 2.45, -0.65]}
         shirtId={shirtId}
+        shirtTextureUrl={shirtTextureUrl}
         sleeve
         fallbackColor={colors.rightArm}
       />
       <DeathPart
-        position={at(-0.46, -1.36, 0)}
-        size={[0.88, 1.6, 0.88]}
+        position={at(
+          ...scaledPosition(-R6_HIP_X, R6_HIP_Y + R6_LEG_CENTER_Y),
+        )}
+        size={scaledSize(R6_LEG_SIZE)}
         color={colors.leftLeg}
-        velocity={[-2.8, 3.2, -2.2]}
+        velocity={[-1.15, 1.8, -0.78]}
         pantsId={pantsId}
+        pantsTextureUrl={pantsTextureUrl}
         fallbackColor={colors.leftLeg}
       />
       <DeathPart
-        position={at(0.46, -1.36, 0)}
-        size={[0.88, 1.6, 0.88]}
+        position={at(
+          ...scaledPosition(R6_HIP_X, R6_HIP_Y + R6_LEG_CENTER_Y),
+        )}
+        size={scaledSize(R6_LEG_SIZE)}
         color={colors.rightLeg}
-        velocity={[2.8, 3.5, 2.2]}
+        velocity={[1.15, 1.9, 0.78]}
         pantsId={pantsId}
+        pantsTextureUrl={pantsTextureUrl}
         fallbackColor={colors.rightLeg}
       />
     </>
@@ -774,7 +966,7 @@ function DeathCamera({
     );
     camera.position.lerp(
       desiredCameraPosition,
-      1 - Math.exp(-7 * delta),
+      1 - Math.exp(-12 * delta),
     );
     camera.lookAt(cameraTarget);
   });
@@ -1019,22 +1211,18 @@ function PlayerController({
   spawn,
   playerSettings,
   shiftLockActive,
+  cameraInverted,
   localPlayer,
   onDeath,
 }: {
   input: MutableRefObject<InputState>;
   onTelemetry: (telemetry: Telemetry) => void;
   onPlayerState?: (state: Omit<PlayerTransform, "sequence">) => void;
-  spawn: { x: number; y: number; z: number };
+  spawn: GameSpawn;
   playerSettings: PolyPlayerSettings;
   shiftLockActive: boolean;
-  localPlayer?: {
-    username: string;
-    displayName: string;
-    equippedShirtId?: ShirtId | null;
-    equippedPantsId?: PantsId | null;
-    avatarAppearance?: AvatarAppearance;
-  };
+  cameraInverted: boolean;
+  localPlayer?: R6AvatarPlayer;
   onDeath: (origin: [number, number, number]) => void;
 }) {
   const body = useRef<RapierRigidBody>(null);
@@ -1042,8 +1230,9 @@ function PlayerController({
   const grounded = useRef(false);
   const moving = useRef(0);
   const verticalVelocity = useRef(0);
-  const facing = useRef(0);
+  const facing = useRef(spawn.rotationY ?? 0);
   const lastTelemetry = useRef(0);
+  const lastNetworkUpdate = useRef(0);
   const jumpCooldown = useRef(0);
   const jumpBuffer = useRef(0);
   const coyoteTime = useRef(0);
@@ -1056,6 +1245,15 @@ function PlayerController({
   const cameraCollisionDistance = useRef<number | null>(null);
   const { camera } = useThree();
   const { rapier, world } = useRapier();
+
+  useEffect(() => {
+    if (!body.current) return;
+    body.current.setTranslation({ x: spawn.x, y: spawn.y, z: spawn.z }, true);
+    if (spawn.rotationY !== undefined) {
+      input.current.yaw = spawn.rotationY;
+      facing.current = spawn.rotationY;
+    }
+  }, [input, spawn.rotationY, spawn.x, spawn.y, spawn.z]);
 
   const die = useCallback(() => {
     if (deathTriggered.current) return;
@@ -1074,7 +1272,13 @@ function PlayerController({
   useFrame((state, delta) => {
     const rigidBody = body.current;
     if (!rigidBody) return;
-    const frameDelta = Math.min(delta, 1 / 30);
+    const frameDelta = Math.min(delta, 0.05);
+    input.current.yaw += cameraArrowDelta(
+      input.current.cameraLeft,
+      input.current.cameraRight,
+      frameDelta,
+      cameraInverted,
+    );
 
     jumpCooldown.current = Math.max(0, jumpCooldown.current - frameDelta);
     grounded.current = groundContacts.current > 0;
@@ -1084,14 +1288,27 @@ function PlayerController({
     if (input.current.jumpQueued) jumpBuffer.current = 0.14;
     else jumpBuffer.current = Math.max(0, jumpBuffer.current - frameDelta);
 
-    const axisForward =
-      Number(input.current.forward) - Number(input.current.backward);
-    const axisRight = Number(input.current.right) - Number(input.current.left);
+    const axisForward = movementAxis(
+      input.current.forward,
+      input.current.backward,
+      input.current.arrowForward,
+      input.current.arrowBackward,
+      input.current.analogY,
+    );
+    const axisRight = MathUtils.clamp(
+      Number(input.current.right) -
+        Number(input.current.left) +
+        input.current.analogX,
+      -1,
+      1,
+    );
+    const cameraYaw = input.current.yaw;
+    const cameraPitch = input.current.pitch;
 
     forward.set(
-      -Math.sin(input.current.yaw),
+      -Math.sin(cameraYaw),
       0,
-      -Math.cos(input.current.yaw),
+      -Math.cos(cameraYaw),
     );
     right.crossVectors(forward, WORLD_UP);
     movement
@@ -1105,16 +1322,16 @@ function PlayerController({
     const walkSpeed = Math.max(1, playerSettings.walkSpeed / 2.75);
     const targetSpeed =
       input.current.sprint && playerSettings.sprintEnabled
-        ? walkSpeed * playerSettings.sprintMultiplier
+        ? walkSpeed * MathUtils.clamp(playerSettings.sprintMultiplier, 1, 5)
         : walkSpeed;
     const accelerating = movement.lengthSq() > 0.001;
     const acceleration = grounded.current
       ? accelerating
-        ? 20
-        : 42
+        ? 60
+        : 52
       : accelerating
-        ? 5.5
-        : 1.5;
+        ? 10
+        : 1;
     const smoothing = 1 - Math.exp(-acceleration * frameDelta);
     const targetX = movement.x * targetSpeed;
     const targetZ = movement.z * targetSpeed;
@@ -1138,13 +1355,22 @@ function PlayerController({
     input.current.jumpQueued = false;
 
     rigidBody.setLinvel(nextVelocity, true);
+    rigidBody.setAngvel({ x: 0, y: 0, z: 0 }, false);
 
     const horizontalSpeed = Math.hypot(nextVelocity.x, nextVelocity.z);
     moving.current = horizontalSpeed;
     if (shiftLockActive) {
-      facing.current = input.current.yaw;
+      facing.current = dampAngle(
+        facing.current,
+        cameraYaw,
+        1 - Math.exp(-50 * frameDelta),
+      );
     } else if (movement.lengthSq() > 0.02) {
-      facing.current = Math.atan2(-movement.x, -movement.z);
+      facing.current = dampAngle(
+        facing.current,
+        Math.atan2(-movement.x, -movement.z),
+        1 - Math.exp(-42 * frameDelta),
+      );
     }
 
     const position = rigidBody.translation();
@@ -1163,16 +1389,16 @@ function PlayerController({
       zoomBounds.maximum,
     );
     const distance = input.current.zoomDistance * CAMERA_DISTANCE_SCALE;
-    const horizontalDistance = Math.cos(input.current.pitch) * distance;
+    const horizontalDistance = Math.cos(cameraPitch) * distance;
     const shoulderOffset = shiftLockActive ? 1.15 : 0;
     desiredCameraPosition.set(
       position.x +
-        Math.sin(input.current.yaw) * horizontalDistance +
-        Math.cos(input.current.yaw) * shoulderOffset,
-      position.y + 2.5 + Math.sin(input.current.pitch) * distance,
+        Math.sin(cameraYaw) * horizontalDistance +
+        Math.cos(cameraYaw) * shoulderOffset,
+      position.y + 2.5 + Math.sin(cameraPitch) * distance,
       position.z +
-        Math.cos(input.current.yaw) * horizontalDistance -
-        Math.sin(input.current.yaw) * shoulderOffset,
+        Math.cos(cameraYaw) * horizontalDistance -
+        Math.sin(cameraYaw) * shoulderOffset,
     );
     cameraRayDirection
       .copy(desiredCameraPosition)
@@ -1183,42 +1409,57 @@ function PlayerController({
       new rapier.Ray(cameraTarget, cameraRayDirection),
       cameraDistance,
       true,
-      undefined,
+      rapier.QueryFilterFlags.EXCLUDE_SENSORS,
       undefined,
       undefined,
       rigidBody,
     );
-    if (cameraHit) {
-      cameraCollisionDistance.current = Math.max(
-        0.65,
-        cameraHit.timeOfImpact - 0.42,
+    const collisionTargetDistance = cameraHit
+      ? Math.max(1.05, cameraHit.timeOfImpact - 0.3)
+      : cameraDistance;
+    const previousCollisionDistance =
+      cameraCollisionDistance.current ?? collisionTargetDistance;
+    const collisionSmoothing =
+      1 -
+      Math.exp(
+        -(collisionTargetDistance < previousCollisionDistance ? 85 : 26) *
+          frameDelta,
       );
-      desiredCameraPosition
-        .copy(cameraTarget)
-        .addScaledVector(
-          cameraRayDirection,
-          cameraCollisionDistance.current,
-        );
-    } else {
-      cameraCollisionDistance.current = null;
-    }
-    const cameraSmoothing = 1 - Math.exp(-12 * frameDelta);
+    const resolvedCameraDistance = MathUtils.lerp(
+      previousCollisionDistance,
+      collisionTargetDistance,
+      collisionSmoothing,
+    );
+    cameraCollisionDistance.current =
+      !cameraHit && Math.abs(resolvedCameraDistance - cameraDistance) < 0.015
+        ? null
+        : resolvedCameraDistance;
+    desiredCameraPosition
+      .copy(cameraTarget)
+      .addScaledVector(cameraRayDirection, resolvedCameraDistance);
+    const cameraSmoothing =
+      1 - Math.exp((shiftLockActive ? -95 : -80) * frameDelta);
     camera.position.lerp(desiredCameraPosition, cameraSmoothing);
     camera.lookAt(cameraTarget);
 
+    const nextPlayerState = {
+      position: [position.x, position.y, position.z] as [number, number, number],
+      rotationY: facing.current,
+    };
+    if (state.clock.elapsedTime - lastNetworkUpdate.current > 0.06) {
+      lastNetworkUpdate.current = state.clock.elapsedTime;
+      onPlayerState?.({
+        ...nextPlayerState,
+      });
+    }
     if (state.clock.elapsedTime - lastTelemetry.current > 0.15) {
       lastTelemetry.current = state.clock.elapsedTime;
-      const telemetry = {
+      onTelemetry({
         grounded: grounded.current,
         speed: horizontalSpeed,
         x: position.x,
         y: position.y,
         z: position.z,
-        rotationY: facing.current,
-      };
-      onTelemetry(telemetry);
-      onPlayerState?.({
-        position: [position.x, position.y, position.z],
         rotationY: facing.current,
       });
     }
@@ -1231,15 +1472,20 @@ function PlayerController({
       position={[spawn.x, spawn.y, spawn.z]}
       colliders={false}
       lockRotations
-      linearDamping={0.04}
+      linearDamping={0}
       friction={0}
       ccd
+      canSleep={false}
+      additionalSolverIterations={4}
       enabledRotations={[false, false, false]}
     >
-      <CapsuleCollider args={[1.5, 0.7]} friction={0} />
+      <CapsuleCollider
+        args={[R6_COLLIDER_HALF_HEIGHT, R6_COLLIDER_RADIUS]}
+        friction={0}
+      />
       <CuboidCollider
-        args={[0.4, 0.07, 0.36]}
-        position={[0, -2.28, 0]}
+        args={[0.34, 0.06, 0.3]}
+        position={[0, R6_GROUND_SENSOR_Y, 0]}
         sensor
         onIntersectionEnter={() => {
           groundContacts.current += 1;
@@ -1372,7 +1618,7 @@ function ProjectBlock({
   const animated = useRef<Group>(null);
   const scaled = useRef<Group>(null);
   const body = useRef<RapierRigidBody>(null);
-  const meshMaterial = useRef<MeshStandardMaterial>(null);
+  const meshMaterials = useRef<MeshStandardMaterial[]>([]);
   const animationStartedAt = useRef<number | null>(null);
   const tweenStartedAt = useRef<number | null>(null);
   const touchingPlayerColliders = useRef(new Set<number>());
@@ -1465,19 +1711,25 @@ function ProjectBlock({
       const size = lerpVector(tween.from.scale, tween.to.scale);
       scaled.current.scale.set(...size);
     }
-    if (meshMaterial.current) {
-      meshMaterial.current.opacity =
+    for (const material of meshMaterials.current) {
+      material.opacity =
         1 -
         MathUtils.lerp(
           tween.from.transparency,
           tween.to.transparency,
           alpha,
         );
-      meshMaterial.current.color
+      material.color
         .set(tween.from.color)
         .lerp(new Color(tween.to.color), alpha);
     }
   });
+  const imageTextures = usePartImageTextures(object.imageFaces);
+  const hasImages = hasPartImageFaces(object.imageFaces);
+  const materialRef = (index: number) => (material: MeshStandardMaterial | null) => {
+    if (material) meshMaterials.current[index] = material;
+    else delete meshMaterials.current[index];
+  };
   if (object.visible === false) return null;
   const material = {
     plastic: {
@@ -1497,20 +1749,47 @@ function ProjectBlock({
           receiveShadow={object.transparency < 0.95}
         >
           <ProjectPartGeometry shape={object.shape ?? "block"} />
-          <meshStandardMaterial
-            ref={meshMaterial}
-            key={`${object.material}-${object.surfaceTexture}`}
-            color={object.color}
-            map={surfaceTexture}
-            roughness={Math.max(0.18, material.roughness - 0.08)}
-            metalness={material.metalness}
-            emissive={object.material === "neon" ? object.color : "#000000"}
-            emissiveIntensity={material.emissiveIntensity}
-            transparent={object.transparency > 0 || Boolean(tween)}
-            opacity={Math.max(0, Math.min(1, 1 - object.transparency))}
-            depthWrite={object.transparency <= 0.02}
-            alphaTest={object.transparency >= 1 ? 1 : 0}
-          />
+          {hasImages && (object.shape ?? "block") === "block" ? (
+            ([
+              ["right", 0],
+              ["left", 1],
+              ["top", 2],
+              ["bottom", 3],
+              ["back", 4],
+              ["front", 5],
+            ] as const).map(([face, index]) => (
+              <meshStandardMaterial
+                key={`${object.material}-${object.surfaceTexture}-${face}-${object.imageFaces?.[face] ?? object.imageFaces?.all ?? ""}`}
+                ref={materialRef(index)}
+                attach={`material-${index}`}
+                color={object.color}
+                map={imageTextures[face] ?? imageTextures.all ?? surfaceTexture}
+                roughness={Math.max(0.18, material.roughness - 0.08)}
+                metalness={material.metalness}
+                emissive={object.material === "neon" ? object.color : "#000000"}
+                emissiveIntensity={material.emissiveIntensity}
+                transparent={object.transparency > 0 || Boolean(tween)}
+                opacity={Math.max(0, Math.min(1, 1 - object.transparency))}
+                depthWrite={object.transparency <= 0.02}
+                alphaTest={object.transparency >= 1 ? 1 : 0}
+              />
+            ))
+          ) : (
+            <meshStandardMaterial
+              ref={materialRef(0)}
+              key={`${object.material}-${object.surfaceTexture}-${object.imageFaces?.all ?? object.imageFaces?.front ?? ""}`}
+              color={object.color}
+              map={imageTextures.all ?? imageTextures.front ?? surfaceTexture}
+              roughness={Math.max(0.18, material.roughness - 0.08)}
+              metalness={material.metalness}
+              emissive={object.material === "neon" ? object.color : "#000000"}
+              emissiveIntensity={material.emissiveIntensity}
+              transparent={object.transparency > 0 || Boolean(tween)}
+              opacity={Math.max(0, Math.min(1, 1 - object.transparency))}
+              depthWrite={object.transparency <= 0.02}
+              alphaTest={object.transparency >= 1 ? 1 : 0}
+            />
+          )}
         </mesh>
       </group>
     </group>
@@ -1683,16 +1962,10 @@ function Scene({
   onShiftLockChange: (active: boolean) => void;
   lighting: PolyLightingSettings;
   shadows: boolean;
-  spawn: { x: number; y: number; z: number };
+  spawn: GameSpawn;
   onWorldTouched?: (worldObjectId: string) => void;
   onWorldTouchEnded?: (worldObjectId: string) => void;
-  localPlayer?: {
-    username: string;
-    displayName: string;
-    equippedShirtId?: ShirtId | null;
-    equippedPantsId?: PantsId | null;
-    avatarAppearance?: AvatarAppearance;
-  };
+  localPlayer?: R6AvatarPlayer;
   onPlayerDeath: () => void;
   onPlayerRespawn?: () => void;
 }) {
@@ -1708,7 +1981,7 @@ function Scene({
     const timer = window.setTimeout(() => {
       respawnCallback.current?.();
       setDeath(null);
-    }, 2_600);
+    }, DEATH_RESPAWN_DELAY_MS);
     return () => window.clearTimeout(timer);
   }, [death]);
 
@@ -1752,6 +2025,7 @@ function Scene({
             spawn={spawn}
             playerSettings={playerSettings}
             shiftLockActive={cameraSettings.shiftLockActive}
+            cameraInverted={cameraSettings.inverted}
             localPlayer={localPlayer}
             onDeath={beginDeath}
           />
@@ -1829,14 +2103,23 @@ function MobileJoystick({
 }: {
   onChange: (x: number, y: number) => void;
 }) {
-  const [knob, setKnob] = useState({ x: 0, y: 0 });
+  const knobRef = useRef<HTMLSpanElement>(null);
+  const moveKnob = (x: number, y: number) => {
+    if (knobRef.current) {
+      knobRef.current.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+    }
+  };
   const update = (
     event: ReactPointerEvent<HTMLDivElement>,
     release = false,
   ) => {
+    event.preventDefault();
+    event.stopPropagation();
     if (release) {
-      event.currentTarget.releasePointerCapture?.(event.pointerId);
-      setKnob({ x: 0, y: 0 });
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      moveKnob(0, 0);
       onChange(0, 0);
       return;
     }
@@ -1848,7 +2131,7 @@ function MobileJoystick({
     const scale = distance > radius ? radius / distance : 1;
     const x = rawX * scale;
     const y = rawY * scale;
-    setKnob({ x, y });
+    moveKnob(x, y);
     onChange(x / radius, y / radius);
   };
 
@@ -1856,6 +2139,8 @@ function MobileJoystick({
     <div
       className="mobile-joystick"
       onPointerDown={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
         event.currentTarget.setPointerCapture?.(event.pointerId);
         update(event);
       }}
@@ -1864,13 +2149,16 @@ function MobileJoystick({
       }}
       onPointerUp={(event) => update(event, true)}
       onPointerCancel={(event) => update(event, true)}
-      onContextMenu={(event) => event.preventDefault()}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
       role="group"
       aria-label="Movement joystick"
     >
       <span
+        ref={knobRef}
         className="mobile-joystick-knob"
-        style={{ transform: `translate(${knob.x}px, ${knob.y}px)` }}
       />
     </div>
   );
@@ -1880,12 +2168,14 @@ function ChatPanel({
   messages,
   error,
   onSend,
+  defaultOpen = true,
 }: {
   messages: ChatMessage[];
   error?: string;
   onSend: (text: string) => boolean;
+  defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(defaultOpen);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
@@ -2129,6 +2419,7 @@ export default function BaseplateGame({
   leaderstats = [],
   projectName = "Baseplate",
   localPlayer,
+  playSpawn,
   onFriendRequest,
   chatMessages = [],
   chatError,
@@ -2156,13 +2447,8 @@ export default function BaseplateGame({
   lighting?: PolyLightingSettings;
   leaderstats?: PolyLeaderstat[];
   projectName?: string;
-  localPlayer?: {
-    username: string;
-    displayName: string;
-    equippedShirtId?: ShirtId | null;
-    equippedPantsId?: PantsId | null;
-    avatarAppearance?: AvatarAppearance;
-  };
+  localPlayer?: R6AvatarPlayer;
+  playSpawn?: GameSpawn;
   onFriendRequest?: (username: string) => Promise<void>;
   chatMessages?: ChatMessage[];
   chatError?: string;
@@ -2187,13 +2473,14 @@ export default function BaseplateGame({
       ? `32px minmax(0, 1fr) repeat(${visibleLeaderstats.length}, minmax(52px, auto))`
       : "32px minmax(0, 1fr)";
   const spawnObject = worldObjects?.find((object) => object.type === "spawn");
-  const spawn = spawnObject
+  const spawn = playSpawn ?? (spawnObject
     ? {
         x: spawnObject.position[0],
         y: spawnObject.position[1] + 2.7,
         z: spawnObject.position[2],
       }
-    : SPAWN;
+    : SPAWN);
+  const rootRef = useRef<HTMLElement>(null);
   const input = useRef<InputState>(createInputState());
   const tools = worldObjects?.filter((object) => object.type === "tool") ?? [];
   const [pointerLocked, setPointerLocked] = useState(false);
@@ -2214,15 +2501,22 @@ export default function BaseplateGame({
     local?: boolean;
   } | null>(null);
   const [friendStatus, setFriendStatus] = useState("");
-  const [mobileDevice, setMobileDevice] = useState(false);
-  const [landscape, setLandscape] = useState(false);
-  const [graphicsMode, setGraphicsMode] = useState<"low" | "high">("high");
+  const [mobileDevice, setMobileDevice] = useState(isLikelyMobileDevice);
+  const [iosDevice, setIosDevice] = useState(isIosLikeDevice);
+  const [landscape, setLandscape] = useState(() =>
+    window.innerWidth > window.innerHeight,
+  );
+  const [portraitDismissed, setPortraitDismissed] = useState(false);
+  const [mobileImmersive, setMobileImmersive] = useState(false);
+  const [graphicsMode, setGraphicsMode] = useState<"low" | "high">(() =>
+    isLikelyMobileDevice() ? "low" : "high",
+  );
+  const [touchSprintActive, setTouchSprintActive] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [localSoundRequests, setLocalSoundRequests] = useState<
     PolySoundRequest[]
   >([]);
   const [localSoundVersion, setLocalSoundVersion] = useState(0);
-  const mobileGraphicsInitialized = useRef(false);
   const [telemetry, setTelemetry] = useState<Telemetry>({
     grounded: false,
     speed: 0,
@@ -2240,53 +2534,143 @@ export default function BaseplateGame({
     [cameraInverted, shiftLockActive, shiftLockEnabled],
   );
   useKeyboard(input, !gameMenuOpen && !dead, onKeyInput);
+  useEffect(() => preloadDefaultDeathSound(), []);
+  useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent("polymons:game-mode", { detail: { active: true } }),
+    );
+    return () => {
+      window.dispatchEvent(
+        new CustomEvent("polymons:game-mode", { detail: { active: false } }),
+      );
+    };
+  }, []);
+  useEffect(() => {
+    rootRef.current?.focus({ preventScroll: true });
+  }, []);
   useEffect(() => {
     const media = window.matchMedia("(pointer: coarse)");
+    const viewport = window.visualViewport;
+    const previousHeight = document.documentElement.style.getPropertyValue(
+      MOBILE_VIEWPORT_HEIGHT_VAR,
+    );
+    const previousWidth = document.documentElement.style.getPropertyValue(
+      MOBILE_VIEWPORT_WIDTH_VAR,
+    );
+    const previousTop = document.documentElement.style.getPropertyValue(
+      MOBILE_VIEWPORT_TOP_VAR,
+    );
     const update = () => {
+      const width = viewport?.width ?? window.innerWidth;
+      const height = viewport?.height ?? window.innerHeight;
+      const top = viewport?.offsetTop ?? 0;
       const mobile =
-        media.matches || Math.min(window.innerWidth, window.innerHeight) <= 820;
+        media.matches || Math.min(width, height) <= 820;
       setMobileDevice(mobile);
-      setLandscape(window.innerWidth > window.innerHeight);
-      if (mobile && !mobileGraphicsInitialized.current) {
-        mobileGraphicsInitialized.current = true;
-        setGraphicsMode("low");
-      }
+      setIosDevice(isIosLikeDevice());
+      setLandscape(width > height);
+      document.documentElement.style.setProperty(
+        MOBILE_VIEWPORT_HEIGHT_VAR,
+        `${height}px`,
+      );
+      document.documentElement.style.setProperty(
+        MOBILE_VIEWPORT_WIDTH_VAR,
+        `${width}px`,
+      );
+      document.documentElement.style.setProperty(
+        MOBILE_VIEWPORT_TOP_VAR,
+        `${top}px`,
+      );
     };
     update();
     media.addEventListener("change", update);
     window.addEventListener("resize", update);
+    viewport?.addEventListener("resize", update);
+    viewport?.addEventListener("scroll", update);
     return () => {
       media.removeEventListener("change", update);
       window.removeEventListener("resize", update);
+      viewport?.removeEventListener("resize", update);
+      viewport?.removeEventListener("scroll", update);
+      if (previousHeight) {
+        document.documentElement.style.setProperty(
+          MOBILE_VIEWPORT_HEIGHT_VAR,
+          previousHeight,
+        );
+      } else {
+        document.documentElement.style.removeProperty(
+          MOBILE_VIEWPORT_HEIGHT_VAR,
+        );
+      }
+      if (previousWidth) {
+        document.documentElement.style.setProperty(
+          MOBILE_VIEWPORT_WIDTH_VAR,
+          previousWidth,
+        );
+      } else {
+        document.documentElement.style.removeProperty(
+          MOBILE_VIEWPORT_WIDTH_VAR,
+        );
+      }
+      if (previousTop) {
+        document.documentElement.style.setProperty(
+          MOBILE_VIEWPORT_TOP_VAR,
+          previousTop,
+        );
+      } else {
+        document.documentElement.style.removeProperty(
+          MOBILE_VIEWPORT_TOP_VAR,
+        );
+      }
     };
   }, []);
   useEffect(() => {
-    if (!mobileDevice) return;
+    if (landscape) setPortraitDismissed(false);
+  }, [landscape]);
+  useEffect(() => {
+    if (!mobileDevice) {
+      setMobileImmersive(false);
+      return;
+    }
+    const html = document.documentElement;
+    const previousHtmlOverflow = html.style.overflow;
+    const previousHtmlOverscroll = html.style.overscrollBehavior;
     const previousOverflow = document.body.style.overflow;
     const previousOverscroll = document.body.style.overscrollBehavior;
+    const previousTouchAction = document.body.style.touchAction;
+    html.classList.add("polymons-mobile-game-active");
+    html.style.overflow = "hidden";
+    html.style.overscrollBehavior = "none";
     document.body.style.overflow = "hidden";
     document.body.style.overscrollBehavior = "none";
+    document.body.style.touchAction = "none";
     return () => {
+      html.classList.remove("polymons-mobile-game-active");
+      html.style.overflow = previousHtmlOverflow;
+      html.style.overscrollBehavior = previousHtmlOverscroll;
       document.body.style.overflow = previousOverflow;
       document.body.style.overscrollBehavior = previousOverscroll;
+      document.body.style.touchAction = previousTouchAction;
     };
   }, [mobileDevice]);
   useEffect(() => {
     const update = () =>
       setFullscreen(
-        Boolean(
-          document.fullscreenElement ||
-            (document as Document & { webkitFullscreenElement?: Element })
-              .webkitFullscreenElement,
-        ),
+        mobileImmersive ||
+          Boolean(
+            document.fullscreenElement ||
+              (document as Document & { webkitFullscreenElement?: Element })
+                .webkitFullscreenElement,
+          ),
       );
+    update();
     document.addEventListener("fullscreenchange", update);
     document.addEventListener("webkitfullscreenchange", update);
     return () => {
       document.removeEventListener("fullscreenchange", update);
       document.removeEventListener("webkitfullscreenchange", update);
     };
-  }, []);
+  }, [mobileImmersive]);
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.code === "Escape") {
@@ -2336,12 +2720,20 @@ export default function BaseplateGame({
     input.current.backward = false;
     input.current.left = false;
     input.current.right = false;
+    input.current.analogX = 0;
+    input.current.analogY = 0;
     input.current.sprint = false;
+    setTouchSprintActive(false);
     setPlayerListOpen(false);
     setSelectedPlayer(null);
     setShiftLockActive(false);
     if (document.pointerLockElement) void document.exitPointerLock();
   }, [gameMenuOpen]);
+  useEffect(() => {
+    if (!dead && playerSettings.sprintEnabled) return;
+    input.current.sprint = false;
+    setTouchSprintActive(false);
+  }, [dead, playerSettings.sprintEnabled]);
   useEffect(() => {
     if (shiftLockEnabled) return;
     setShiftLockActive(false);
@@ -2359,25 +2751,67 @@ export default function BaseplateGame({
     setMove("backward", false);
     setMove("left", false);
     setMove("right", false);
+    input.current.analogX = 0;
+    input.current.analogY = 0;
+    setMove("sprint", false);
+    setTouchSprintActive(false);
+  };
+  const stopTouchAction = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
   };
   const enterMobileFullscreen = async () => {
     const root = document.documentElement as HTMLElement & {
       webkitRequestFullscreen?: () => Promise<void> | void;
     };
+    let nativeFullscreenRequested = false;
     try {
       if (!document.fullscreenElement) {
         if (root.requestFullscreen) {
           await root.requestFullscreen();
-        } else {
-          await root.webkitRequestFullscreen?.();
+          nativeFullscreenRequested = true;
+        } else if (root.webkitRequestFullscreen) {
+          await root.webkitRequestFullscreen();
+          nativeFullscreenRequested = true;
         }
       }
+    } catch {
+      nativeFullscreenRequested = false;
+    }
+    if (!nativeFullscreenRequested) {
+      setMobileImmersive(true);
+      window.scrollTo(0, 0);
+    }
+    try {
       const orientation = screen.orientation as ScreenOrientation & {
         lock?: (orientation: "landscape") => Promise<void>;
       };
       await orientation.lock?.("landscape");
     } catch {
       // Fullscreen and orientation locking vary by mobile browser.
+    } finally {
+      setPortraitDismissed(true);
+    }
+  };
+  const exitMobileFullscreen = async () => {
+    const webkitDocument = document as Document & {
+      webkitExitFullscreen?: () => Promise<void> | void;
+      webkitFullscreenElement?: Element;
+    };
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else if (
+        webkitDocument.webkitFullscreenElement &&
+        webkitDocument.webkitExitFullscreen
+      ) {
+        await webkitDocument.webkitExitFullscreen();
+      }
+    } catch {
+      // Mobile browser fullscreen exits can fail if the browser owns the UI.
+    } finally {
+      setMobileImmersive(false);
+      setFullscreen(false);
     }
   };
   const handlePlayerDeath = useCallback(() => {
@@ -2409,6 +2843,7 @@ export default function BaseplateGame({
 
   return (
     <section
+      ref={rootRef}
       className="baseplate-player"
       aria-label="Playable Baseplate game"
       tabIndex={0}
@@ -2418,7 +2853,10 @@ export default function BaseplateGame({
       data-remote-players={remotePlayers.length}
       data-chat-enabled={onSendChat ? "true" : undefined}
       data-mobile={mobileDevice ? "true" : undefined}
+      data-ios={iosDevice ? "true" : undefined}
       data-landscape={landscape ? "true" : undefined}
+      data-mobile-immersive={mobileImmersive ? "true" : undefined}
+      data-fullscreen={fullscreen ? "true" : undefined}
       data-graphics={graphicsMode}
       data-dead={dead ? "true" : undefined}
       data-shift-lock={shiftLockActive ? "true" : undefined}
@@ -2426,7 +2864,13 @@ export default function BaseplateGame({
     >
       <Canvas
         shadows={graphicsMode === "high" ? "soft" : false}
-        dpr={graphicsMode === "high" ? [1, 1.5] : [0.65, 1]}
+        dpr={
+          graphicsMode === "high"
+            ? [1, 1.5]
+            : mobileDevice
+              ? [0.55, 0.85]
+              : [0.65, 1]
+        }
         camera={{
           position: [0, 5.5, 12],
           fov: playerSettings.cameraFieldOfView,
@@ -2434,7 +2878,8 @@ export default function BaseplateGame({
           far: Math.max(300, lighting.fogEnd + 50),
         }}
         gl={{
-          antialias: true,
+          antialias: graphicsMode === "high",
+          powerPreference: "high-performance",
           toneMapping: ACESFilmicToneMapping,
           toneMappingExposure: 1,
         }}
@@ -2476,7 +2921,10 @@ export default function BaseplateGame({
       <button
         className="game-menu-button"
         type="button"
-        onClick={() => setGameMenuOpen(true)}
+        onClick={(event) => {
+          event.currentTarget.blur();
+          setGameMenuOpen(true);
+        }}
         aria-label="Open game menu"
       >
         <span />
@@ -2492,12 +2940,14 @@ export default function BaseplateGame({
           <section className="game-menu-panel">
             <header className="game-menu-tabs">
               <button
+                type="button"
                 className={gameMenuTab === "players" ? "active" : ""}
                 onClick={() => setGameMenuTab("players")}
               >
                 Players
               </button>
               <button
+                type="button"
                 className={gameMenuTab === "settings" ? "active" : ""}
                 onClick={() => setGameMenuTab("settings")}
               >
@@ -2537,6 +2987,7 @@ export default function BaseplateGame({
                         </div>
                         {onFriendRequest && (
                           <button
+                            type="button"
                             disabled={
                               menuFriendStatus[player.username] === "Sent"
                             }
@@ -2616,6 +3067,7 @@ export default function BaseplateGame({
                         </small>
                       </div>
                       <button
+                        type="button"
                         onClick={() =>
                           setGraphicsMode((current) =>
                             current === "low" ? "high" : "low",
@@ -2632,9 +3084,10 @@ export default function BaseplateGame({
                           <small>Use the full landscape display.</small>
                         </div>
                         <button
+                          type="button"
                           onClick={() => {
-                            if (document.fullscreenElement) {
-                              void document.exitFullscreen();
+                            if (fullscreen) {
+                              void exitMobileFullscreen();
                             } else {
                               void enterMobileFullscreen();
                             }
@@ -2651,6 +3104,7 @@ export default function BaseplateGame({
 
             <footer className="game-menu-actions">
               <button
+                type="button"
                 onClick={() => {
                   input.current.resetQueued = true;
                   setGameMenuOpen(false);
@@ -2659,11 +3113,12 @@ export default function BaseplateGame({
                 Reset character
               </button>
               {onLeave && (
-                <button className="danger" onClick={onLeave}>
+                <button type="button" className="danger" onClick={onLeave}>
                   Leave game
                 </button>
               )}
               <button
+                type="button"
                 className="primary"
                 onClick={() => setGameMenuOpen(false)}
               >
@@ -2701,6 +3156,7 @@ export default function BaseplateGame({
         <div className="tool-hotbar" aria-label="Tools">
           {tools.map((tool, index) => (
             <button
+              type="button"
               key={tool.id}
               onClick={() => onToolActivated?.(tool.id)}
               disabled={!onToolActivated}
@@ -2717,6 +3173,7 @@ export default function BaseplateGame({
           messages={chatMessages}
           error={chatError}
           onSend={onSendChat}
+          defaultOpen={!mobileDevice}
         />
       )}
 
@@ -2740,6 +3197,7 @@ export default function BaseplateGame({
             </div>
           )}
           <button
+            type="button"
             style={{
               gridTemplateColumns: playerListGridColumns,
             }}
@@ -2763,6 +3221,7 @@ export default function BaseplateGame({
           </button>
           {remotePlayers.map((player) => (
             <button
+              type="button"
               key={player.id}
               style={{
                 gridTemplateColumns: playerListGridColumns,
@@ -2794,7 +3253,11 @@ export default function BaseplateGame({
 
       {selectedPlayer && (
         <div className="player-profile-popover">
-          <button className="profile-close" onClick={() => setSelectedPlayer(null)}>
+          <button
+            className="profile-close"
+            type="button"
+            onClick={() => setSelectedPlayer(null)}
+          >
             Close
           </button>
           <span>{selectedPlayer.displayName.slice(0, 1)}</span>
@@ -2802,6 +3265,7 @@ export default function BaseplateGame({
           <p>@{selectedPlayer.username}</p>
           {!selectedPlayer.local && onFriendRequest && (
             <button
+              type="button"
               onClick={async () => {
                 setFriendStatus("Sending...");
                 try {
@@ -2830,7 +3294,7 @@ export default function BaseplateGame({
         <span>R Reset</span>
       </div>
 
-      {mobileDevice && !landscape && (
+      {mobileDevice && !landscape && !portraitDismissed && (
         <div className="mobile-landscape-gate" role="dialog" aria-modal="true">
           <div className="mobile-landscape-card">
             <span className="mobile-landscape-icon" aria-hidden="true">
@@ -2841,7 +3305,14 @@ export default function BaseplateGame({
               Turn your phone sideways for the best controls. If your browser
               gets stuck, you can still play in portrait.
             </p>
-            <button type="button" onClick={() => setLandscape(true)}>
+            <button type="button" onClick={() => void enterMobileFullscreen()}>
+              Fit to screen
+            </button>
+            <button
+              className="secondary"
+              type="button"
+              onClick={() => setPortraitDismissed(true)}
+            >
               Continue anyway
             </button>
           </div>
@@ -2855,16 +3326,16 @@ export default function BaseplateGame({
               clearTouchMovement();
               return;
             }
-            setMove("left", x < -0.22);
-            setMove("right", x > 0.22);
-            setMove("forward", y < -0.22);
-            setMove("backward", y > 0.22);
+            input.current.analogX = normalizeJoystickAxis(x);
+            input.current.analogY = normalizeJoystickAxis(-y);
           }}
         />
       </div>
       <div className="touch-controls touch-actions">
         <button
-          onPointerDown={() => {
+          type="button"
+          onPointerDown={(event) => {
+            stopTouchAction(event);
             if (gameMenuOpen || dead) return;
             input.current.jumpQueued = true;
           }}
@@ -2873,24 +3344,22 @@ export default function BaseplateGame({
         </button>
         {playerSettings.sprintEnabled && (
           <button
-            onPointerDown={() => {
-              if (!gameMenuOpen && !dead) setMove("sprint", true);
+            type="button"
+            className={touchSprintActive ? "active" : undefined}
+            aria-pressed={touchSprintActive}
+            onPointerDown={(event) => {
+              stopTouchAction(event);
+              if (gameMenuOpen || dead) return;
+              setTouchSprintActive((active) => {
+                const next = !active;
+                setMove("sprint", next);
+                return next;
+              });
             }}
-            onPointerUp={() => setMove("sprint", false)}
-            onPointerCancel={() => setMove("sprint", false)}
-            onLostPointerCapture={() => setMove("sprint", false)}
           >
-            Sprint
+            {touchSprintActive ? "Running" : "Run"}
           </button>
         )}
-        <button
-          onPointerDown={() => {
-            if (gameMenuOpen || dead) return;
-            input.current.resetQueued = true;
-          }}
-        >
-          Reset
-        </button>
       </div>
 
       <div className="game-position" aria-hidden="true">

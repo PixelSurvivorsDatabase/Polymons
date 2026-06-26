@@ -6,21 +6,16 @@ type PlayerUser = {
   description: string;
   tix: number;
   avatarUrl: string | null;
-  equippedShirtId:
-    | "polymon-shirt"
-    | "beta-tester-shirt"
-    | "creators-shirt"
-    | "orange-polymons-shirt"
-    | "polymons-varsity-jacket"
-    | null;
-  equippedPantsId:
-    | "classic-denim-pants"
-    | "polymon-pants"
-    | "beta-tester-pants"
-    | "creators-pants"
-    | "orange-polymons-pants"
-    | "polymons-varsity-pants"
-    | null;
+  equippedShirtId: string | null;
+  equippedPantsId: string | null;
+  equippedHairId?: string | null;
+  equippedHatId?: string | null;
+  equippedShirtTextureUrl: string | null;
+  equippedPantsTextureUrl: string | null;
+  equippedHairModelUrl?: string | null;
+  equippedHairModelFormat?: string | null;
+  equippedHatModelUrl?: string | null;
+  equippedHatModelFormat?: string | null;
   avatarAppearance: {
     face: "classic-smile";
     bodyColors: {
@@ -55,6 +50,8 @@ type PlayerLaunch =
   | {
       mode: "studio";
       projectId: string;
+      spawn?: [number, number, number];
+      rotationY?: number;
     };
 
 type PlayerGameSummary = {

@@ -39,6 +39,14 @@ type RoomPlayer = {
   displayName: string;
   equippedShirtId: string | null;
   equippedPantsId: string | null;
+  equippedHairId: string | null;
+  equippedHatId: string | null;
+  equippedShirtTextureUrl: string | null;
+  equippedPantsTextureUrl: string | null;
+  equippedHairModelUrl: string | null;
+  equippedHairModelFormat: string | null;
+  equippedHatModelUrl: string | null;
+  equippedHatModelFormat: string | null;
   avatarAppearance: AvatarAppearance;
   state: PlayerState;
   leaderstats: Record<string, number | string>;
@@ -313,6 +321,18 @@ export function attachWebSocketServer(
             displayName: peerConnection.profile.displayName,
             equippedShirtId: peerConnection.profile.equippedShirtId,
             equippedPantsId: peerConnection.profile.equippedPantsId,
+            equippedHairId: peerConnection.profile.equippedHairId,
+            equippedHatId: peerConnection.profile.equippedHatId,
+            equippedShirtTextureUrl:
+              peerConnection.profile.equippedShirtTextureUrl,
+            equippedPantsTextureUrl:
+              peerConnection.profile.equippedPantsTextureUrl,
+            equippedHairModelUrl: peerConnection.profile.equippedHairModelUrl,
+            equippedHairModelFormat:
+              peerConnection.profile.equippedHairModelFormat,
+            equippedHatModelUrl: peerConnection.profile.equippedHatModelUrl,
+            equippedHatModelFormat:
+              peerConnection.profile.equippedHatModelFormat,
             avatarAppearance: peerConnection.profile.avatarAppearance,
             state: peerConnection.state,
             leaderstats: peerConnection.leaderstats,
@@ -330,6 +350,14 @@ export function attachWebSocketServer(
         displayName: connection.profile.displayName,
         equippedShirtId: connection.profile.equippedShirtId,
         equippedPantsId: connection.profile.equippedPantsId,
+        equippedHairId: connection.profile.equippedHairId,
+        equippedHatId: connection.profile.equippedHatId,
+        equippedShirtTextureUrl: connection.profile.equippedShirtTextureUrl,
+        equippedPantsTextureUrl: connection.profile.equippedPantsTextureUrl,
+        equippedHairModelUrl: connection.profile.equippedHairModelUrl,
+        equippedHairModelFormat: connection.profile.equippedHairModelFormat,
+        equippedHatModelUrl: connection.profile.equippedHatModelUrl,
+        equippedHatModelFormat: connection.profile.equippedHatModelFormat,
         avatarAppearance: connection.profile.avatarAppearance,
         state: connection.state,
         leaderstats: connection.leaderstats,

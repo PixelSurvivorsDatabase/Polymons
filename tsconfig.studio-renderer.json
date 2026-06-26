@@ -16,5 +16,5 @@
     "jsx": "react-jsx",
     "types": ["vite/client"]
   },
-  "include": ["studio/renderer"]
+  "include": ["studio/renderer", "studio/mobile"]
 }

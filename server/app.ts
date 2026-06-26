@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { spawn } from "child_process";
 import cors from "cors";
 import { randomUUID } from "crypto";
-import express, { type Request } from "express";
+import express, { type Request, type Response } from "express";
 import { rateLimit } from "express-rate-limit";
 import { access, unlink, writeFile } from "fs/promises";
 import helmet from "helmet";
@@ -43,6 +43,7 @@ import {
   avatarAppearanceSchema,
   awardBadgeSchema,
   friendRequestSchema,
+  equipAvatarAccessorySchema,
   equipAvatarItemSchema,
   equipAvatarPantsSchema,
   favoriteGameSchema,
@@ -60,6 +61,118 @@ import {
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+type CacheEntry<T> = {
+  expiresAt: number;
+  value: T;
+};
+
+const memoryCache = new Map<string, CacheEntry<unknown>>();
+
+function cacheKey(parts: Array<string | number | boolean | null | undefined>) {
+  return parts.map((part) => String(part ?? "")).join(":");
+}
+
+async function cached<T>(
+  key: string,
+  ttlMs: number,
+  loader: () => Promise<T>,
+): Promise<T> {
+  const now = Date.now();
+  const existing = memoryCache.get(key);
+  if (existing && existing.expiresAt > now) return existing.value as T;
+  const value = await loader();
+  memoryCache.set(key, { value, expiresAt: now + ttlMs });
+  return value;
+}
+
+function clearCacheByPrefix(prefix: string) {
+  for (const key of memoryCache.keys()) {
+    if (key.startsWith(prefix)) memoryCache.delete(key);
+  }
+}
+
+function publicCache(response: Response, seconds: number) {
+  response.set(
+    "Cache-Control",
+    `public, max-age=${seconds}, s-maxage=${seconds}, stale-while-revalidate=${seconds * 2}`,
+  );
+}
+
+type EquippedAvatarRow = {
+  equipped_shirt_id?: string | null;
+  equipped_pants_id?: string | null;
+  equipped_hair_id?: string | null;
+  equipped_hat_id?: string | null;
+};
+
+type AvatarItemAsset = {
+  textureUrl: string | null;
+  modelUrl: string | null;
+  modelFormat: string | null;
+};
+
+async function loadEquippedAvatarAssetMap(
+  admin: SupabaseClient,
+  profiles: EquippedAvatarRow[],
+): Promise<Map<string, AvatarItemAsset>> {
+  const itemIds = [
+    ...new Set(
+      profiles
+        .flatMap((profile) => [
+          profile.equipped_shirt_id,
+          profile.equipped_pants_id,
+          profile.equipped_hair_id,
+          profile.equipped_hat_id,
+        ])
+        .filter((itemId): itemId is string => typeof itemId === "string"),
+    ),
+  ];
+  if (itemIds.length === 0) return new Map();
+  const { data, error } = await admin
+    .from("avatar_items")
+    .select("id, texture_url, model_url, model_format, review_status")
+    .in("id", itemIds);
+  if (error) throw error;
+  return new Map(
+    (data ?? [])
+      .filter((item) => item.review_status === "approved")
+      .map((item) => [
+        item.id,
+        {
+          textureUrl: item.texture_url ?? null,
+          modelUrl: item.model_url ?? null,
+          modelFormat: item.model_format ?? null,
+        },
+      ]),
+  );
+}
+
+function equippedAvatarAssetFields(
+  profile: EquippedAvatarRow,
+  assetById: Map<string, AvatarItemAsset>,
+) {
+  return {
+    equippedShirtTextureUrl: profile.equipped_shirt_id
+      ? assetById.get(profile.equipped_shirt_id)?.textureUrl ?? null
+      : null,
+    equippedPantsTextureUrl: profile.equipped_pants_id
+      ? assetById.get(profile.equipped_pants_id)?.textureUrl ?? null
+      : null,
+    equippedHairModelUrl: profile.equipped_hair_id
+      ? assetById.get(profile.equipped_hair_id)?.modelUrl ?? null
+      : null,
+    equippedHairModelFormat: profile.equipped_hair_id
+      ? assetById.get(profile.equipped_hair_id)?.modelFormat ?? null
+      : null,
+    equippedHatModelUrl: profile.equipped_hat_id
+      ? assetById.get(profile.equipped_hat_id)?.modelUrl ?? null
+      : null,
+    equippedHatModelFormat: profile.equipped_hat_id
+      ? assetById.get(profile.equipped_hat_id)?.modelFormat ?? null
+      : null,
+  };
+}
 
 function gameSlug(title: string, projectId: string): string {
   const base =
@@ -98,11 +211,52 @@ async function uploadAvatarItemTexture(
     .from("avatar-item-textures")
     .upload(path, bytes, {
       contentType: "image/png",
-      cacheControl: "3600",
+      cacheControl: "2592000",
       upsert: true,
     });
   if (error) throw error;
   return admin.storage.from("avatar-item-textures").getPublicUrl(path).data.publicUrl;
+}
+
+const ACCESSORY_MODEL_CONTENT_TYPES: Record<string, string> = {
+  glb: "model/gltf-binary",
+  gltf: "model/gltf+json",
+  obj: "model/obj",
+  fbx: "application/octet-stream",
+  stl: "model/stl",
+  dae: "application/xml",
+  zip: "application/zip",
+  rbxm: "application/octet-stream",
+  rbxmx: "application/xml",
+  rblx: "application/octet-stream",
+  rbxlx: "application/xml",
+};
+
+async function uploadAvatarItemModel(
+  admin: SupabaseClient,
+  creatorId: string,
+  itemId: string,
+  modelData: string,
+  modelFormat: string,
+): Promise<string> {
+  const match = modelData.match(/^data:[^;]+;base64,([A-Za-z0-9+/=]+)$/);
+  if (!match) throw new HttpError(400, "Accessory models must be uploaded as files.");
+  const bytes = Buffer.from(match[1], "base64");
+  if (bytes.length > 8_000_000) {
+    throw new HttpError(413, "Accessory models must be 8 MB or smaller.");
+  }
+  const contentType =
+    ACCESSORY_MODEL_CONTENT_TYPES[modelFormat] ?? "application/octet-stream";
+  const path = `${creatorId}/${itemId}.${modelFormat}`;
+  const { error } = await admin.storage
+    .from("avatar-item-models")
+    .upload(path, bytes, {
+      contentType,
+      cacheControl: "2592000",
+      upsert: true,
+    });
+  if (error) throw error;
+  return admin.storage.from("avatar-item-models").getPublicUrl(path).data.publicUrl;
 }
 
 async function uploadGameThumbnail(
@@ -124,7 +278,7 @@ async function uploadGameThumbnail(
     .from("game-thumbnails")
     .upload(path, bytes, {
       contentType: `image/${match[1]}`,
-      cacheControl: "3600",
+      cacheControl: "604800",
       upsert: true,
     });
   if (error) throw error;
@@ -678,6 +832,7 @@ export function createApp(
       .update({ bio: input.description })
       .eq("id", user.id);
     if (error) throw error;
+    clearCacheByPrefix("players:");
     response.json({ user: await loadProfile(admin, user.id) });
   });
 
@@ -686,38 +841,43 @@ export function createApp(
     const totalCreatorVisits = await syncAvatarUnlocks(admin, user.id);
     const [
       { data: profile, error: profileError },
-      { data: items, error: itemsError },
+      items,
       { data: inventory, error: inventoryError },
     ] = await Promise.all([
       admin
         .from("profiles")
-        .select("equipped_shirt_id, equipped_pants_id, avatar_appearance, tix")
+        .select("equipped_shirt_id, equipped_pants_id, equipped_hair_id, equipped_hat_id, avatar_appearance, tix")
         .eq("id", user.id)
         .single(),
-      admin
-        .from("avatar_items")
-        .select(
-          "id, name, description, item_type, unlock_type, unlock_threshold, price_tix, bundle_key, sort_order, texture_url, creator_id, created_from_upload",
-        )
-        .eq("review_status", "approved")
-        .order("sort_order"),
+      cached("avatar:wardrobe:approved-items", 5 * 60_000, async () => {
+        const { data, error } = await admin
+          .from("avatar_items")
+          .select(
+            "id, name, description, item_type, unlock_type, unlock_threshold, price_tix, bundle_key, sort_order, texture_url, model_url, model_format, model_preview_url, creator_id, created_from_upload",
+          )
+          .eq("review_status", "approved")
+          .order("sort_order");
+        if (error) throw error;
+        return data ?? [];
+      }),
       admin
         .from("user_avatar_items")
         .select("item_id")
         .eq("user_id", user.id),
     ]);
     if (profileError) throw profileError;
-    if (itemsError) throw itemsError;
     if (inventoryError) throw inventoryError;
 
     const owned = new Set((inventory ?? []).map((item) => item.item_id));
     response.json({
       equippedShirtId: profile.equipped_shirt_id,
       equippedPantsId: profile.equipped_pants_id,
+      equippedHairId: profile.equipped_hair_id,
+      equippedHatId: profile.equipped_hat_id,
       avatarAppearance: normalizeAvatarAppearance(profile.avatar_appearance),
       tix: Number(profile.tix ?? 0),
       totalCreatorVisits,
-      items: (items ?? []).map((item) => ({
+      items: items.map((item) => ({
         id: item.id,
         itemType: item.item_type,
         name: item.name,
@@ -727,73 +887,87 @@ export function createApp(
         priceTix: Number(item.price_tix ?? 0),
         bundleKey: item.bundle_key,
         textureUrl: item.texture_url ?? null,
+        modelUrl: item.model_url ?? null,
+        modelFormat: item.model_format ?? null,
+        modelPreviewUrl: item.model_preview_url ?? null,
         creatorId: item.creator_id ?? null,
         createdFromUpload: item.created_from_upload === true,
         owned: owned.has(item.id),
         equipped:
           item.item_type === "pants"
             ? profile.equipped_pants_id === item.id
-            : profile.equipped_shirt_id === item.id,
+            : item.item_type === "hair"
+              ? profile.equipped_hair_id === item.id
+              : item.item_type === "hat"
+                ? profile.equipped_hat_id === item.id
+                : profile.equipped_shirt_id === item.id,
       })),
     });
   });
 
   app.get("/v1/avatar/catalog", async (_request, response) => {
-    const { data: items, error } = await admin
-      .from("avatar_items")
-      .select(
-        "id, name, description, item_type, unlock_type, unlock_threshold, price_tix, bundle_key, sort_order, texture_url, creator_id, created_from_upload, created_at",
-      )
-      .eq("review_status", "approved")
-      .order("sort_order")
-      .order("created_at", { ascending: false });
-    if (error) throw error;
+    const payload = await cached("avatar:catalog:approved", 5 * 60_000, async () => {
+      const { data: items, error } = await admin
+        .from("avatar_items")
+        .select(
+          "id, name, description, item_type, unlock_type, unlock_threshold, price_tix, bundle_key, sort_order, texture_url, model_url, model_format, model_preview_url, creator_id, created_from_upload, created_at",
+        )
+        .eq("review_status", "approved")
+        .order("sort_order")
+        .order("created_at", { ascending: false });
+      if (error) throw error;
 
-    const creatorIds = [
-      ...new Set(
-        (items ?? [])
-          .map((item) => item.creator_id)
-          .filter((creatorId): creatorId is string => Boolean(creatorId)),
-      ),
-    ];
-    const { data: creators, error: creatorsError } = creatorIds.length
-      ? await admin
-          .from("profiles")
-          .select("id, username, display_name")
-          .in("id", creatorIds)
-      : { data: [], error: null };
-    if (creatorsError) throw creatorsError;
+      const creatorIds = [
+        ...new Set(
+          (items ?? [])
+            .map((item) => item.creator_id)
+            .filter((creatorId): creatorId is string => Boolean(creatorId)),
+        ),
+      ];
+      const { data: creators, error: creatorsError } = creatorIds.length
+        ? await admin
+            .from("profiles")
+            .select("id, username, display_name")
+            .in("id", creatorIds)
+        : { data: [], error: null };
+      if (creatorsError) throw creatorsError;
 
-    const creatorById = new Map(
-      (creators ?? []).map((creator) => [creator.id, creator]),
-    );
-    response.json({
-      items: (items ?? []).map((item) => {
-        const creator = item.creator_id
-          ? creatorById.get(item.creator_id)
-          : null;
-        return {
-          id: item.id,
-          itemType: item.item_type,
-          name: item.name,
-          description: item.description,
-          unlockType: item.unlock_type,
-          unlockThreshold: item.unlock_threshold,
-          priceTix: Number(item.price_tix ?? 0),
-          bundleKey: item.bundle_key,
-          textureUrl: item.texture_url ?? null,
-          creatorId: item.creator_id ?? null,
-          createdFromUpload: item.created_from_upload === true,
-          createdAt: item.created_at ?? null,
-          creator: creator
-            ? {
-                username: creator.username,
-                displayName: creator.display_name,
-              }
-            : null,
-        };
-      }),
+      const creatorById = new Map(
+        (creators ?? []).map((creator) => [creator.id, creator]),
+      );
+      return {
+        items: (items ?? []).map((item) => {
+          const creator = item.creator_id
+            ? creatorById.get(item.creator_id)
+            : null;
+          return {
+            id: item.id,
+            itemType: item.item_type,
+            name: item.name,
+            description: item.description,
+            unlockType: item.unlock_type,
+            unlockThreshold: item.unlock_threshold,
+            priceTix: Number(item.price_tix ?? 0),
+            bundleKey: item.bundle_key,
+            textureUrl: item.texture_url ?? null,
+            modelUrl: item.model_url ?? null,
+            modelFormat: item.model_format ?? null,
+            modelPreviewUrl: item.model_preview_url ?? null,
+            creatorId: item.creator_id ?? null,
+            createdFromUpload: item.created_from_upload === true,
+            createdAt: item.created_at ?? null,
+            creator: creator
+              ? {
+                  username: creator.username,
+                  displayName: creator.display_name,
+                }
+              : null,
+          };
+        }),
+      };
     });
+    publicCache(response, 300);
+    response.json(payload);
   });
 
   app.get("/v1/avatar/uploads", async (request, response) => {
@@ -801,7 +975,7 @@ export function createApp(
     const { data, error } = await admin
       .from("avatar_items")
       .select(
-        "id, name, description, item_type, unlock_type, price_tix, texture_url, review_status, rejection_reason, created_at, reviewed_at",
+        "id, name, description, item_type, unlock_type, price_tix, texture_url, model_url, model_format, model_preview_url, review_status, rejection_reason, created_at, reviewed_at",
       )
       .eq("creator_id", user.id)
       .eq("created_from_upload", true)
@@ -816,6 +990,9 @@ export function createApp(
         unlockType: item.unlock_type,
         priceTix: Number(item.price_tix ?? 0),
         textureUrl: item.texture_url,
+        modelUrl: item.model_url ?? null,
+        modelFormat: item.model_format ?? null,
+        modelPreviewUrl: item.model_preview_url ?? null,
         reviewStatus: item.review_status,
         rejectionReason: item.rejection_reason ?? "",
         createdAt: item.created_at,
@@ -846,12 +1023,24 @@ export function createApp(
       .single();
     if (profileError) throw profileError;
     const itemId = `${profile.username}-${contentSlug(input.name)}-${randomUUID().slice(0, 8)}`;
-    const textureUrl = await uploadAvatarItemTexture(
-      admin,
-      user.id,
-      itemId,
-      input.textureData,
-    );
+    const textureUrl = input.textureData
+      ? await uploadAvatarItemTexture(
+          admin,
+          user.id,
+          itemId,
+          input.textureData,
+        )
+      : null;
+    const modelUrl =
+      input.modelData && input.modelFormat
+        ? await uploadAvatarItemModel(
+            admin,
+            user.id,
+            itemId,
+            input.modelData,
+            input.modelFormat,
+          )
+        : null;
     const { data: item, error } = await admin
       .from("avatar_items")
       .insert({
@@ -863,15 +1052,18 @@ export function createApp(
         price_tix: input.priceTix,
         creator_id: user.id,
         texture_url: textureUrl,
+        model_url: modelUrl,
+        model_format: input.modelFormat ?? null,
         review_status: "pending",
         created_from_upload: true,
         sort_order: 10_000,
       })
       .select(
-        "id, name, description, item_type, unlock_type, price_tix, texture_url, review_status, rejection_reason, created_at, reviewed_at",
+        "id, name, description, item_type, unlock_type, price_tix, texture_url, model_url, model_format, model_preview_url, review_status, rejection_reason, created_at, reviewed_at",
       )
       .single();
     if (error) throw error;
+    clearCacheByPrefix("avatar:");
     response.status(201).json({
       submission: {
         id: item.id,
@@ -881,6 +1073,9 @@ export function createApp(
         unlockType: item.unlock_type,
         priceTix: Number(item.price_tix ?? 0),
         textureUrl: item.texture_url,
+        modelUrl: item.model_url ?? null,
+        modelFormat: item.model_format ?? null,
+        modelPreviewUrl: item.model_preview_url ?? null,
         reviewStatus: item.review_status,
         rejectionReason: item.rejection_reason ?? "",
         createdAt: item.created_at,
@@ -959,6 +1154,7 @@ export function createApp(
       .update({ equipped_shirt_id: input.shirtId })
       .eq("id", user.id);
     if (error) throw error;
+    clearCacheByPrefix("players:");
     response.json({
       equippedShirtId: input.shirtId,
       user: await loadProfile(admin, user.id),
@@ -984,8 +1180,67 @@ export function createApp(
       .update({ equipped_pants_id: input.pantsId })
       .eq("id", user.id);
     if (error) throw error;
+    clearCacheByPrefix("players:");
     response.json({
       equippedPantsId: input.pantsId,
+      user: await loadProfile(admin, user.id),
+    });
+  });
+
+  async function assertOwnedAvatarItem(
+    userId: string,
+    itemId: string | null,
+    itemType: "shirt" | "pants" | "hair" | "hat",
+  ) {
+    if (!itemId) return;
+    await syncAvatarUnlocks(admin, userId);
+    const { data: item, error: itemError } = await admin
+      .from("avatar_items")
+      .select("id, item_type, review_status")
+      .eq("id", itemId)
+      .maybeSingle();
+    if (itemError) throw itemError;
+    if (!item || item.item_type !== itemType || item.review_status !== "approved") {
+      throw new HttpError(403, `You do not own this ${itemType}.`);
+    }
+    const { data: owned, error: ownedError } = await admin
+      .from("user_avatar_items")
+      .select("item_id")
+      .eq("user_id", userId)
+      .eq("item_id", itemId)
+      .maybeSingle();
+    if (ownedError) throw ownedError;
+    if (!owned) throw new HttpError(403, `You do not own this ${itemType}.`);
+  }
+
+  app.post("/v1/avatar/equip-hair", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const input = parseBody(equipAvatarAccessorySchema, request.body);
+    await assertOwnedAvatarItem(user.id, input.itemId, "hair");
+    const { error } = await admin
+      .from("profiles")
+      .update({ equipped_hair_id: input.itemId })
+      .eq("id", user.id);
+    if (error) throw error;
+    clearCacheByPrefix("players:");
+    response.json({
+      equippedHairId: input.itemId,
+      user: await loadProfile(admin, user.id),
+    });
+  });
+
+  app.post("/v1/avatar/equip-hat", async (request, response) => {
+    const user = await authenticatedUser(request, admin);
+    const input = parseBody(equipAvatarAccessorySchema, request.body);
+    await assertOwnedAvatarItem(user.id, input.itemId, "hat");
+    const { error } = await admin
+      .from("profiles")
+      .update({ equipped_hat_id: input.itemId })
+      .eq("id", user.id);
+    if (error) throw error;
+    clearCacheByPrefix("players:");
+    response.json({
+      equippedHatId: input.itemId,
       user: await loadProfile(admin, user.id),
     });
   });
@@ -998,6 +1253,7 @@ export function createApp(
       .update({ avatar_appearance: appearance })
       .eq("id", user.id);
     if (error) throw error;
+    clearCacheByPrefix("players:");
     response.json({
       avatarAppearance: appearance,
       user: await loadProfile(admin, user.id),
@@ -1024,7 +1280,7 @@ export function createApp(
         ? admin
             .from("profiles")
             .select(
-              "id, polymons_id, username, display_name, bio, tix, avatar_url, equipped_shirt_id, equipped_pants_id, created_at",
+              "id, polymons_id, username, display_name, bio, tix, avatar_url, equipped_shirt_id, equipped_pants_id, equipped_hair_id, equipped_hat_id, created_at",
             )
             .in("id", userIds)
         : Promise.resolve({ data: [], error: null }),
@@ -1041,7 +1297,7 @@ export function createApp(
         : Promise.resolve({ data: [], error: null }),
       admin
         .from("avatar_items")
-        .select("id, name, description, item_type, unlock_type, unlock_threshold, price_tix, bundle_key, sort_order, texture_url, review_status, creator_id, created_from_upload")
+        .select("id, name, description, item_type, unlock_type, unlock_threshold, price_tix, bundle_key, sort_order, texture_url, model_url, model_format, model_preview_url, review_status, creator_id, created_from_upload")
         .order("sort_order"),
     ]);
     if (profilesResult.error) throw profilesResult.error;
@@ -1103,6 +1359,8 @@ export function createApp(
           avatarUrl: profile?.avatar_url ?? null,
           equippedShirtId: profile?.equipped_shirt_id ?? null,
           equippedPantsId: profile?.equipped_pants_id ?? null,
+          equippedHairId: profile?.equipped_hair_id ?? null,
+          equippedHatId: profile?.equipped_hat_id ?? null,
           joinedAt: profile?.created_at ?? authUser.created_at,
           lastSignInAt: authUser.last_sign_in_at ?? null,
           role: isOwnerAccount(authUser) ? "owner" : "player",
@@ -1145,6 +1403,9 @@ export function createApp(
         priceTix: Number(item.price_tix ?? 0),
         bundleKey: item.bundle_key,
         textureUrl: item.texture_url ?? null,
+        modelUrl: item.model_url ?? null,
+        modelFormat: item.model_format ?? null,
+        modelPreviewUrl: item.model_preview_url ?? null,
         reviewStatus: item.review_status,
         creatorId: item.creator_id ?? null,
         createdFromUpload: item.created_from_upload === true,
@@ -1157,7 +1418,7 @@ export function createApp(
     const { data, error } = await admin
       .from("avatar_items")
       .select(
-        "id, name, description, item_type, unlock_type, price_tix, texture_url, review_status, rejection_reason, created_at, reviewed_at, creator_id",
+        "id, name, description, item_type, unlock_type, price_tix, texture_url, model_url, model_format, model_preview_url, review_status, rejection_reason, created_at, reviewed_at, creator_id",
       )
       .eq("created_from_upload", true)
       .order("created_at", { ascending: false })
@@ -1185,6 +1446,9 @@ export function createApp(
           unlockType: item.unlock_type,
           priceTix: Number(item.price_tix ?? 0),
           textureUrl: item.texture_url,
+          modelUrl: item.model_url ?? null,
+          modelFormat: item.model_format ?? null,
+          modelPreviewUrl: item.model_preview_url ?? null,
           reviewStatus: item.review_status,
           rejectionReason: item.rejection_reason ?? "",
           createdAt: item.created_at,
@@ -1204,7 +1468,7 @@ export function createApp(
   app.post("/v1/admin/catalog-submissions/:itemId/review", async (request, response) => {
     const owner = await ownerUser(request, admin);
     const itemId = request.params.itemId;
-    if (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(itemId)) {
+    if (!/^[a-z0-9][a-z0-9-]{1,95}$/.test(itemId)) {
       throw new HttpError(400, "Invalid catalog item ID.");
     }
     const input = parseBody(adminCatalogReviewSchema, request.body);
@@ -1222,6 +1486,8 @@ export function createApp(
       .maybeSingle();
     if (error) throw error;
     if (!data) throw new HttpError(404, "Catalog submission not found.");
+    clearCacheByPrefix("avatar:");
+    clearCacheByPrefix("players:");
     response.json({
       itemId: data.id,
       reviewStatus: data.review_status,
@@ -1277,7 +1543,11 @@ export function createApp(
           const equippedColumn =
             item.item_type === "pants"
               ? "equipped_pants_id"
-              : "equipped_shirt_id";
+              : item.item_type === "hair"
+                ? "equipped_hair_id"
+                : item.item_type === "hat"
+                  ? "equipped_hat_id"
+                  : "equipped_shirt_id";
           const { error: equipError } = await admin
             .from("profiles")
             .update({ [equippedColumn]: input.itemId })
@@ -1294,7 +1564,11 @@ export function createApp(
         const equippedColumn =
           item.item_type === "pants"
             ? "equipped_pants_id"
-            : "equipped_shirt_id";
+            : item.item_type === "hair"
+              ? "equipped_hair_id"
+              : item.item_type === "hat"
+                ? "equipped_hat_id"
+                : "equipped_shirt_id";
         const { error: unequipError } = await admin
           .from("profiles")
           .update({ [equippedColumn]: null })
@@ -1394,71 +1668,71 @@ export function createApp(
 
   app.get("/v1/games/:gameId", async (request, response) => {
     const gameId = request.params.gameId;
-    let query = admin
-      .from("games")
-      .select(
-        "id, slug, title, description, visibility, genre, thumbnail_url, platform_owned, owner_id, visit_count, created_at, updated_at",
-      )
-      .eq("visibility", "public");
+    const game = await cached(cacheKey(["games:detail", gameId]), 30_000, async () => {
+      let query = admin
+        .from("games")
+        .select(
+          "id, slug, title, description, visibility, genre, thumbnail_url, platform_owned, owner_id, visit_count, created_at, updated_at",
+        )
+        .eq("visibility", "public");
 
-    query = UUID_PATTERN.test(gameId)
-      ? query.eq("id", gameId)
-      : query.eq("slug", gameId);
+      query = UUID_PATTERN.test(gameId)
+        ? query.eq("id", gameId)
+        : query.eq("slug", gameId);
 
-    const { data, error } = await query.maybeSingle();
-    if (error) {
-      throw error;
-    }
-    if (!data) {
-      throw new HttpError(404, "Game not found.");
-    }
+      const { data, error } = await query.maybeSingle();
+      if (error) {
+        throw error;
+      }
+      if (!data) {
+        throw new HttpError(404, "Game not found.");
+      }
 
-    const { data: owner } = data.owner_id
-      ? await admin
-          .from("profiles")
-          .select("username, display_name")
-          .eq("id", data.owner_id)
-          .maybeSingle()
-      : { data: null };
-    const { data: version } = await admin
-      .from("game_versions")
-      .select("manifest, version_number")
-      .eq("game_id", data.id)
-      .eq("status", "published")
-      .order("version_number", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    const { count: favorites } = await admin
-      .from("game_favorites")
-      .select("game_id", { count: "exact", head: true })
-      .eq("game_id", data.id);
-    const { data: badges, error: badgesError } = await admin
-      .from("game_badges")
-      .select("id, name, description, icon_url")
-      .eq("game_id", data.id)
-      .order("created_at");
-    if (badgesError) throw badgesError;
-    const [
-      { data: gamePasses, error: gamePassesError },
-      { data: developerProducts, error: developerProductsError },
-    ] = await Promise.all([
-      admin
-        .from("game_passes")
-        .select("id, name, description, price_tix")
+      const { data: owner } = data.owner_id
+        ? await admin
+            .from("profiles")
+            .select("username, display_name")
+            .eq("id", data.owner_id)
+            .maybeSingle()
+        : { data: null };
+      const { data: version } = await admin
+        .from("game_versions")
+        .select("manifest, version_number")
         .eq("game_id", data.id)
-        .eq("is_active", true)
-        .order("created_at"),
-      admin
-        .from("developer_products")
-        .select("id, name, description, price_tix, effect_key, effect_amount")
+        .eq("status", "published")
+        .order("version_number", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const { count: favorites } = await admin
+        .from("game_favorites")
+        .select("game_id", { count: "exact", head: true })
+        .eq("game_id", data.id);
+      const { data: badges, error: badgesError } = await admin
+        .from("game_badges")
+        .select("id, name, description, icon_url")
         .eq("game_id", data.id)
-        .eq("is_active", true)
-        .order("created_at"),
-    ]);
-    if (gamePassesError) throw gamePassesError;
-    if (developerProductsError) throw developerProductsError;
-    response.json({
-      game: {
+        .order("created_at");
+      if (badgesError) throw badgesError;
+      const [
+        { data: gamePasses, error: gamePassesError },
+        { data: developerProducts, error: developerProductsError },
+      ] = await Promise.all([
+        admin
+          .from("game_passes")
+          .select("id, name, description, price_tix")
+          .eq("game_id", data.id)
+          .eq("is_active", true)
+          .order("created_at"),
+        admin
+          .from("developer_products")
+          .select("id, name, description, price_tix, effect_key, effect_amount")
+          .eq("game_id", data.id)
+          .eq("is_active", true)
+          .order("created_at"),
+      ]);
+      if (gamePassesError) throw gamePassesError;
+      if (developerProductsError) throw developerProductsError;
+      return {
         id: data.id,
         slug: data.slug,
         title: data.title,
@@ -1469,7 +1743,6 @@ export function createApp(
         platformOwned: data.platform_owned,
         creator: owner?.display_name ?? "Polymons",
         creatorUsername: owner?.username ?? "polymons",
-        activePlayers: presence().counts[data.id] ?? 0,
         visits: Number(data.visit_count ?? 0),
         favorites: favorites ?? 0,
         createdAt: data.created_at,
@@ -1496,6 +1769,13 @@ export function createApp(
           effectKey: product.effect_key ?? null,
           effectAmount: Number(product.effect_amount ?? 0),
         })),
+      };
+    });
+    publicCache(response, 30);
+    response.json({
+      game: {
+        ...game,
+        activePlayers: presence().counts[game.id] ?? 0,
       },
     });
   });
@@ -1653,65 +1933,75 @@ export function createApp(
     if (search.length > 64) {
       throw new HttpError(400, "Game search is too long.");
     }
-    let gameQuery = admin
-      .from("games")
-      .select(
-        "id, slug, title, description, genre, thumbnail_url, owner_id, visit_count, created_at, updated_at",
-      )
-      .eq("visibility", "public");
-    if (search) {
-      const escaped = search.replace(/[%_,]/g, "\\$&");
-      gameQuery = gameQuery.or(
-        `title.ilike.%${escaped}%,description.ilike.%${escaped}%,genre.ilike.%${escaped}%`,
-      );
-    }
-    const { data, error } = await gameQuery
-      .order("updated_at", { ascending: false })
-      .limit(100);
-    if (error) throw error;
-    const ownerIds = [
-      ...new Set(
-        (data ?? []).flatMap((game) => (game.owner_id ? [game.owner_id] : [])),
-      ),
-    ];
-    const { data: owners } = ownerIds.length
-      ? await admin
-          .from("profiles")
-          .select("id, username, display_name")
-          .in("id", ownerIds)
-      : { data: [] };
-    const ownerById = new Map((owners ?? []).map((owner) => [owner.id, owner]));
-    const gameIds = (data ?? []).map((game) => game.id);
-    const { data: favoriteRows } = gameIds.length
-      ? await admin.from("game_favorites").select("game_id").in("game_id", gameIds)
-      : { data: [] };
-    const favoritesByGame = new Map<string, number>();
-    for (const favorite of favoriteRows ?? []) {
-      favoritesByGame.set(
-        favorite.game_id,
-        (favoritesByGame.get(favorite.game_id) ?? 0) + 1,
-      );
-    }
+    const cachedGames = await cached(
+      cacheKey(["games:list", search.toLowerCase()]),
+      search ? 30_000 : 60_000,
+      async () => {
+        let gameQuery = admin
+          .from("games")
+          .select(
+            "id, slug, title, description, genre, thumbnail_url, owner_id, visit_count, created_at, updated_at",
+          )
+          .eq("visibility", "public");
+        if (search) {
+          const escaped = search.replace(/[%_,]/g, "\\$&");
+          gameQuery = gameQuery.or(
+            `title.ilike.%${escaped}%,description.ilike.%${escaped}%,genre.ilike.%${escaped}%`,
+          );
+        }
+        const { data, error } = await gameQuery
+          .order("updated_at", { ascending: false })
+          .limit(100);
+        if (error) throw error;
+        const ownerIds = [
+          ...new Set(
+            (data ?? []).flatMap((game) => (game.owner_id ? [game.owner_id] : [])),
+          ),
+        ];
+        const { data: owners } = ownerIds.length
+          ? await admin
+              .from("profiles")
+              .select("id, username, display_name")
+              .in("id", ownerIds)
+          : { data: [] };
+        const ownerById = new Map((owners ?? []).map((owner) => [owner.id, owner]));
+        const gameIds = (data ?? []).map((game) => game.id);
+        const { data: favoriteRows } = gameIds.length
+          ? await admin.from("game_favorites").select("game_id").in("game_id", gameIds)
+          : { data: [] };
+        const favoritesByGame = new Map<string, number>();
+        for (const favorite of favoriteRows ?? []) {
+          favoritesByGame.set(
+            favorite.game_id,
+            (favoritesByGame.get(favorite.game_id) ?? 0) + 1,
+          );
+        }
+        return (data ?? []).map((game) => {
+          const owner = game.owner_id ? ownerById.get(game.owner_id) : null;
+          return {
+            id: game.id,
+            slug: game.slug,
+            title: game.title,
+            description: game.description,
+            genre: game.genre,
+            thumbnailUrl: game.thumbnail_url,
+            creator: owner?.display_name ?? "Polymons",
+            creatorUsername: owner?.username ?? "polymons",
+            visits: Number(game.visit_count ?? 0),
+            favorites: favoritesByGame.get(game.id) ?? 0,
+            createdAt: game.created_at,
+            updatedAt: game.updated_at,
+          };
+        });
+      },
+    );
     const counts = presence().counts;
+    publicCache(response, search ? 30 : 60);
     response.json({
-      games: (data ?? []).map((game) => {
-        const owner = game.owner_id ? ownerById.get(game.owner_id) : null;
-        return {
-          id: game.id,
-          slug: game.slug,
-          title: game.title,
-          description: game.description,
-          genre: game.genre,
-          thumbnailUrl: game.thumbnail_url,
-          creator: owner?.display_name ?? "Polymons",
-          creatorUsername: owner?.username ?? "polymons",
-          activePlayers: counts[game.id] ?? 0,
-          visits: Number(game.visit_count ?? 0),
-          favorites: favoritesByGame.get(game.id) ?? 0,
-          createdAt: game.created_at,
-          updatedAt: game.updated_at,
-        };
-      }),
+      games: cachedGames.map((game) => ({
+        ...game,
+        activePlayers: counts[game.id] ?? 0,
+      })),
     });
   });
 
@@ -1766,6 +2056,7 @@ export function createApp(
           .eq("user_id", user.id)
           .eq("game_id", game.id);
     if (result.error) throw result.error;
+    clearCacheByPrefix("games:");
     response.json({ gameId: game.id, favorite: input.favorite });
   });
 
@@ -1775,65 +2066,80 @@ export function createApp(
         ? request.query.query.trim().toLowerCase()
         : "";
     if (query.length < 1) {
+      publicCache(response, 30);
       response.json({ players: [] });
       return;
     }
     if (query.length > 32 || !/^[a-z0-9_ -]+$/.test(query)) {
       throw new HttpError(400, "Enter a valid player search.");
     }
-    const pattern = `%${query.replace(/[%_]/g, "\\$&")}%`;
-    const [usernames, displayNames] = await Promise.all([
-      admin
-        .from("profiles")
-        .select(
-          "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, equipped_pants_id, avatar_appearance, created_at",
-        )
-        .ilike("username", pattern)
-        .order("username")
-        .limit(12),
-      admin
-        .from("profiles")
-        .select(
-          "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, equipped_pants_id, avatar_appearance, created_at",
-        )
-        .ilike("display_name", pattern)
-        .order("username")
-        .limit(12),
-    ]);
-    if (usernames.error) throw usernames.error;
-    if (displayNames.error) throw displayNames.error;
-    const { data: numericIds, error: numericIdsError } = /^\d+$/.test(query)
-      ? await admin
-          .from("profiles")
-          .select(
-            "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, equipped_pants_id, avatar_appearance, created_at",
-          )
-          .eq("polymons_id", Number(query))
-          .limit(1)
-      : { data: [], error: null };
-    if (numericIdsError) throw numericIdsError;
-    const players = new Map(
-      [
-        ...(numericIds ?? []),
-        ...(usernames.data ?? []),
-        ...(displayNames.data ?? []),
-      ].map((player) => [
-        player.id,
-        {
-          id: player.id,
-          polymonsId: Number(player.polymons_id),
-          username: player.username,
-          displayName: player.display_name,
-          description: player.bio ?? "",
-          avatarUrl: player.avatar_url,
-          equippedShirtId: player.equipped_shirt_id,
-          equippedPantsId: player.equipped_pants_id,
-          avatarAppearance: normalizeAvatarAppearance(player.avatar_appearance),
-          joinedAt: player.created_at,
-        },
-      ]),
+    const players = await cached(
+      cacheKey(["players:search", query]),
+      30_000,
+      async () => {
+        const pattern = `%${query.replace(/[%_]/g, "\\$&")}%`;
+        const [usernames, displayNames] = await Promise.all([
+          admin
+            .from("profiles")
+            .select(
+              "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, equipped_pants_id, equipped_hair_id, equipped_hat_id, avatar_appearance, created_at",
+            )
+            .ilike("username", pattern)
+            .order("username")
+            .limit(12),
+          admin
+            .from("profiles")
+            .select(
+              "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, equipped_pants_id, equipped_hair_id, equipped_hat_id, avatar_appearance, created_at",
+            )
+            .ilike("display_name", pattern)
+            .order("username")
+            .limit(12),
+        ]);
+        if (usernames.error) throw usernames.error;
+        if (displayNames.error) throw displayNames.error;
+        const { data: numericIds, error: numericIdsError } = /^\d+$/.test(query)
+          ? await admin
+              .from("profiles")
+              .select(
+                "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, equipped_pants_id, equipped_hair_id, equipped_hat_id, avatar_appearance, created_at",
+              )
+              .eq("polymons_id", Number(query))
+              .limit(1)
+          : { data: [], error: null };
+        if (numericIdsError) throw numericIdsError;
+        const rows = [
+          ...(numericIds ?? []),
+          ...(usernames.data ?? []),
+          ...(displayNames.data ?? []),
+        ];
+        const assetById = await loadEquippedAvatarAssetMap(admin, rows);
+        return [
+          ...new Map(
+            rows.map((player) => [
+              player.id,
+              {
+                id: player.id,
+                polymonsId: Number(player.polymons_id),
+                username: player.username,
+                displayName: player.display_name,
+                description: player.bio ?? "",
+                avatarUrl: player.avatar_url,
+                equippedShirtId: player.equipped_shirt_id,
+                equippedPantsId: player.equipped_pants_id,
+                equippedHairId: player.equipped_hair_id,
+                equippedHatId: player.equipped_hat_id,
+                ...equippedAvatarAssetFields(player, assetById),
+                avatarAppearance: normalizeAvatarAppearance(player.avatar_appearance),
+                joinedAt: player.created_at,
+              },
+            ]),
+          ).values(),
+        ].slice(0, 12);
+      },
     );
-    response.json({ players: [...players.values()].slice(0, 12) });
+    publicCache(response, 30);
+    response.json({ players });
   });
 
   app.get("/v1/players/:username", async (request, response) => {
@@ -1844,12 +2150,13 @@ export function createApp(
     const { data: player, error: playerError } = await admin
       .from("profiles")
       .select(
-        "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, equipped_pants_id, avatar_appearance, created_at",
+        "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, equipped_pants_id, equipped_hair_id, equipped_hat_id, avatar_appearance, created_at",
       )
       .eq("username", username)
       .maybeSingle();
     if (playerError) throw playerError;
     if (!player) throw new HttpError(404, "Player not found.");
+    const playerAssetById = await loadEquippedAvatarAssetMap(admin, [player]);
 
     const [
       { data: games, error: gamesError },
@@ -1923,6 +2230,9 @@ export function createApp(
         avatarUrl: player.avatar_url,
         equippedShirtId: player.equipped_shirt_id,
         equippedPantsId: player.equipped_pants_id,
+        equippedHairId: player.equipped_hair_id,
+        equippedHatId: player.equipped_hat_id,
+        ...equippedAvatarAssetFields(player, playerAssetById),
         avatarAppearance: normalizeAvatarAppearance(player.avatar_appearance),
         joinedAt: player.created_at,
       },
@@ -2168,6 +2478,7 @@ export function createApp(
       published_at: new Date().toISOString(),
     });
     if (versionError) throw versionError;
+    clearCacheByPrefix("games:");
     response.status(201).json({
       game: {
         id: game.id,
@@ -2273,13 +2584,14 @@ export function createApp(
       ? await admin
           .from("profiles")
           .select(
-            "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, equipped_pants_id, avatar_appearance",
+            "id, polymons_id, username, display_name, bio, avatar_url, equipped_shirt_id, equipped_pants_id, equipped_hair_id, equipped_hat_id, avatar_appearance",
           )
           .in("id", profileIds)
       : { data: [] };
     const profileById = new Map(
       (profiles ?? []).map((profile) => [profile.id, profile]),
     );
+    const assetById = await loadEquippedAvatarAssetMap(admin, profiles ?? []);
     const live = presence().players;
     const liveGameIds = [...new Set(live.map((player) => player.gameId))];
     const { data: liveGames } = liveGameIds.length
@@ -2310,6 +2622,9 @@ export function createApp(
                 avatarUrl: profile.avatar_url,
                 equippedShirtId: profile.equipped_shirt_id,
                 equippedPantsId: profile.equipped_pants_id,
+                equippedHairId: profile.equipped_hair_id,
+                equippedHatId: profile.equipped_hat_id,
+                ...equippedAvatarAssetFields(profile, assetById),
                 avatarAppearance: normalizeAvatarAppearance(
                   profile.avatar_appearance,
                 ),

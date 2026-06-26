@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Polymons</string>
+    <string name="title_activity_main">Polymons</string>
+    <string name="package_name">com.polymons.player</string>
+    <string name="custom_url_scheme">com.polymons.player</string>
+</resources>

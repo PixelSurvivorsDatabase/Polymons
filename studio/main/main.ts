@@ -24,15 +24,71 @@ import {
 } from "./discordPresence.js";
 import { registerUpdater } from "./updater.js";
 
-const API_URL = "https://polymons-server.onrender.com";
-const WEBSITE_URL = "https://pixelsurvivorsdatabase.github.io/Polymons/";
+const API_URL =
+  process.env.POLYMONS_API_URL ||
+  process.env.VITE_POLYMONS_API_URL ||
+  "https://polymons-server.onrender.com";
+const WEBSITE_URL =
+  process.env.POLYMONS_WEBSITE_URL ||
+  "https://pixelsurvivorsdatabase.github.io/Polymons/";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const POLYCODE_TIMEOUT_MS = 25_000;
 const discordPresence = new DiscordPresenceClient();
+let studioInitialized = false;
 
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 
+function macUntestedNoticePath(): string {
+  return join(app.getPath("userData"), "mac-untested-notice-v1.txt");
+}
+
+async function showMacUntestedNoticeOnce(window: BrowserWindow): Promise<void> {
+  if (process.platform !== "darwin" || !app.isPackaged || previewMode) return;
+  const markerPath = macUntestedNoticePath();
+  try {
+    await readFile(markerPath);
+    return;
+  } catch {
+    // Missing marker means this user has not seen the note yet.
+  }
+  await dialog.showMessageBox(window, {
+    type: "warning",
+    buttons: ["I understand"],
+    defaultId: 0,
+    title: "Note from lava",
+    message: "Note from lava",
+    detail:
+      "This macOS version of Poly Studio may be extremely buggy because it is still untested. Please watch for bugs and report them when you see them.",
+    noLink: true,
+  });
+  await mkdir(dirname(markerPath), { recursive: true });
+  await writeFile(markerPath, new Date().toISOString(), "utf8");
+}
+
 type StudioLanguage = "luau" | "cpp" | "csharp";
+
+type PartImageFace =
+  | "all"
+  | "front"
+  | "back"
+  | "left"
+  | "right"
+  | "top"
+  | "bottom";
+
+type PartImageFaces = Partial<Record<PartImageFace, string>>;
+
+const PART_IMAGE_FACE_KEYS: PartImageFace[] = [
+  "all",
+  "front",
+  "back",
+  "left",
+  "right",
+  "top",
+  "bottom",
+];
+
+const PART_IMAGE_DATA_URL = /^data:image\/(?:png|jpeg|webp|gif);base64,/i;
 
 type StudioUser = {
   id: string;
@@ -99,6 +155,7 @@ type SceneObject = {
     | "grass"
     | "fabric"
     | "marble";
+  imageFaces?: PartImageFaces;
   canCollide: boolean;
   castShadow: boolean;
   friction?: number;
@@ -344,6 +401,44 @@ type PmaFile = {
   partNames: Record<string, string>;
 };
 
+function isValidPartImageUrl(value: string): boolean {
+  if (value.length > 2_900_000) return false;
+  if (PART_IMAGE_DATA_URL.test(value)) return true;
+  if (value.length > 2_048) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function normalizePartImageFaces(value: unknown): PartImageFaces {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const input = value as Record<string, unknown>;
+  const output: PartImageFaces = {};
+  for (const face of PART_IMAGE_FACE_KEYS) {
+    const image = input[face];
+    if (typeof image === "string" && image && isValidPartImageUrl(image)) {
+      output[face] = image;
+    }
+  }
+  return output;
+}
+
+function validatePartImageFaces(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const entries = Object.entries(value);
+  if (entries.length > PART_IMAGE_FACE_KEYS.length) return false;
+  return entries.every(
+    ([face, image]) =>
+      PART_IMAGE_FACE_KEYS.includes(face as PartImageFace) &&
+      typeof image === "string" &&
+      (!image || isValidPartImageUrl(image)),
+  );
+}
+
 type ProjectSummary = Pick<
   StudioProject,
   "id" | "name" | "language" | "createdAt" | "updatedAt"
@@ -532,7 +627,11 @@ async function completeCode(input: {
       if (result.source === "polycode" && result.suggestion.trim()) {
         return result;
       }
-    } catch {
+    } catch (error) {
+      console.warn(
+        "Hosted PolyCode unavailable; falling back to local checkpoint.",
+        error instanceof Error ? error.message : error,
+      );
       // Fall back to a local checkpoint if the hosted API is unavailable.
     }
   }
@@ -562,25 +661,44 @@ function backupsDirectory(id: string): string {
   return join(projectDirectory(id), "backups");
 }
 
+let cachedPlayerExecutable: string | null = null;
+
 async function findPlayerExecutable(): Promise<string | null> {
-  if (process.platform !== "win32") return null;
+  if (!["win32", "darwin"].includes(process.platform)) return null;
+  if (cachedPlayerExecutable) {
+    try {
+      await access(cachedPlayerExecutable);
+      return cachedPlayerExecutable;
+    } catch {
+      cachedPlayerExecutable = null;
+    }
+  }
   const portableDirectory = process.env.PORTABLE_EXECUTABLE_DIR;
   const executableDirectory = dirname(
     process.env.PORTABLE_EXECUTABLE_FILE ?? process.execPath,
   );
-  const candidates = [
-    process.env.POLYMONS_PLAYER_PATH,
-    portableDirectory
-      ? join(portableDirectory, "PolymonsPlayer.exe")
-      : undefined,
-    join(executableDirectory, "PolymonsPlayer.exe"),
-    join(executableDirectory, "..", "release", "PolymonsPlayer.exe"),
-    join(process.cwd(), "release", "PolymonsPlayer.exe"),
-    join(app.getPath("downloads"), "PolymonsPlayer.exe"),
-  ].filter((candidate): candidate is string => Boolean(candidate));
+  const candidates = (
+    process.platform === "darwin"
+      ? [
+          process.env.POLYMONS_PLAYER_PATH,
+          "/Applications/Polymons Player.app",
+          join(app.getPath("home"), "Applications", "Polymons Player.app"),
+        ]
+      : [
+          process.env.POLYMONS_PLAYER_PATH,
+          portableDirectory
+            ? join(portableDirectory, "PolymonsPlayer.exe")
+            : undefined,
+          join(executableDirectory, "PolymonsPlayer.exe"),
+          join(executableDirectory, "..", "release", "PolymonsPlayer.exe"),
+          join(process.cwd(), "release", "PolymonsPlayer.exe"),
+          join(app.getPath("downloads"), "PolymonsPlayer.exe"),
+        ]
+  ).filter((candidate): candidate is string => Boolean(candidate));
   for (const candidate of [...new Set(candidates)]) {
     try {
       await access(candidate);
+      cachedPlayerExecutable = candidate;
       return candidate;
     } catch {
       // Keep looking for an installed Player.
@@ -816,6 +934,7 @@ function normalizeProject(project: StudioProject): StudioProject {
       transparency: object.transparency ?? 0,
       material: object.material ?? "plastic",
       surfaceTexture: object.surfaceTexture ?? "none",
+      imageFaces: normalizePartImageFaces(object.imageFaces),
       canCollide: object.canCollide ?? true,
       castShadow: object.castShadow ?? true,
       friction: object.friction ?? 0.82,
@@ -1461,6 +1580,7 @@ function validateProject(project: StudioProject): void {
         "fabric",
         "marble",
       ].includes(object.surfaceTexture) ||
+      !validatePartImageFaces(object.imageFaces) ||
       typeof object.canCollide !== "boolean" ||
       typeof object.castShadow !== "boolean" ||
       (object.friction !== undefined &&
@@ -2135,6 +2255,7 @@ async function exportPmxl(input: {
         transparency: part.transparency,
         material: part.material,
         surfaceTexture: part.surfaceTexture,
+        imageFaces: normalizePartImageFaces(part.imageFaces),
         canCollide: part.canCollide,
         castShadow: part.castShadow,
         friction: part.friction,
@@ -2221,6 +2342,7 @@ async function importPmxl(): Promise<{
       transparency: part.transparency,
       material: part.material,
       surfaceTexture: part.surfaceTexture ?? "none",
+      imageFaces: normalizePartImageFaces(part.imageFaces),
       canCollide: part.canCollide,
       castShadow: part.castShadow,
       friction: part.friction ?? 0.82,
@@ -2493,6 +2615,11 @@ function createWindow(): void {
   void window.loadFile(join(__dirname, "../renderer/index.html"), {
     query: previewMode ? { preview: "1" } : undefined,
   });
+  window.webContents.once("did-finish-load", () => {
+    void showMacUntestedNoticeOnce(window).catch((error) => {
+      console.error("Could not show macOS first-run notice.", error);
+    });
+  });
   if (captureArgument) {
     const captureUi = captureArgument.startsWith("--studio-capture-ui=");
     const capturePath = captureArgument.slice(captureArgument.indexOf("=") + 1);
@@ -2543,7 +2670,10 @@ void app.whenReady().then(async () => {
   const updater = previewMode
     ? null
     : registerUpdater({
-        assetName: "PolyStudio.exe",
+        assetName: {
+          win32: "PolyStudio.exe",
+          darwin: "PolyStudio-mac-${arch}.dmg",
+        },
         productName: "Poly Studio",
       });
   if (!previewMode) {
@@ -2749,15 +2879,72 @@ void app.whenReady().then(async () => {
     validateProjectId(input.id);
     shell.showItemInFolder(manifestPath(input.id));
   });
-  ipcMain.handle("projects:play", async (_event, input: { id: string }) => {
+  ipcMain.handle(
+    "projects:play",
+    async (
+      _event,
+      input: {
+        id: string;
+        spawn?: {
+          position: [number, number, number];
+          rotationY: number;
+        };
+      },
+    ) => {
     requireAuth();
-    await readProject(input.id);
+    validateProjectId(input.id);
     const launch = new URL("polymons://studio");
     launch.searchParams.set("project", input.id);
+    const playSpawn =
+      input.spawn &&
+      Array.isArray(input.spawn.position) &&
+      input.spawn.position.length === 3 &&
+      input.spawn.position.every(
+        (value) => Number.isFinite(value) && Math.abs(value) <= 100_000,
+      ) &&
+      Number.isFinite(input.spawn.rotationY)
+        ? input.spawn
+        : null;
+    const launchArgs = [`--studio-project=${input.id}`];
+    if (playSpawn) {
+      const position = playSpawn.position
+        .map((value) => String(Number(value.toFixed(4))))
+        .join(",");
+      const rotationY = String(Number(playSpawn.rotationY.toFixed(5)));
+      launch.searchParams.set("spawn", position);
+      launch.searchParams.set("yaw", rotationY);
+      launchArgs.push(`--studio-spawn=${position}`, `--studio-yaw=${rotationY}`);
+    }
+    if (process.platform === "darwin") {
+      try {
+        await shell.openExternal(launch.toString());
+        return;
+      } catch {
+        const playerApplication = await findPlayerExecutable();
+        if (!playerApplication) {
+          throw new Error(
+            "Install and open Polymons Player once before starting a Studio playtest.",
+          );
+        }
+        await new Promise<void>((resolve, reject) => {
+          const child = spawn(
+            "/usr/bin/open",
+            [playerApplication, "--args", ...launchArgs],
+            { detached: true, stdio: "ignore" },
+          );
+          child.once("spawn", () => {
+            child.unref();
+            resolve();
+          });
+          child.once("error", reject);
+        });
+        return;
+      }
+    }
     const player = await findPlayerExecutable();
     if (player) {
       await new Promise<void>((resolve, reject) => {
-        const child = spawn(player, [`--studio-project=${input.id}`], {
+        const child = spawn(player, launchArgs, {
           detached: true,
           stdio: "ignore",
         });
@@ -2770,7 +2957,8 @@ void app.whenReady().then(async () => {
       return;
     }
     await shell.openExternal(launch.toString());
-  });
+  },
+  );
   ipcMain.handle(
     "models:export",
     (_event, input: { model: StudioModel; parts: SceneObject[] }) =>
@@ -2793,12 +2981,19 @@ void app.whenReady().then(async () => {
       completeCode(input),
   );
 
+  studioInitialized = true;
   createWindow();
   if (updater) {
     const window = BrowserWindow.getAllWindows()[0];
     window?.webContents.once("did-finish-load", () => {
       setTimeout(updater.checkAutomatically, 1_500);
     });
+  }
+});
+
+app.on("activate", () => {
+  if (studioInitialized && BrowserWindow.getAllWindows().length === 0) {
+    createWindow();
   }
 });
 

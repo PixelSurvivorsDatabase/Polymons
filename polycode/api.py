@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from typing import Literal
+from urllib.request import Request, urlopen
 
 import torch
 from fastapi import FastAPI, Header, HTTPException
@@ -34,6 +37,7 @@ class PolyCodeModelSpec:
   checkpoint: Path
   tokenizer: Path
   object_path: str
+  download_url: str | None = None
 
 
 MODEL_SPECS: dict[str, PolyCodeModelSpec] = {
@@ -48,6 +52,7 @@ MODEL_SPECS: dict[str, PolyCodeModelSpec] = {
       "POLYCODE_13M_SUPABASE_OBJECT",
       os.getenv("POLYCODE_SUPABASE_OBJECT", "checkpoints/checkpoint-final.pt"),
     ),
+    download_url=os.getenv("POLYCODE_13M_CHECKPOINT_URL"),
   ),
   "polycode-28m": PolyCodeModelSpec(
     checkpoint=Path(
@@ -60,6 +65,7 @@ MODEL_SPECS: dict[str, PolyCodeModelSpec] = {
       "POLYCODE_28M_SUPABASE_OBJECT",
       "checkpoints-28m/checkpoint-latest.pt",
     ),
+    download_url=os.getenv("POLYCODE_28M_CHECKPOINT_URL"),
   ),
 }
 
@@ -89,8 +95,9 @@ class PolyCodeRuntime:
     self._blocked_tokens: set[int] = set()
 
   def ensure_checkpoint(self) -> None:
-    if self.spec.checkpoint.exists():
+    if self.spec.checkpoint.exists() and self.spec.checkpoint.stat().st_size > 0:
       return
+    partial = self.spec.checkpoint.with_suffix(self.spec.checkpoint.suffix + ".part")
     supabase_url = os.getenv("POLYCODE_SUPABASE_URL") or os.getenv("SUPABASE_URL")
     service_key = (
       os.getenv("POLYCODE_SUPABASE_SERVICE_ROLE_KEY")
@@ -98,14 +105,32 @@ class PolyCodeRuntime:
       or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
       or os.getenv("SUPABASE_SECRET_KEY")
     )
+    self.spec.checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    if self.spec.download_url:
+      request = Request(
+        self.spec.download_url,
+        headers={"User-Agent": "Polymons-PolyCode/1.0"},
+      )
+      try:
+        with urlopen(request, timeout=120) as response, partial.open("wb") as output:
+          shutil.copyfileobj(response, output, length=1024 * 1024)
+        partial.replace(self.spec.checkpoint)
+      finally:
+        with suppress(FileNotFoundError):
+          partial.unlink()
+      return
     if not supabase_url or not service_key:
       raise RuntimeError(
-        "Checkpoint is missing and Supabase Storage credentials are not configured."
+        "Checkpoint is missing. Configure POLYCODE_13M_CHECKPOINT_URL/POLYCODE_28M_CHECKPOINT_URL or Supabase Storage credentials."
       )
-    self.spec.checkpoint.parent.mkdir(parents=True, exist_ok=True)
     client = create_client(supabase_url, service_key)
-    data = client.storage.from_(MODEL_BUCKET).download(self.spec.object_path)
-    self.spec.checkpoint.write_bytes(data)
+    try:
+      data = client.storage.from_(MODEL_BUCKET).download(self.spec.object_path)
+      partial.write_bytes(data)
+      partial.replace(self.spec.checkpoint)
+    finally:
+      with suppress(FileNotFoundError):
+        partial.unlink()
 
   def load(self) -> None:
     with self._lock:

@@ -7,9 +7,18 @@ import {
   Search,
   Users,
 } from "lucide-react";
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import logo from "../../assets/polymons-logo.png";
 import { useMultiplayer } from "../../src/game/multiplayer";
+import type { R6AvatarPlayer } from "../../src/game/R6Avatar";
 import {
   activatePolyGui,
   activatePolyInput,
@@ -20,12 +29,17 @@ import {
   type PolyProject,
   type PolyRuntimeResult,
   runPolyProject,
+  withRuntimePlayerPosition,
 } from "../../src/game/polyProject";
 import { usePolyRuntimeScheduler } from "../../src/game/usePolyRuntimeScheduler";
 
 const BaseplateGame = lazy(
   () => import("../../src/game/BaseplateGame"),
 );
+
+function avatarPlayer(player: unknown): R6AvatarPlayer | undefined {
+  return player ? (player as R6AvatarPlayer) : undefined;
+}
 
 function runtimePlayerData(
   user: PlayerUser | null | undefined,
@@ -41,6 +55,12 @@ function runtimePlayerData(
         playerData: entitlements?.playerData ?? {},
       }
     : undefined;
+}
+
+function isRemoteDebugOutput(entry: PolyRuntimeResult["output"][number]) {
+  return /\.(?:FireServer|FireClient|FireAllClients|InvokeServer|InvokeClient)\(/.test(
+    entry.message,
+  );
 }
 
 function mergeRuntimeResults(
@@ -482,6 +502,24 @@ function OnlinePlayerGame({
     sendChat,
     sendLeaderstats,
   } = useMultiplayer(launch.websocketUrl, launch.game);
+  const localPlayerState = useRef<{
+    position: [number, number, number];
+    rotationY: number;
+  } | null>(null);
+  const sendLocalPlayerState = useCallback(
+    (state: { position: [number, number, number]; rotationY: number }) => {
+      localPlayerState.current = state;
+      sendState(state);
+    },
+    [sendState],
+  );
+  const runtimeProjectWithLocalPlayer = useCallback(
+    (project: PolyRuntimeResult["project"]) =>
+      localPlayerState.current
+        ? withRuntimePlayerPosition(project, localPlayerState.current.position)
+        : project,
+    [],
+  );
   const [runtime, setRuntime] = useState<PolyRuntimeResult | null>(null);
   const submittedBadges = useRef(new Set<string>());
   const submittedPurchases = useRef(new Set<string>());
@@ -641,7 +679,7 @@ function OnlinePlayerGame({
           >
           <BaseplateGame
             remotePlayers={remotePlayers}
-            onPlayerState={sendState}
+            onPlayerState={sendLocalPlayerState}
             worldObjects={runtime?.project.objects}
             animations={runtime?.project.animations}
             animationRequests={runtime?.animationRequests}
@@ -655,7 +693,7 @@ function OnlinePlayerGame({
             lighting={runtime?.project.lighting}
             leaderstats={runtime?.project.leaderstats}
             projectName={runtime?.project.name}
-            localPlayer={sessionPlayer ?? auth?.user}
+            localPlayer={avatarPlayer(sessionPlayer ?? auth?.user)}
             chatMessages={chatMessages}
             chatError={chatError}
             onSendChat={sendChat}
@@ -663,7 +701,7 @@ function OnlinePlayerGame({
               setRuntime((current) => {
                 if (!current) return current;
                 const activated = activatePolyGui(
-                  current.project,
+                  runtimeProjectWithLocalPlayer(current.project),
                   guiObjectId,
                   current.playerData,
                 );
@@ -674,7 +712,7 @@ function OnlinePlayerGame({
               setRuntime((current) => {
                 if (!current) return current;
                 const activated = activatePolyTool(
-                  current.project,
+                  runtimeProjectWithLocalPlayer(current.project),
                   toolObjectId,
                   current.playerData,
                 );
@@ -685,7 +723,7 @@ function OnlinePlayerGame({
               setRuntime((current) => {
                 if (!current) return current;
                 const activated = activatePolyTouched(
-                  current.project,
+                  runtimeProjectWithLocalPlayer(current.project),
                   worldObjectId,
                   "Touched",
                   current.playerData,
@@ -699,7 +737,7 @@ function OnlinePlayerGame({
                   ? mergeRuntimeResults(
                       current,
                       activatePolyInput(
-                        current.project,
+                        runtimeProjectWithLocalPlayer(current.project),
                         keyCode,
                         event,
                         current.playerData,
@@ -776,11 +814,29 @@ function StudioPlayerGame({
   );
   const [runtime, setRuntime] = useState<PolyRuntimeResult | null>(null);
   usePolyRuntimeScheduler(runtime, setRuntime);
+  const localPlayerState = useRef<{
+    position: [number, number, number];
+    rotationY: number;
+  } | null>(null);
+  const sendLocalPlayerState = useCallback(
+    (state: { position: [number, number, number]; rotationY: number }) => {
+      localPlayerState.current = state;
+    },
+    [],
+  );
+  const runtimeProjectWithLocalPlayer = useCallback(
+    (project: PolyRuntimeResult["project"]) =>
+      localPlayerState.current
+        ? withRuntimePlayerPosition(project, localPlayerState.current.position)
+        : project,
+    [],
+  );
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalTab, setTerminalTab] = useState<"output" | "command" | "data">(
     "output",
   );
   const [command, setCommand] = useState("");
+  const remoteDebugEntries = runtime?.output.filter(isRemoteDebugOutput) ?? [];
 
   useEffect(() => {
     setRuntime(initialRuntime);
@@ -812,6 +868,7 @@ function StudioPlayerGame({
             fallback={<div className="player-loading">Loading playtest...</div>}
           >
             <BaseplateGame
+              onPlayerState={sendLocalPlayerState}
               worldObjects={runtime.project.objects}
               animations={runtime.project.animations}
               animationRequests={runtime.animationRequests}
@@ -825,12 +882,22 @@ function StudioPlayerGame({
               lighting={runtime.project.lighting}
               leaderstats={runtime.project.leaderstats}
               projectName={runtime.project.name}
-              localPlayer={auth?.user}
+              localPlayer={avatarPlayer(auth?.user)}
+              playSpawn={
+                launch.spawn
+                  ? {
+                      x: launch.spawn[0],
+                      y: launch.spawn[1],
+                      z: launch.spawn[2],
+                      rotationY: launch.rotationY,
+                    }
+                  : undefined
+              }
               onGuiActivated={(guiObjectId) => {
                 setRuntime((current) => {
                   if (!current) return current;
                   const activated = activatePolyGui(
-                    current.project,
+                    runtimeProjectWithLocalPlayer(current.project),
                     guiObjectId,
                     current.playerData,
                   );
@@ -841,7 +908,7 @@ function StudioPlayerGame({
                 setRuntime((current) => {
                   if (!current) return current;
                   const activated = activatePolyTool(
-                    current.project,
+                    runtimeProjectWithLocalPlayer(current.project),
                     toolObjectId,
                     current.playerData,
                   );
@@ -852,7 +919,7 @@ function StudioPlayerGame({
                 setRuntime((current) => {
                   if (!current) return current;
                   const activated = activatePolyTouched(
-                    current.project,
+                    runtimeProjectWithLocalPlayer(current.project),
                     worldObjectId,
                     "Touched",
                     current.playerData,
@@ -864,7 +931,7 @@ function StudioPlayerGame({
                 setRuntime((current) => {
                   if (!current) return current;
                   const activated = activatePolyTouched(
-                    current.project,
+                    runtimeProjectWithLocalPlayer(current.project),
                     worldObjectId,
                     "TouchEnded",
                     current.playerData,
@@ -878,7 +945,7 @@ function StudioPlayerGame({
                     ? mergeRuntimeResults(
                         current,
                         activatePolyInput(
-                          current.project,
+                          runtimeProjectWithLocalPlayer(current.project),
                           keyCode,
                           event,
                           current.playerData,
@@ -934,6 +1001,16 @@ function StudioPlayerGame({
               </header>
               {terminalOpen && terminalTab === "output" && (
                 <div className="console-scroll">
+                  {remoteDebugEntries.length > 0 && (
+                    <section className="remote-debugger">
+                      <strong>Remote debugger</strong>
+                      {remoteDebugEntries.slice(-8).map((entry, index) => (
+                        <span key={`remote-debug-${index}`}>
+                          [{entry.scriptName}] {entry.message}
+                        </span>
+                      ))}
+                    </section>
+                  )}
                   {runtime.diagnostics.map((diagnostic, index) => (
                     <span className="output-error" key={`diagnostic-${index}`}>
                       {diagnostic.scriptName}:{diagnostic.line} {diagnostic.message}

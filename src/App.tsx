@@ -11,11 +11,13 @@ import {
   Play,
   Plus,
   Search,
+  Share,
   Shirt,
   ShoppingCart,
   Tickets,
   UserRound,
   Users,
+  WifiOff,
   X,
 } from "lucide-react";
 import {
@@ -44,6 +46,8 @@ import {
   createPlaySession,
   equipShirt,
   equipPants,
+  equipHair,
+  equipHat,
   getGameLibrary,
   getGame,
   getCreatorAnalytics,
@@ -58,8 +62,21 @@ import {
   listGames,
   playerAccountUrl,
   playerLaunchUrl,
+  IS_ANDROID_BROWSER,
+  IS_IOS_BROWSER,
+  IS_LIKELY_APPLE_SILICON_BROWSER,
+  IS_MAC_DESKTOP_BROWSER,
+  IS_MOBILE_BROWSER,
+  POLYMONS_PLAYER_ANDROID_DOWNLOAD_URL,
+  POLYMONS_PLAYER_MAC_ARM64_DOWNLOAD_URL,
+  POLYMONS_PLAYER_MAC_X64_DOWNLOAD_URL,
   POLYMONS_PLAYER_DOWNLOAD_URL,
+  POLYMONS_PLAYER_WINDOWS_DOWNLOAD_URL,
+  POLY_STUDIO_ANDROID_DOWNLOAD_URL,
+  POLY_STUDIO_MAC_ARM64_DOWNLOAD_URL,
+  POLY_STUDIO_MAC_X64_DOWNLOAD_URL,
   POLY_STUDIO_DOWNLOAD_URL,
+  POLY_STUDIO_WINDOWS_DOWNLOAD_URL,
   purchaseDeveloperProduct,
   purchaseGamePass,
   sendFriendRequest,
@@ -81,6 +98,10 @@ import {
 } from "./api";
 import type {
   AvatarItemId,
+  AvatarItemType,
+  AvatarModelFormat,
+  HairId,
+  HatId,
   PantsId,
   ShirtId,
 } from "./game/avatarCatalog";
@@ -99,6 +120,7 @@ import {
   activatePolyTouched,
   activatePolyTool,
   runPolyProject,
+  withRuntimePlayerPosition,
   type PolyPlayerData,
   type PolyRuntimeResult,
 } from "./game/polyProject";
@@ -116,6 +138,51 @@ import {
 
 const BaseplateGame = lazy(() => import("./game/BaseplateGame"));
 const AvatarPreview = lazy(() => import("./game/AvatarPreview"));
+const ACCESSORY_MODEL_FORMATS = [
+  "glb",
+  "gltf",
+  "obj",
+  "fbx",
+  "stl",
+  "dae",
+  "zip",
+  "rbxm",
+  "rbxmx",
+  "rblx",
+  "rbxlx",
+] as const satisfies readonly AvatarModelFormat[];
+const ACCESSORY_MODEL_ACCEPT = ACCESSORY_MODEL_FORMATS.map((format) => `.${format}`).join(",");
+
+function avatarItemTypeLabel(itemType: AvatarItemType): string {
+  if (itemType === "pants") return "Pants";
+  if (itemType === "hair") return "Hair";
+  if (itemType === "hat") return "Hat";
+  return "Shirt";
+}
+
+function avatarItemTileLabel(item: { itemType: AvatarItemType; id: string }): string {
+  if (item.itemType === "hair") return "HAIR";
+  if (item.itemType === "hat") return "HAT";
+  if (item.itemType === "pants") return "PANTS";
+  return "SHIRT";
+}
+
+async function fileToDataUrl(file: File, label: string): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`Could not read this ${label}.`));
+    reader.onload = () =>
+      typeof reader.result === "string"
+        ? resolve(reader.result)
+        : reject(new Error(`Could not read this ${label}.`));
+    reader.readAsDataURL(file);
+  });
+}
+
+function modelFormatFromFile(file: File): AvatarModelFormat | null {
+  const extension = file.name.split(".").pop()?.toLowerCase();
+  return ACCESSORY_MODEL_FORMATS.find((format) => format === extension) ?? null;
+}
 
 async function clothingFileToTemplateDataUrl(file: File): Promise<{
   dataUrl: string;
@@ -123,15 +190,7 @@ async function clothingFileToTemplateDataUrl(file: File): Promise<{
   height: number;
   normalized: boolean;
 }> {
-  const rawDataUrl = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("Could not read this PNG."));
-    reader.onload = () =>
-      typeof reader.result === "string"
-        ? resolve(reader.result)
-        : reject(new Error("Could not read this PNG."));
-    reader.readAsDataURL(file);
-  });
+  const rawDataUrl = await fileToDataUrl(file, "PNG");
   const image = await new Promise<HTMLImageElement>((resolve, reject) => {
     const nextImage = new Image();
     nextImage.onload = () => resolve(nextImage);
@@ -202,20 +261,83 @@ function displayGame(game: PlatformGame): Game {
   };
 }
 
+function numberFromPlayers(value: string): number {
+  const parsed = Number(value.replace(/[^\d.]/g, ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function daysSince(value: string): number {
+  const time = new Date(value).getTime();
+  if (!Number.isFinite(time)) return 999;
+  return Math.max(0, (Date.now() - time) / 86_400_000);
+}
+
+function growthScore(game: Game): number {
+  const active = numberFromPlayers(game.players);
+  const visits = Math.max(0, game.visits);
+  const ageDays = Math.max(1, daysSince(game.createdAt));
+  const updateDays = Math.max(0, daysSince(game.updatedAt));
+  const activeLift = (active + 1) / Math.sqrt(visits + 10);
+  const favoriteLift = (game.favorites + 1) / Math.sqrt(visits + 25);
+  const recencyLift = Math.max(0, 28 - ageDays) / 28;
+  const updateLift = Math.max(0, 10 - updateDays) / 10;
+  return activeLift * 8 + favoriteLift * 2 + recencyLift * 2 + updateLift;
+}
+
+function ratingPercent(game: Game): number {
+  const visits = Math.max(1, game.visits);
+  const favorites = Math.max(0, game.favorites);
+  const active = numberFromPlayers(game.players);
+  return Math.max(
+    62,
+    Math.min(99, Math.round(72 + (favorites / visits) * 80 + active * 1.5)),
+  );
+}
+
+function compactCount(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}K`;
+  return String(value);
+}
+
 function useGames() {
   const [games, setGames] = useState<Game[]>(fallbackGames);
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
-    void listGames()
-      .then((result) => setGames(result.games.map(displayGame)))
-      .catch(() => undefined)
-      .finally(() => setLoaded(true));
+    let disposed = false;
+    let requestInFlight = false;
+    const loadGames = async (initial = false) => {
+      if (requestInFlight) return;
+      if (!navigator.onLine) {
+        if (initial && !disposed) setLoaded(true);
+        return;
+      }
+      requestInFlight = true;
+      try {
+        const result = await listGames();
+        if (!disposed) setGames(result.games.map(displayGame));
+      } catch {
+        // Keep the last usable game list during brief outages and cold starts.
+      } finally {
+        requestInFlight = false;
+        if (initial && !disposed) setLoaded(true);
+      }
+    };
+    const refreshVisibleGames = () => {
+      if (document.visibilityState === "visible") void loadGames();
+    };
+    void loadGames(true);
     const timer = window.setInterval(() => {
-      void listGames()
-        .then((result) => setGames(result.games.map(displayGame)))
-        .catch(() => undefined);
-    }, 15_000);
-    return () => window.clearInterval(timer);
+      refreshVisibleGames();
+    }, 30_000);
+    document.addEventListener("visibilitychange", refreshVisibleGames);
+    window.addEventListener("online", refreshVisibleGames);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshVisibleGames);
+      window.removeEventListener("online", refreshVisibleGames);
+    };
   }, []);
   return { games, loaded };
 }
@@ -274,6 +396,10 @@ const navItems = [
   { to: "/profile", label: "Profile", icon: UserRound },
   { to: "/create", label: "Create", icon: Plus },
 ];
+
+const mobileNavItems = navItems.filter(({ to }) =>
+  ["/", "/discover", "/friends", "/catalog", "/profile"].includes(to),
+);
 
 function Avatar({
   name,
@@ -356,7 +482,7 @@ function Sidebar() {
 function MobileNav() {
   return (
     <nav className="mobile-nav" aria-label="Mobile navigation">
-      {navItems.map(({ to, label, icon: Icon }) => (
+      {mobileNavItems.map(({ to, label, icon: Icon }) => (
         <NavLink
           key={to}
           to={to}
@@ -495,6 +621,8 @@ function Layout() {
   const location = useLocation();
   return (
     <div className="app-shell">
+      <ConnectivityNotice />
+      <IphoneInstallPrompt />
       <Sidebar />
       <div className="app-main">
         <Header />
@@ -565,6 +693,53 @@ function GameCard({ game }: { game: Game }) {
         </div>
       </div>
     </Link>
+  );
+}
+
+function DiscoverGameCard({ game }: { game: Game }) {
+  const activePlayers = numberFromPlayers(game.players);
+  return (
+    <Link to={`/games/${game.id}`} className="discover-game-card">
+      <GameArt game={game} />
+      <h3>{game.title}</h3>
+      <div className="discover-card-stats">
+        <span title="Rating">👍 {ratingPercent(game)}%</span>
+        <span title="Active players">
+          <Users size={13} fill="currentColor" />{" "}
+          {compactCount(activePlayers || game.visits)}
+        </span>
+      </div>
+    </Link>
+  );
+}
+
+function DiscoverShelf({
+  title,
+  games,
+  info,
+}: {
+  title: string;
+  games: Game[];
+  info?: string;
+}) {
+  if (games.length === 0) return null;
+  return (
+    <section className="discover-shelf">
+      <header>
+        <h2>{title} <span aria-hidden="true">→</span></h2>
+        {info && (
+          <span className="discover-info" tabIndex={0} aria-label={info}>
+            i
+            <small>{info}</small>
+          </span>
+        )}
+      </header>
+      <div className="discover-row">
+        {games.map((game) => (
+          <DiscoverGameCard key={`${title}-${game.id}`} game={game} />
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -740,6 +915,25 @@ function DiscoverPage() {
   const [query, setQuery] = useState("");
   const [games, setGames] = useState(allGames);
   const [searching, setSearching] = useState(false);
+  const discoverRows = useMemo(() => {
+    const sortedByGrowth = [...allGames].sort(
+      (a, b) => growthScore(b) - growthScore(a),
+    );
+    const upAndComing = sortedByGrowth.filter(
+      (game) => daysSince(game.createdAt) <= 28,
+    );
+    const playingNow = [...allGames].sort(
+      (a, b) => numberFromPlayers(b.players) - numberFromPlayers(a.players),
+    );
+    return {
+      trending: sortedByGrowth,
+      upAndComing: upAndComing.length > 0 ? upAndComing : sortedByGrowth,
+      playingNow,
+      all: [...allGames].sort(
+        (a, b) => b.visits - a.visits || growthScore(b) - growthScore(a),
+      ),
+    };
+  }, [allGames]);
   useEffect(() => setGames(allGames), [allGames]);
   useEffect(() => {
     const value = query.trim();
@@ -775,15 +969,38 @@ function DiscoverPage() {
             placeholder="Search games by name, description, or genre"
           />
         </label>
-        <SectionHeading title="All games" eyebrow={`${games.length} games`} />
-        <div className="game-grid discover-grid">
-          {games.map((game) => (
-            <GameCard key={game.id} game={game} />
-          ))}
-        </div>
-        {searching && <div className="empty-state">Searching games...</div>}
-        {!searching && games.length === 0 && (
-          <div className="empty-state">No games matched that search.</div>
+        {query.trim() ? (
+          <>
+            <SectionHeading title="Search results" eyebrow={`${games.length} games`} />
+            <div className="game-grid discover-grid">
+              {games.map((game) => (
+                <GameCard key={game.id} game={game} />
+              ))}
+            </div>
+            {searching && <div className="empty-state">Searching games...</div>}
+            {!searching && games.length === 0 && (
+              <div className="empty-state">No games matched that search.</div>
+            )}
+          </>
+        ) : (
+          <div className="discover-shelves">
+            <DiscoverShelf
+              title="Top Trending"
+              games={discoverRows.trending}
+              info="Games with the largest relative increase in active players, favorites, and the such"
+            />
+            <DiscoverShelf
+              title="Up-and-Coming"
+              games={discoverRows.upAndComing}
+              info="Games posted in the last 28 days, sorted by growth."
+            />
+            <DiscoverShelf
+              title="Top Playing Now"
+              games={discoverRows.playingNow}
+              info="Games with the most active players right now."
+            />
+            <DiscoverShelf title="All Games" games={discoverRows.all} />
+          </div>
         )}
       </section>
     </>
@@ -801,6 +1018,7 @@ function GamePage() {
   const [browserSession, setBrowserSession] = useState<PlaySession | null>(null);
   const [playerOptions, setPlayerOptions] = useState(false);
   const [playerAttempted, setPlayerAttempted] = useState(false);
+  const [preferBrowserPlay, setPreferBrowserPlay] = useState(false);
   const [activeInfoTab, setActiveInfoTab] = useState<"about" | "store" | "servers">("about");
   const [servers, setServers] = useState<
     Awaited<ReturnType<typeof listGameServers>>["servers"]
@@ -822,6 +1040,19 @@ function GamePage() {
     setStoreStatus("");
     setActiveInfoTab("about");
   }, [gameId]);
+  useEffect(() => {
+    const coarsePointer = window.matchMedia("(pointer: coarse)");
+    const narrowScreen = window.matchMedia("(max-width: 760px)");
+    const update = () =>
+      setPreferBrowserPlay(coarsePointer.matches || narrowScreen.matches);
+    update();
+    coarsePointer.addEventListener("change", update);
+    narrowScreen.addEventListener("change", update);
+    return () => {
+      coarsePointer.removeEventListener("change", update);
+      narrowScreen.removeEventListener("change", update);
+    };
+  }, []);
   useEffect(() => {
     if (!game) return;
     const reference = game.platformId ?? game.id;
@@ -993,9 +1224,11 @@ function GamePage() {
         <PlayerOptionsDialog
           title="Play with Polymons Player"
           description={
-            playerAttempted
+            IS_MOBILE_BROWSER
+              ? "The desktop Player is not available on phones or tablets. Close this window and use Browser play."
+              : playerAttempted
               ? "The Player should be opening. If nothing happened, download it, run it once, then press Open Player again."
-              : "Open the installed Player or download the portable Windows app."
+              : "Open the installed Player or choose the correct Windows or Mac download."
           }
           opening={launching === "player"}
           onOpen={() => void play("player")}
@@ -1022,9 +1255,19 @@ function GamePage() {
               </p>
               <p className="game-maturity">Maturity: All ages</p>
               <button
+                type="button"
                 className="game-play-button"
-                aria-label="Play in Polymons Player"
-                onClick={() => {
+                aria-label={
+                  preferBrowserPlay
+                    ? "Play in browser"
+                    : "Play in Polymons Player"
+                }
+                onClick={(event) => {
+                  event.currentTarget.blur();
+                  if (preferBrowserPlay) {
+                    void play("browser");
+                    return;
+                  }
                   setPlayerOptions(true);
                   setPlayerAttempted(false);
                   setLaunchError("");
@@ -1038,6 +1281,7 @@ function GamePage() {
               </button>
               <div className="game-detail-actions">
                 <button
+                  type="button"
                   className={isFavorite ? "active" : ""}
                   onClick={() => void toggleFavorite()}
                 >
@@ -1045,7 +1289,11 @@ function GamePage() {
                   {isFavorite ? "Favorited" : "Favorite"}
                 </button>
                 <button
-                  onClick={() => void play("browser")}
+                  type="button"
+                  onClick={(event) => {
+                    event.currentTarget.blur();
+                    void play("browser");
+                  }}
                   disabled={launching !== null}
                 >
                   <Gamepad2 size={20} />
@@ -1235,8 +1483,9 @@ function BrowserGame({
             displayName: user.displayName,
           }
         : null,
-    [user?.displayName, user?.polymonsId, user?.username],
+    [user],
   );
+  const accessToken = session?.accessToken ?? null;
   useEffect(() => setActiveSession(playSession), [playSession]);
   useEffect(() => {
     let cancelled = false;
@@ -1248,11 +1497,11 @@ function BrowserGame({
       let entitlements:
         | Awaited<ReturnType<typeof getGameEntitlements>>
         | null = null;
-      if (session) {
+      if (accessToken) {
         try {
           entitlements = await getGameEntitlements(
             playSession.game.id,
-            session.accessToken,
+            accessToken,
           );
         } catch {
           entitlements = null;
@@ -1290,7 +1539,7 @@ function BrowserGame({
   }, [
     localPlayerProfile,
     playSession.game.id,
-    session?.accessToken,
+    accessToken,
   ]);
   const {
     connection,
@@ -1302,6 +1551,24 @@ function BrowserGame({
     sendChat,
     sendLeaderstats,
   } = useMultiplayer(activeSession.websocketUrl, activeSession.game.id);
+  const localPlayerState = useRef<{
+    position: [number, number, number];
+    rotationY: number;
+  } | null>(null);
+  const sendLocalPlayerState = useCallback(
+    (state: { position: [number, number, number]; rotationY: number }) => {
+      localPlayerState.current = state;
+      sendState(state);
+    },
+    [sendState],
+  );
+  const runtimeProjectWithLocalPlayer = useCallback(
+    (project: PolyRuntimeResult["project"]) =>
+      localPlayerState.current
+        ? withRuntimePlayerPosition(project, localPlayerState.current.position)
+        : project,
+    [],
+  );
   useEffect(() => {
     sendLeaderstats(
       Object.fromEntries(
@@ -1423,7 +1690,10 @@ function BrowserGame({
   }, [disconnected, reconnect]);
 
   return (
-    <div className="browser-game-wrap">
+    <div
+      className="browser-game-wrap"
+      data-mobile-game={IS_MOBILE_BROWSER ? "true" : undefined}
+    >
       <span className={`connection-pill ${disconnected ? "offline" : ""}`}>
         {reconnecting ? "Reconnecting" : connection}
       </span>
@@ -1445,7 +1715,7 @@ function BrowserGame({
         >
         <BaseplateGame
           remotePlayers={remotePlayers}
-          onPlayerState={sendState}
+          onPlayerState={sendLocalPlayerState}
           worldObjects={runtime?.project.objects}
           animations={runtime?.project.animations}
           animationRequests={runtime?.animationRequests}
@@ -1467,7 +1737,7 @@ function BrowserGame({
             setRuntime((current) => {
               if (!current) return current;
               const activated = activatePolyGui(
-                current.project,
+                runtimeProjectWithLocalPlayer(current.project),
                 guiObjectId,
                 current.playerData,
               );
@@ -1497,7 +1767,7 @@ function BrowserGame({
             setRuntime((current) => {
               if (!current) return current;
               const activated = activatePolyTool(
-                current.project,
+                runtimeProjectWithLocalPlayer(current.project),
                 toolObjectId,
                 current.playerData,
               );
@@ -1527,7 +1797,7 @@ function BrowserGame({
             setRuntime((current) => {
               if (!current) return current;
               const activated = activatePolyTouched(
-                current.project,
+                runtimeProjectWithLocalPlayer(current.project),
                 worldObjectId,
                 "Touched",
                 current.playerData,
@@ -1558,7 +1828,7 @@ function BrowserGame({
             setRuntime((current) => {
               if (!current) return current;
               const activated = activatePolyInput(
-                current.project,
+                runtimeProjectWithLocalPlayer(current.project),
                 keyCode,
                 event,
                 current.playerData,
@@ -1735,6 +2005,89 @@ function FriendsPage() {
   );
 }
 
+const PWA_INSTALL_DISMISSED_KEY = "polymons:pwa-install-dismissed-v1";
+
+function isIphoneSafari(): boolean {
+  const userAgent = navigator.userAgent;
+  const ios =
+    /iPhone|iPad|iPod/i.test(userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const otherIosBrowser = /CriOS|FxiOS|EdgiOS|OPiOS/i.test(userAgent);
+  return ios && /Safari/i.test(userAgent) && !otherIosBrowser;
+}
+
+function isStandalonePwa(): boolean {
+  return (
+    window.matchMedia("(display-mode: standalone)").matches ||
+    Boolean((navigator as Navigator & { standalone?: boolean }).standalone)
+  );
+}
+
+function IphoneInstallPrompt() {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    if (!isIphoneSafari() || isStandalonePwa()) return;
+    try {
+      if (localStorage.getItem(PWA_INSTALL_DISMISSED_KEY) === "true") return;
+    } catch {
+      // Safari private browsing can deny storage access.
+    }
+    const timer = window.setTimeout(() => setVisible(true), 1_200);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  if (!visible) return null;
+  return (
+    <aside className="ios-install-prompt" aria-label="Install Polymons">
+      <img src="./icons/apple-touch-icon.png" alt="" />
+      <div>
+        <strong>Put Polymons on your Home Screen</strong>
+        <span>
+          Tap <Share size={15} aria-label="Share" /> Share, then Add to Home Screen.
+        </span>
+      </div>
+      <button
+        type="button"
+        aria-label="Dismiss installation instructions"
+        onClick={() => {
+          try {
+            localStorage.setItem(PWA_INSTALL_DISMISSED_KEY, "true");
+          } catch {
+            // Dismissing still works for this page session.
+          }
+          setVisible(false);
+        }}
+      >
+        <X size={18} />
+      </button>
+    </aside>
+  );
+}
+
+function ConnectivityNotice() {
+  const [online, setOnline] = useState(() => navigator.onLine);
+
+  useEffect(() => {
+    const handleOnline = () => setOnline(true);
+    const handleOffline = () => setOnline(false);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  if (online) return null;
+  return (
+    <div className="connectivity-notice" role="status">
+      <WifiOff size={16} />
+      You are offline. Games and account features will reconnect automatically.
+    </div>
+  );
+}
+
 function catalogItemCreator(item: MarketplaceCatalogItem) {
   return item.creator?.displayName ?? "Polymons";
 }
@@ -1759,11 +2112,11 @@ function CatalogTextureTile({
 }) {
   return (
     <span className={`marketplace-texture-tile ${large ? "large" : ""}`}>
-      {item.textureUrl ? (
-        <img src={item.textureUrl} alt="" />
+      {item.textureUrl || item.modelPreviewUrl ? (
+        <img src={item.textureUrl ?? item.modelPreviewUrl ?? ""} alt="" />
       ) : (
         <span className={`shirt-texture shirt-texture-${item.id}`}>
-          {item.itemType === "pants" ? <b>PANTS</b> : <b>SHIRT</b>}
+          <b>{avatarItemTileLabel(item)}</b>
         </span>
       )}
     </span>
@@ -1775,7 +2128,7 @@ function MarketplacePage() {
   const [items, setItems] = useState<MarketplaceCatalogItem[]>([]);
   const [wardrobe, setWardrobe] = useState<Wardrobe | null>(null);
   const [query, setQuery] = useState("");
-  const [itemType, setItemType] = useState<"all" | "shirt" | "pants">("all");
+  const [itemType, setItemType] = useState<"all" | AvatarItemType>("all");
   const [priceFilter, setPriceFilter] = useState<"all" | "free" | "tix">("all");
   const [status, setStatus] = useState("");
 
@@ -1818,7 +2171,7 @@ function MarketplacePage() {
     const matchesPrice = priceFilter === "all" || item.unlockType === priceFilter;
     return matchesQuery && matchesType && matchesPrice;
   });
-  const chips = ["shirts", "pants", "free", "tix", "creator made", "classic", "new"];
+  const chips = ["shirts", "pants", "hair", "hats", "free", "tix", "creator made", "classic", "new"];
 
   return (
     <>
@@ -1839,13 +2192,15 @@ function MarketplacePage() {
         <select
           value={itemType}
           onChange={(event) =>
-            setItemType(event.currentTarget.value as "all" | "shirt" | "pants")
+            setItemType(event.currentTarget.value as "all" | AvatarItemType)
           }
           aria-label="Catalog type"
         >
           <option value="all">All items</option>
           <option value="shirt">Shirts</option>
           <option value="pants">Pants</option>
+          <option value="hair">Hair</option>
+          <option value="hat">Hats</option>
         </select>
         <select
           value={priceFilter}
@@ -1871,6 +2226,8 @@ function MarketplacePage() {
             onClick={() => {
               if (chip === "shirts") setItemType("shirt");
               else if (chip === "pants") setItemType("pants");
+              else if (chip === "hair") setItemType("hair");
+              else if (chip === "hats") setItemType("hat");
               else if (chip === "free") setPriceFilter("free");
               else if (chip === "tix") setPriceFilter("tix");
               else setQuery(chip);
@@ -1987,9 +2344,17 @@ function MarketplaceItemPage() {
           ? await withCurrentToken((accessToken) =>
               equipPants(item.id as PantsId, accessToken),
             )
-          : await withCurrentToken((accessToken) =>
-              equipShirt(item.id as ShirtId, accessToken),
-            );
+          : item.itemType === "hair"
+            ? await withCurrentToken((accessToken) =>
+                equipHair(item.id as HairId, accessToken),
+              )
+            : item.itemType === "hat"
+              ? await withCurrentToken((accessToken) =>
+                  equipHat(item.id as HatId, accessToken),
+                )
+              : await withCurrentToken((accessToken) =>
+                  equipShirt(item.id as ShirtId, accessToken),
+                );
       updateUser(result.user);
       await loadItem();
       setStatus(`${item.name} equipped.`);
@@ -2037,6 +2402,36 @@ function MarketplaceItemPage() {
           ?.textureUrl ??
         user?.equippedPantsTextureUrl ??
         null;
+  const equippedHair = wardrobe?.items.find(
+    (nextItem) => nextItem.id === wardrobe.equippedHairId,
+  );
+  const equippedHat = wardrobe?.items.find(
+    (nextItem) => nextItem.id === wardrobe.equippedHatId,
+  );
+  const previewHairId =
+    item.itemType === "hair"
+      ? (item.id as HairId)
+      : wardrobe?.equippedHairId ?? user?.equippedHairId ?? null;
+  const previewHatId =
+    item.itemType === "hat"
+      ? (item.id as HatId)
+      : wardrobe?.equippedHatId ?? user?.equippedHatId ?? null;
+  const previewHairModelUrl =
+    item.itemType === "hair"
+      ? item.modelUrl
+      : equippedHair?.modelUrl ?? user?.equippedHairModelUrl ?? null;
+  const previewHairModelFormat =
+    item.itemType === "hair"
+      ? item.modelFormat
+      : equippedHair?.modelFormat ?? user?.equippedHairModelFormat ?? null;
+  const previewHatModelUrl =
+    item.itemType === "hat"
+      ? item.modelUrl
+      : equippedHat?.modelUrl ?? user?.equippedHatModelUrl ?? null;
+  const previewHatModelFormat =
+    item.itemType === "hat"
+      ? item.modelFormat
+      : equippedHat?.modelFormat ?? user?.equippedHatModelFormat ?? null;
 
   return (
     <section className="marketplace-detail">
@@ -2048,13 +2443,19 @@ function MarketplaceItemPage() {
               pantsId={previewPantsId}
               shirtTextureUrl={previewShirtTextureUrl}
               pantsTextureUrl={previewPantsTextureUrl}
+              hairId={previewHairId}
+              hairModelUrl={previewHairModelUrl}
+              hairModelFormat={previewHairModelFormat}
+              hatId={previewHatId}
+              hatModelUrl={previewHatModelUrl}
+              hatModelFormat={previewHatModelFormat}
               appearance={wardrobe?.avatarAppearance ?? user?.avatarAppearance}
             />
           </Suspense>
         </div>
         <div className="marketplace-preview-footer">
           <CatalogTextureTile item={item} large />
-          <span>{item.itemType === "pants" ? "Pants" : "Shirt"} template</span>
+          <span>{avatarItemTypeLabel(item.itemType)}</span>
         </div>
       </div>
       <div className="marketplace-detail-copy">
@@ -2116,7 +2517,7 @@ function MarketplaceItemPage() {
           </div>
           <div>
             <dt>Type</dt>
-            <dd>{item.itemType === "pants" ? "Pants" : "Shirt"}</dd>
+            <dd>{avatarItemTypeLabel(item.itemType)}</dd>
           </div>
           <div>
             <dt>Materials</dt>
@@ -2144,7 +2545,7 @@ function WardrobePage() {
   const { user, session, showAuth, refresh, updateUser } = useAuth();
   const [wardrobe, setWardrobe] = useState<Wardrobe | null>(null);
   const [selectedId, setSelectedId] = useState<AvatarItemId | null>(null);
-  const [view, setView] = useState<"inventory" | "shirts" | "pants">(
+  const [view, setView] = useState<"inventory" | "shirts" | "pants" | "hair" | "hats">(
     "inventory",
   );
   const [status, setStatus] = useState("");
@@ -2172,6 +2573,8 @@ function WardrobePage() {
           ? current
           : result.equippedShirtId ??
             result.equippedPantsId ??
+            result.equippedHairId ??
+            result.equippedHatId ??
             result.items.find((item) => item.owned)?.id ??
             null,
       );
@@ -2206,7 +2609,9 @@ function WardrobePage() {
       (item) =>
         (view === "inventory" && item.owned) ||
         (view === "shirts" && item.itemType === "shirt" && item.owned) ||
-        (view === "pants" && item.itemType === "pants" && item.owned),
+        (view === "pants" && item.itemType === "pants" && item.owned) ||
+        (view === "hair" && item.itemType === "hair" && item.owned) ||
+        (view === "hats" && item.itemType === "hat" && item.owned),
     ) ?? [];
   const activeSession = session;
 
@@ -2246,7 +2651,7 @@ function WardrobePage() {
 
   async function equipSelected(
     itemId: AvatarItemId | null,
-    itemType: "shirt" | "pants",
+    itemType: AvatarItemType,
   ) {
     setWorking(true);
     setStatus("");
@@ -2256,12 +2661,20 @@ function WardrobePage() {
           ? await withCurrentToken((accessToken) =>
               equipPants(itemId as PantsId | null, accessToken),
             )
-          : await withCurrentToken((accessToken) =>
-              equipShirt(itemId as ShirtId | null, accessToken),
-            );
+          : itemType === "hair"
+            ? await withCurrentToken((accessToken) =>
+                equipHair(itemId as HairId | null, accessToken),
+              )
+            : itemType === "hat"
+              ? await withCurrentToken((accessToken) =>
+                  equipHat(itemId as HatId | null, accessToken),
+                )
+              : await withCurrentToken((accessToken) =>
+                  equipShirt(itemId as ShirtId | null, accessToken),
+                );
       updateUser(result.user);
       await loadWardrobe();
-      const itemName = itemType === "pants" ? "Pants" : "Shirt";
+      const itemName = avatarItemTypeLabel(itemType);
       setStatus(itemId ? `${itemName} equipped.` : `${itemName} removed.`);
     } catch (error) {
       setStatus(
@@ -2290,6 +2703,36 @@ function WardrobePage() {
       ? selected.textureUrl ?? null
       : wardrobe?.items.find((item) => item.id === wardrobe.equippedPantsId)
           ?.textureUrl ?? null;
+  const previewHair = wardrobe?.items.find(
+    (item) => item.id === wardrobe.equippedHairId,
+  );
+  const previewHat = wardrobe?.items.find(
+    (item) => item.id === wardrobe.equippedHatId,
+  );
+  const previewHairId =
+    selected?.itemType === "hair"
+      ? (selected.id as HairId)
+      : wardrobe?.equippedHairId ?? null;
+  const previewHatId =
+    selected?.itemType === "hat"
+      ? (selected.id as HatId)
+      : wardrobe?.equippedHatId ?? null;
+  const previewHairModelUrl =
+    selected?.itemType === "hair"
+      ? selected.modelUrl ?? null
+      : previewHair?.modelUrl ?? null;
+  const previewHairModelFormat =
+    selected?.itemType === "hair"
+      ? selected.modelFormat ?? null
+      : previewHair?.modelFormat ?? null;
+  const previewHatModelUrl =
+    selected?.itemType === "hat"
+      ? selected.modelUrl ?? null
+      : previewHat?.modelUrl ?? null;
+  const previewHatModelFormat =
+    selected?.itemType === "hat"
+      ? selected.modelFormat ?? null
+      : previewHat?.modelFormat ?? null;
 
   function setBodyColor(part: keyof AvatarBodyColors, color: string) {
     setAppearance((current) => ({
@@ -2343,13 +2786,19 @@ function WardrobePage() {
                 pantsId={previewPantsId}
                 shirtTextureUrl={previewShirtTextureUrl}
                 pantsTextureUrl={previewPantsTextureUrl}
+                hairId={previewHairId}
+                hairModelUrl={previewHairModelUrl}
+                hairModelFormat={previewHairModelFormat}
+                hatId={previewHatId}
+                hatModelUrl={previewHatModelUrl}
+                hatModelFormat={previewHatModelFormat}
                 appearance={appearance}
               />
             </Suspense>
           </div>
           <div className="wardrobe-preview-copy">
             <span>Previewing</span>
-            <h2>{selected?.name ?? "No shirt"}</h2>
+            <h2>{selected?.name ?? "No avatar item"}</h2>
             <p>{selected?.description ?? "Your default block avatar."}</p>
             {selected?.owned ? (
               selected.equipped ? (
@@ -2510,6 +2959,18 @@ function WardrobePage() {
             >
               Pants
             </button>
+            <button
+              className={view === "hair" ? "active" : ""}
+              onClick={() => setView("hair")}
+            >
+              Hair
+            </button>
+            <button
+              className={view === "hats" ? "active" : ""}
+              onClick={() => setView("hats")}
+            >
+              Hats
+            </button>
           </div>
           <div className="shirt-grid">
             {visibleItems.map((item) => (
@@ -2518,9 +2979,9 @@ function WardrobePage() {
                 className={`shirt-card ${selectedId === item.id ? "selected" : ""}`}
                 onClick={() => setSelectedId(item.id)}
               >
-                {item.textureUrl ? (
+                {item.textureUrl || item.modelPreviewUrl ? (
                   <span className="shirt-texture shirt-texture-uploaded">
-                    <img src={item.textureUrl} alt="" />
+                    <img src={item.textureUrl ?? item.modelPreviewUrl ?? ""} alt="" />
                   </span>
                 ) : (
                   <span className={`shirt-texture shirt-texture-${item.id}`}>
@@ -2535,6 +2996,9 @@ function WardrobePage() {
                     {item.id === "orange-polymons-pants" && <b>ORANGE</b>}
                     {item.id === "polymons-varsity-jacket" && <b>JACKET</b>}
                     {item.id === "polymons-varsity-pants" && <b>VARSITY</b>}
+                    {(item.itemType === "hair" || item.itemType === "hat") && (
+                      <b>{avatarItemTileLabel(item)}</b>
+                    )}
                   </span>
                 )}
                 <span className="shirt-card-copy">
@@ -2554,7 +3018,7 @@ function WardrobePage() {
               </button>
             ))}
             {visibleItems.length === 0 && (
-              <p className="muted-copy">No clothing appears in this section yet.</p>
+              <p className="muted-copy">No avatar items appear in this section yet.</p>
             )}
           </div>
         </div>
@@ -2974,27 +3438,64 @@ function PlayerOptionsDialog({
         <p>{description}</p>
         {error && <div className="auth-error">{error}</div>}
         <div className="player-options-actions">
-          <button
-            className="primary-button"
-            type="button"
-            onClick={onOpen}
-            disabled={opening}
-          >
-            <Gamepad2 size={18} />
-            {opening ? "Opening..." : openLabel}
-          </button>
-          <a
-            className="secondary-button"
-            href={POLYMONS_PLAYER_DOWNLOAD_URL}
-          >
-            <Download size={18} />
-            Download Player
-          </a>
+          {!IS_MOBILE_BROWSER && (
+            <button
+              className="primary-button"
+              type="button"
+              onClick={onOpen}
+              disabled={opening}
+            >
+              <Gamepad2 size={18} />
+              {opening ? "Opening..." : openLabel}
+            </button>
+          )}
+          {!IS_MOBILE_BROWSER && (
+            <a
+              className="secondary-button"
+              href={POLYMONS_PLAYER_DOWNLOAD_URL}
+            >
+              <Download size={18} />
+              {IS_MAC_DESKTOP_BROWSER
+                ? `Download Player for Mac ${
+                    IS_LIKELY_APPLE_SILICON_BROWSER ? "Apple Silicon" : "Intel"
+                  }`
+                : "Download Player for Windows"}
+            </a>
+          )}
         </div>
-        <p className="player-options-note">
-          Windows may show a SmartScreen warning because the Player is not
-          code-signed yet.
-        </p>
+        {IS_MOBILE_BROWSER ? (
+          <>
+            <div className="player-download-links mobile-download-links" aria-label="Mobile play options">
+              {IS_ANDROID_BROWSER && (
+                <a href={POLYMONS_PLAYER_ANDROID_DOWNLOAD_URL}>
+                  Android APK
+                </a>
+              )}
+              <button type="button" onClick={onClose}>
+                Play in browser
+              </button>
+            </div>
+            <p className="player-options-note">
+              {IS_ANDROID_BROWSER
+                ? "Install the Android APK for the app experience, or close this and use browser play."
+                : IS_IOS_BROWSER
+                  ? "iPhone and iPad use browser play for now. A native iOS app will need a Mac/App Store path later."
+                  : "Use browser play on this device."}
+            </p>
+          </>
+        ) : (
+          <>
+            <div className="player-download-links" aria-label="Player downloads">
+              <a href={POLYMONS_PLAYER_WINDOWS_DOWNLOAD_URL}>Windows</a>
+              <a href={POLYMONS_PLAYER_MAC_ARM64_DOWNLOAD_URL}>Mac Apple Silicon</a>
+              <a href={POLYMONS_PLAYER_MAC_X64_DOWNLOAD_URL}>Mac Intel</a>
+            </div>
+            <p className="player-options-note">
+              Windows may show SmartScreen and macOS may show Gatekeeper warnings
+              because the apps are not code-signed yet.
+            </p>
+          </>
+        )}
       </section>
     </div>
   );
@@ -3006,11 +3507,16 @@ function CreatePage() {
   const [submissions, setSubmissions] = useState<AvatarCatalogSubmission[]>([]);
   const [catalogStatus, setCatalogStatus] = useState("");
   const [uploadBusy, setUploadBusy] = useState(false);
-  const [uploadType, setUploadType] = useState<"shirt" | "pants">("shirt");
+  const [uploadType, setUploadType] = useState<AvatarItemType>("shirt");
   const [uploadName, setUploadName] = useState("");
   const [uploadDescription, setUploadDescription] = useState("");
   const [uploadPrice, setUploadPrice] = useState("0");
   const [uploadTexture, setUploadTexture] = useState<string | null>(null);
+  const [uploadModel, setUploadModel] = useState<{
+    dataUrl: string;
+    format: AvatarModelFormat;
+    name: string;
+  } | null>(null);
   const loadSubmissions = useCallback(async () => {
     if (!session) return;
     try {
@@ -3039,8 +3545,13 @@ function CreatePage() {
       showAuth();
       return;
     }
-    if (!uploadTexture) {
+    const accessoryUpload = uploadType === "hair" || uploadType === "hat";
+    if (!accessoryUpload && !uploadTexture) {
       setCatalogStatus("Choose a PNG made with the clothing template first.");
+      return;
+    }
+    if (accessoryUpload && !uploadModel) {
+      setCatalogStatus("Choose a supported model file first.");
       return;
     }
     const priceTix = Math.max(0, Math.floor(Number(uploadPrice) || 0));
@@ -3062,7 +3573,9 @@ function CreatePage() {
           name: uploadName,
           description: uploadDescription,
           priceTix,
-          textureData: uploadTexture,
+          textureData: uploadTexture ?? undefined,
+          modelData: uploadModel?.dataUrl,
+          modelFormat: uploadModel?.format,
         },
         activeSession.accessToken,
       );
@@ -3070,6 +3583,7 @@ function CreatePage() {
       setUploadDescription("");
       setUploadPrice("0");
       setUploadTexture(null);
+      setUploadModel(null);
       setCatalogStatus("Uploaded for review. It will appear in the catalog after approval.");
       await loadSubmissions();
     } catch (error) {
@@ -3091,10 +3605,46 @@ function CreatePage() {
             Start with Baseplate and shape it into your own game.
           </p>
           <div className="create-actions">
-            <a href={POLY_STUDIO_DOWNLOAD_URL} className="primary-button">
-              <Download size={19} />
-              Download Poly Studio
-            </a>
+            {IS_MOBILE_BROWSER ? (
+              <div className="mobile-app-download-card">
+                <strong>
+                  {IS_ANDROID_BROWSER
+                    ? "Poly Studio is available on Android."
+                    : "Mobile Studio is limited on this device."}
+                </strong>
+                <span>
+                  {IS_ANDROID_BROWSER
+                    ? "Install the Android Studio APK to build on your phone, or use the desktop app for heavier projects."
+                    : "iPhone and iPad can use the website for account and catalog work. Native Studio needs a future iOS build."}
+                </span>
+                {IS_ANDROID_BROWSER && (
+                  <a href={POLY_STUDIO_ANDROID_DOWNLOAD_URL} className="primary-button">
+                    <Download size={19} />
+                    Download Studio APK
+                  </a>
+                )}
+              </div>
+            ) : (
+              <>
+                <a href={POLY_STUDIO_DOWNLOAD_URL} className="primary-button">
+                  <Download size={19} />
+                  {IS_MAC_DESKTOP_BROWSER
+                    ? `Download for Mac ${
+                        IS_LIKELY_APPLE_SILICON_BROWSER ? "Apple Silicon" : "Intel"
+                      }`
+                    : "Download for Windows"}
+                </a>
+                <a href={POLY_STUDIO_WINDOWS_DOWNLOAD_URL} className="secondary-button">
+                  Windows
+                </a>
+                <a href={POLY_STUDIO_MAC_ARM64_DOWNLOAD_URL} className="secondary-button">
+                  Mac Apple Silicon
+                </a>
+                <a href={POLY_STUDIO_MAC_X64_DOWNLOAD_URL} className="secondary-button">
+                  Mac Intel
+                </a>
+              </>
+            )}
             <label className="secondary-button model-import-button">
               Import .pmxl model
               <input
@@ -3158,11 +3708,12 @@ function CreatePage() {
         <SectionHeading title="Avatar catalog uploads" />
         <div className="catalog-upload-layout">
           <div className="catalog-upload-card">
-            <h2>Submit clothing for review</h2>
+            <h2>Submit avatar items for review</h2>
             <p>
-              Upload a PNG from your PC. Polymons uses the classic 585 x 559
-              shirt/pants layout, so old Roblox classic clothing templates work
-              here too. Limit: 5 uploads a day.
+              Upload classic clothing PNGs or head accessories from Blender and
+              other modeling apps. GLB, GLTF, and OBJ render now; FBX, STL, DAE,
+              ZIP, and Roblox files can be submitted for review/import conversion.
+              Limit: 5 uploads a day.
             </p>
             <div className="template-download-actions catalog-template-actions">
               <a
@@ -3194,12 +3745,17 @@ function CreatePage() {
                     Type
                     <select
                       value={uploadType}
-                      onChange={(event) =>
-                        setUploadType(event.currentTarget.value as "shirt" | "pants")
-                      }
+                      onChange={(event) => {
+                        setUploadType(event.currentTarget.value as AvatarItemType);
+                        setUploadTexture(null);
+                        setUploadModel(null);
+                        setCatalogStatus("");
+                      }}
                     >
                       <option value="shirt">Shirt</option>
                       <option value="pants">Pants</option>
+                      <option value="hair">Hair</option>
+                      <option value="hat">Hat</option>
                     </select>
                   </label>
                   <label>
@@ -3221,36 +3777,79 @@ function CreatePage() {
                       onChange={(event) => setUploadName(event.currentTarget.value)}
                     />
                   </label>
-                  <label>
-                    PNG file
-                    <input
-                      type="file"
-                      accept="image/png"
-                      onChange={async (event) => {
-                        const file = event.currentTarget.files?.[0];
-                        if (!file) return;
-                        if (file.size > 2_000_000) {
-                          setCatalogStatus("PNG must be 2 MB or smaller.");
-                          return;
-                        }
-                        try {
-                          const normalized = await clothingFileToTemplateDataUrl(file);
-                          setUploadTexture(normalized.dataUrl);
-                          setCatalogStatus(
-                            normalized.normalized
-                              ? `Normalized ${normalized.width} x ${normalized.height} PNG to the classic 585 x 559 template.`
-                              : "Classic 585 x 559 template detected.",
-                          );
-                        } catch (error) {
-                          setCatalogStatus(
-                            error instanceof Error
-                              ? error.message
-                              : "Could not load this PNG.",
-                          );
-                        }
-                      }}
-                    />
-                  </label>
+                  {uploadType === "shirt" || uploadType === "pants" ? (
+                    <label>
+                      PNG file
+                      <input
+                        type="file"
+                        accept="image/png"
+                        onChange={async (event) => {
+                          const file = event.currentTarget.files?.[0];
+                          if (!file) return;
+                          if (file.size > 2_000_000) {
+                            setCatalogStatus("PNG must be 2 MB or smaller.");
+                            return;
+                          }
+                          try {
+                            const normalized = await clothingFileToTemplateDataUrl(file);
+                            setUploadTexture(normalized.dataUrl);
+                            setUploadModel(null);
+                            setCatalogStatus(
+                              normalized.normalized
+                                ? `Normalized ${normalized.width} x ${normalized.height} PNG to the classic 585 x 559 template.`
+                                : "Classic 585 x 559 template detected.",
+                            );
+                          } catch (error) {
+                            setCatalogStatus(
+                              error instanceof Error
+                                ? error.message
+                                : "Could not load this PNG.",
+                            );
+                          }
+                        }}
+                      />
+                    </label>
+                  ) : (
+                    <label>
+                      Model file
+                      <input
+                        type="file"
+                        accept={ACCESSORY_MODEL_ACCEPT}
+                        onChange={async (event) => {
+                          const file = event.currentTarget.files?.[0];
+                          if (!file) return;
+                          const format = modelFormatFromFile(file);
+                          if (!format) {
+                            setCatalogStatus("Use GLB, GLTF, OBJ, FBX, STL, DAE, ZIP, RBXM, RBXMX, RBLX, or RBXLX.");
+                            return;
+                          }
+                          if (file.size > 8_000_000) {
+                            setCatalogStatus("Accessory model must be 8 MB or smaller.");
+                            return;
+                          }
+                          try {
+                            setUploadModel({
+                              dataUrl: await fileToDataUrl(file, "model"),
+                              format,
+                              name: file.name,
+                            });
+                            setUploadTexture(null);
+                            setCatalogStatus(
+                              format === "glb" || format === "gltf" || format === "obj"
+                                ? `${file.name} ready. It will render on the avatar after approval.`
+                                : `${file.name} accepted for review. This format needs conversion before it can render in-game.`,
+                            );
+                          } catch (error) {
+                            setCatalogStatus(
+                              error instanceof Error
+                                ? error.message
+                                : "Could not read this model.",
+                            );
+                          }
+                        }}
+                      />
+                    </label>
+                  )}
                 </div>
                 <label className="catalog-description-field">
                   Description
@@ -3265,6 +3864,11 @@ function CreatePage() {
                 </label>
                 {uploadTexture && (
                   <img className="catalog-upload-preview" src={uploadTexture} alt="" />
+                )}
+                {uploadModel && (
+                  <p className="catalog-model-selected">
+                    Model selected: {uploadModel.name} ({uploadModel.format.toUpperCase()})
+                  </p>
                 )}
                 <button
                   className="primary-button"
@@ -3288,7 +3892,13 @@ function CreatePage() {
                   className="catalog-submission-row"
                   to={`/create/catalog/${item.id}`}
                 >
-                  {item.textureUrl ? <img src={item.textureUrl} alt="" /> : <span />}
+                  {item.textureUrl || item.modelPreviewUrl ? (
+                    <img src={item.textureUrl ?? item.modelPreviewUrl ?? ""} alt="" />
+                  ) : (
+                    <span className="catalog-model-badge">
+                      {avatarItemTileLabel(item)}
+                    </span>
+                  )}
                   <div>
                     <strong>{item.name}</strong>
                     <small>
@@ -3356,10 +3966,17 @@ function CatalogItemPage() {
       <Link to="/create" className="text-button">Back to Create</Link>
       <div className="catalog-item-hero">
         <div className="catalog-item-texture">
-          {item.textureUrl ? <img src={item.textureUrl} alt="" /> : <span />}
+          {item.textureUrl || item.modelPreviewUrl ? (
+            <img src={item.textureUrl ?? item.modelPreviewUrl ?? ""} alt="" />
+          ) : (
+            <span className="catalog-model-large">
+              {avatarItemTileLabel(item)}
+              {item.modelFormat && <small>{item.modelFormat.toUpperCase()}</small>}
+            </span>
+          )}
         </div>
         <div>
-          <span className="eyebrow">{item.itemType}</span>
+          <span className="eyebrow">{avatarItemTypeLabel(item.itemType)}</span>
           <h1>{item.name}</h1>
           <p>{item.description || "No description yet."}</p>
           <strong>{item.priceTix.toLocaleString()} Tix</strong>

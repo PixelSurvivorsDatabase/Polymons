@@ -24,6 +24,7 @@ html {
   min-width: 320px;
   min-height: 100%;
   background: var(--bg);
+  overscroll-behavior: none;
 }
 
 body {
@@ -35,6 +36,32 @@ body {
     var(--bg);
 }
 
+html.polymons-mobile-game-active,
+html.polymons-mobile-game-active body {
+  width: 100%;
+  height: var(--polymons-mobile-vh, 100dvh);
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+html.polymons-mobile-game-active #root,
+html.polymons-mobile-game-active .app-shell,
+html.polymons-mobile-game-active .app-main,
+html.polymons-mobile-game-active .page {
+  width: var(--polymons-mobile-vw, 100vw);
+  height: var(--polymons-mobile-vh, 100dvh);
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+html.polymons-mobile-game-active .topbar,
+html.polymons-mobile-game-active .sidebar,
+html.polymons-mobile-game-active .mobile-nav {
+  display: none !important;
+}
+
 button,
 input {
   font: inherit;
@@ -43,6 +70,7 @@ input {
 button,
 a {
   -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 
 button {
@@ -299,6 +327,39 @@ h3,
   display: block;
   color: var(--muted);
   margin-top: 4px;
+}
+
+.catalog-model-badge,
+.catalog-model-large {
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 30% 20%, rgba(139, 92, 246, 0.42), transparent 36%),
+    linear-gradient(135deg, rgba(31, 29, 44, 0.95), rgba(12, 11, 18, 0.95));
+  color: #f5f1ff;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.catalog-model-badge {
+  width: 54px;
+  height: 54px;
+  font-size: 11px;
+}
+
+.catalog-model-large {
+  width: 100%;
+  height: 100%;
+  gap: 6px;
+  font-size: 22px;
+}
+
+.catalog-model-large small,
+.catalog-model-selected {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .catalog-item-hero {
@@ -1199,10 +1260,145 @@ h3,
 
 .discover-section {
   margin-top: 35px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.06);
+  border-radius: 10px;
+  background: #0f0f13;
+  padding: 12px 12px 20px;
 }
 
 .discover-grid {
   row-gap: 32px;
+}
+
+.discover-shelves {
+  display: grid;
+  gap: 32px;
+}
+
+.discover-shelf {
+  min-width: 0;
+}
+
+.discover-shelf > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.discover-shelf h2 {
+  margin: 0;
+  color: #fff;
+  font-size: 21px;
+  letter-spacing: -0.6px;
+}
+
+.discover-info {
+  position: relative;
+  display: grid;
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  border: 1px solid rgba(255,255,255,.8);
+  border-radius: 999px;
+  color: #fff;
+  cursor: help;
+  font-size: 11px;
+  font-weight: 900;
+  place-items: center;
+}
+
+.discover-info small {
+  position: absolute;
+  z-index: 6;
+  right: 0;
+  bottom: calc(100% + 8px);
+  display: none;
+  width: 270px;
+  border-radius: 4px;
+  background: rgba(92,92,92,.96);
+  color: #fff;
+  padding: 5px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.18;
+  text-align: left;
+}
+
+.discover-info:hover small,
+.discover-info:focus small {
+  display: block;
+}
+
+.discover-row {
+  display: grid;
+  grid-auto-columns: 150px;
+  grid-auto-flow: column;
+  gap: 14px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 8px;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+}
+
+.discover-row::-webkit-scrollbar {
+  height: 8px;
+}
+
+.discover-row::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(255,255,255,.16);
+}
+
+.discover-game-card {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  scroll-snap-align: start;
+}
+
+.discover-game-card .game-art {
+  aspect-ratio: 1 / 1;
+  border: 0;
+  border-radius: 7px;
+}
+
+.discover-game-card:hover .game-art {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 28px rgba(0,0,0,.42);
+}
+
+.discover-game-card h3 {
+  display: -webkit-box;
+  overflow: hidden;
+  min-height: 39px;
+  margin: 7px 0 0;
+  color: #fff;
+  font-size: 15px;
+  line-height: 1.28;
+  text-overflow: ellipsis;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.discover-card-stats {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 9px;
+  color: #d1d5dc;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.discover-card-stats span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
 }
 
 .back-link {
@@ -1311,12 +1507,27 @@ h3,
   position: relative;
 }
 
+.browser-game-wrap[data-mobile-game="true"],
 .browser-game-wrap:has(.baseplate-player[data-mobile="true"]) {
   position: fixed;
   z-index: 1000;
-  inset: 0;
+  top: var(--polymons-mobile-top, 0);
+  right: 0;
+  left: 0;
+  bottom: auto;
+  width: var(--polymons-mobile-vw, 100vw);
+  height: var(--polymons-mobile-vh, 100dvh);
   overflow: hidden;
   background: #050509;
+  touch-action: none;
+}
+
+.browser-game-wrap[data-mobile-game="true"] > .baseplate-player {
+  width: var(--polymons-mobile-vw, 100vw);
+  height: var(--polymons-mobile-vh, 100dvh);
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
 }
 
 .connection-pill {
@@ -1832,6 +2043,40 @@ h3,
   font-size: 11px;
 }
 
+.player-download-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.player-download-links a {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.035);
+  color: #cfc7df;
+  padding: 6px 9px;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.player-download-links button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.035);
+  color: #cfc7df;
+  cursor: pointer;
+  padding: 6px 9px;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.mobile-download-links a,
+.mobile-download-links button {
+  flex: 1;
+  text-align: center;
+}
+
 .profile-actions {
   margin-left: auto;
 }
@@ -1847,6 +2092,17 @@ h3,
   background: #8ec8ed;
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.36);
   isolation: isolate;
+}
+
+.baseplate-player[data-mobile="true"] {
+  width: var(--polymons-mobile-vw, 100vw);
+  height: var(--polymons-mobile-vh, 100dvh);
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .baseplate-player-loading {
@@ -1868,6 +2124,15 @@ h3,
   height: 100%;
   outline: none;
   cursor: default;
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.baseplate-player[data-mobile="true"] canvas {
+  width: var(--polymons-mobile-vw, 100vw);
+  height: var(--polymons-mobile-vh, 100dvh);
 }
 
 .baseplate-player[data-shift-lock="true"] canvas {
@@ -1923,6 +2188,14 @@ h3,
   background: rgba(16, 17, 19, 0.62);
   padding: 24px;
   backdrop-filter: blur(5px);
+}
+
+.baseplate-player[data-mobile="true"] .game-menu-layer {
+  padding:
+    max(14px, env(safe-area-inset-top))
+    max(14px, env(safe-area-inset-right))
+    max(14px, env(safe-area-inset-bottom))
+    max(14px, env(safe-area-inset-left));
 }
 
 .game-menu-panel {
@@ -2170,6 +2443,20 @@ h3,
   backdrop-filter: blur(13px);
 }
 
+.baseplate-player[data-mobile="true"] .game-chat {
+  top: max(10px, env(safe-area-inset-top));
+  left: max(10px, env(safe-area-inset-left));
+  width: min(
+    360px,
+    calc(100vw - max(10px, env(safe-area-inset-left)) - max(10px, env(safe-area-inset-right)))
+  );
+  max-height: calc(var(--polymons-mobile-vh, 100dvh) - 20px);
+}
+
+.baseplate-player[data-mobile="true"] .game-chat-log {
+  height: min(132px, calc(var(--polymons-mobile-vh, 100dvh) - 158px));
+}
+
 .game-chat-toggle {
   display: flex;
   width: 100%;
@@ -2364,13 +2651,27 @@ h3,
   background: rgba(17, 20, 30, 0.62);
   color: #fff;
   touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
   user-select: none;
   backdrop-filter: blur(8px);
 }
 
+.touch-controls button:active,
+.mobile-joystick:active {
+  filter: brightness(1.18);
+}
+
+.baseplate-player[data-graphics="low"] .touch-controls button,
+.baseplate-player[data-graphics="low"] .mobile-joystick,
+.baseplate-player[data-graphics="low"] .game-menu-button,
+.baseplate-player[data-graphics="low"] .mobile-game-menu button {
+  backdrop-filter: none;
+}
+
 .touch-movement {
-  bottom: 18px;
-  left: 18px;
+  bottom: max(18px, env(safe-area-inset-bottom));
+  left: max(18px, env(safe-area-inset-left));
   grid-template-columns: repeat(3, 42px);
   grid-template-rows: repeat(2, 42px);
   gap: 5px;
@@ -2400,8 +2701,8 @@ h3,
 }
 
 .touch-actions {
-  right: 18px;
-  bottom: 20px;
+  right: max(18px, env(safe-area-inset-right));
+  bottom: max(20px, env(safe-area-inset-bottom));
   gap: 8px;
 }
 
@@ -2433,6 +2734,11 @@ h3,
   pointer-events: none;
 }
 
+.baseplate-player[data-mobile="true"] .game-position {
+  right: max(12px, env(safe-area-inset-right));
+  bottom: max(12px, env(safe-area-inset-bottom));
+}
+
 .death-status strong {
   font-size: 12px;
 }
@@ -2458,6 +2764,8 @@ h3,
   background: rgba(17, 20, 30, 0.36);
   box-shadow: inset 0 0 30px rgba(0, 0, 0, 0.22);
   touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
   user-select: none;
   backdrop-filter: blur(8px);
 }
@@ -2473,7 +2781,13 @@ h3,
   border-radius: 50%;
   background: rgba(112, 78, 192, 0.78);
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.24);
+  will-change: transform;
   pointer-events: none;
+}
+
+.touch-actions button.active {
+  border-color: rgba(186, 145, 255, 0.75);
+  background: rgba(116, 72, 205, 0.9);
 }
 
 .mobile-game-menu {
@@ -2557,15 +2871,22 @@ h3,
   font-weight: 800;
 }
 
+.mobile-landscape-card button.secondary {
+  margin-top: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.07);
+  color: #dcd6e8;
+}
+
 .discover-search {
   display: flex;
   max-width: 620px;
   align-items: center;
   gap: 9px;
-  border: 1px solid var(--line);
-  border-radius: 13px;
-  background: var(--panel);
-  margin-bottom: 26px;
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 9px;
+  background: #1b1c23;
+  margin-bottom: 22px;
   padding: 0 14px;
 }
 
@@ -3144,6 +3465,32 @@ h3,
   color: var(--muted);
   font-size: 13px;
   line-height: 1.5;
+}
+
+.mobile-app-download-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgba(139, 92, 246, 0.26);
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(139, 92, 246, 0.22), transparent 34%),
+    rgba(15, 13, 24, 0.82);
+  padding: 16px;
+}
+
+.mobile-app-download-card strong {
+  color: #fff;
+  font-size: 15px;
+}
+
+.mobile-app-download-card span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.mobile-app-download-card .primary-button {
+  justify-content: center;
 }
 
 .shirt-template-download {
@@ -3754,6 +4101,86 @@ h3,
   font-size: 13px;
 }
 
+.ios-install-prompt {
+  position: fixed;
+  z-index: 80;
+  right: max(14px, env(safe-area-inset-right));
+  bottom: calc(78px + env(safe-area-inset-bottom));
+  display: grid;
+  width: min(420px, calc(100vw - 28px));
+  grid-template-columns: 48px minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid rgba(178, 125, 255, 0.3);
+  border-radius: 17px;
+  background: rgba(17, 14, 26, 0.96);
+  padding: 12px;
+  box-shadow: 0 18px 55px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(22px);
+}
+
+.ios-install-prompt img {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+}
+
+.ios-install-prompt > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ios-install-prompt strong {
+  font-size: 13px;
+}
+
+.ios-install-prompt span {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.ios-install-prompt > button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 0;
+  border-radius: 10px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.connectivity-notice {
+  position: fixed;
+  z-index: 100;
+  top: max(10px, env(safe-area-inset-top));
+  left: 50%;
+  display: flex;
+  max-width: calc(100vw - 24px);
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(255, 190, 92, 0.32);
+  border-radius: 999px;
+  background: rgba(31, 24, 15, 0.96);
+  padding: 9px 14px;
+  color: #ffd797;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+  transform: translateX(-50%);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+.polymons-mobile-game-active .ios-install-prompt {
+  display: none;
+}
+
 @media (max-width: 1180px) {
   .wardrobe-layout {
     grid-template-columns: 1fr;
@@ -3854,6 +4281,20 @@ h3,
 
   .game-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .discover-section {
+    border-radius: 0;
+    margin-inline: -22px;
+    padding-inline: 12px;
+  }
+
+  .discover-row {
+    grid-auto-columns: 132px;
+  }
+
+  .discover-shelf h2 {
+    font-size: 19px;
   }
 
   .game-detail-hero,
@@ -4290,14 +4731,19 @@ h3,
   .browser-game-wrap {
     position: fixed;
     z-index: 1000;
-    inset: 0;
+    top: var(--polymons-mobile-top, 0);
+    right: 0;
+    left: 0;
+    bottom: auto;
+    width: var(--polymons-mobile-vw, 100vw);
+    height: var(--polymons-mobile-vh, 100dvh);
     overflow: hidden;
     background: #050509;
   }
 
   .baseplate-player {
-    width: 100vw;
-    height: 100svh;
+    width: var(--polymons-mobile-vw, 100vw);
+    height: var(--polymons-mobile-vh, 100dvh);
     min-height: 0;
     border: 0;
     border-radius: 0;
@@ -4305,12 +4751,16 @@ h3,
   }
 
   .baseplate-player canvas {
-    width: 100vw;
-    height: 100svh;
+    width: var(--polymons-mobile-vw, 100vw);
+    height: var(--polymons-mobile-vh, 100dvh);
   }
 
   .touch-controls {
     display: grid;
+  }
+
+  .game-chat-form input {
+    font-size: 16px;
   }
 
   .touch-movement {
@@ -4334,11 +4784,39 @@ h3,
   .game-hud-right {
     display: none;
   }
+
+  .game-position,
+  .game-hud-left {
+    display: none;
+  }
+}
+
+@media (pointer: coarse) and (max-height: 430px) and (orientation: landscape) {
+  .mobile-joystick {
+    width: 112px;
+    height: 112px;
+  }
+
+  .mobile-joystick-knob {
+    width: 50px;
+    height: 50px;
+    margin: -25px;
+  }
+
+  .touch-actions button {
+    min-width: 62px;
+    min-height: 48px;
+    padding: 9px 11px;
+  }
+
+  .game-chat-log {
+    height: 82px;
+  }
 }
 
 @media (pointer: coarse) and (max-width: 1100px) and (orientation: landscape) {
   .baseplate-player {
-    height: 100svh;
+    height: var(--polymons-mobile-vh, 100dvh);
   }
 
   :fullscreen .baseplate-player,
@@ -4360,5 +4838,256 @@ h3,
   :-webkit-full-screen .topbar,
   :-webkit-full-screen .sidebar {
     display: none;
+  }
+}
+
+/* The native Android shell favors stable scrolling and inexpensive surfaces. */
+html.polymons-native-app,
+html.polymons-native-app body {
+  min-height: 100%;
+  overscroll-behavior-y: contain;
+}
+
+.polymons-native-app body {
+  background: var(--bg);
+}
+
+.polymons-native-app .sidebar {
+  display: none;
+}
+
+.polymons-native-app .app-main {
+  min-height: 100dvh;
+  margin-left: 0;
+}
+
+.polymons-native-app .topbar {
+  height: 58px;
+  gap: 8px;
+  background: #0c0b12;
+  padding:
+    env(safe-area-inset-top)
+    max(12px, env(safe-area-inset-right))
+    0
+    max(12px, env(safe-area-inset-left));
+  backdrop-filter: none;
+}
+
+.polymons-native-app .mobile-menu-button,
+.polymons-native-app .mobile-brand {
+  display: inline-flex;
+}
+
+.polymons-native-app .mobile-brand .brand span,
+.polymons-native-app .search kbd,
+.polymons-native-app .notification-button,
+.polymons-native-app .topbar-avatar {
+  display: none;
+}
+
+.polymons-native-app .mobile-brand .brand img {
+  width: 32px;
+  height: 32px;
+}
+
+.polymons-native-app .search-shell {
+  width: auto;
+  min-width: 0;
+  flex: 1;
+}
+
+.polymons-native-app .search {
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 10px;
+}
+
+.polymons-native-app .search input {
+  font-size: 16px;
+}
+
+.polymons-native-app .player-search-results {
+  max-height: min(56dvh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  box-shadow: none;
+}
+
+.polymons-native-app .page {
+  padding:
+    22px
+    max(14px, env(safe-area-inset-right))
+    calc(82px + env(safe-area-inset-bottom))
+    max(14px, env(safe-area-inset-left));
+  animation: none;
+}
+
+.polymons-native-app .mobile-nav {
+  position: fixed;
+  z-index: 30;
+  inset: auto 0 0;
+  display: grid;
+  height: calc(64px + env(safe-area-inset-bottom));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  border-top: 1px solid var(--line);
+  background: #0c0b12;
+  padding: 5px 7px max(5px, env(safe-area-inset-bottom));
+  backdrop-filter: none;
+}
+
+.polymons-native-app .mobile-nav a {
+  display: flex;
+  min-width: 0;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 2px;
+  border-radius: 9px;
+  color: #898392;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.polymons-native-app .mobile-nav a.active {
+  color: var(--purple-bright);
+  background: rgba(139, 92, 246, 0.12);
+}
+
+.polymons-native-app .mobile-drawer {
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  display: block;
+}
+
+.polymons-native-app .drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  border: 0;
+  background: rgba(3, 2, 7, 0.76);
+  backdrop-filter: none;
+}
+
+.polymons-native-app .drawer-panel {
+  position: relative;
+  display: grid;
+  width: min(310px, 86vw);
+  height: 100dvh;
+  align-content: start;
+  border-right: 1px solid var(--line);
+  background: #100e17;
+  padding:
+    max(20px, env(safe-area-inset-top))
+    18px
+    max(20px, env(safe-area-inset-bottom));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  box-shadow: none;
+}
+
+.polymons-native-app .hero-card {
+  min-height: 0;
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+  border-radius: 16px;
+}
+
+.polymons-native-app .hero-card::after,
+.polymons-native-app .hero-art,
+.polymons-native-app .hero-meta,
+.polymons-native-app .art-shine,
+.polymons-native-app .art-orbit {
+  display: none;
+}
+
+.polymons-native-app .hero-copy {
+  padding: 24px 20px;
+}
+
+.polymons-native-app .hero-copy h2 {
+  font-size: clamp(32px, 10vw, 44px);
+}
+
+.polymons-native-app .content-section:not(.discover-section) .game-grid {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  padding: 2px 2px 10px;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.polymons-native-app .content-section:not(.discover-section) .game-grid::-webkit-scrollbar {
+  display: none;
+}
+
+.polymons-native-app .content-section:not(.discover-section) .game-card {
+  min-width: min(76vw, 300px);
+  scroll-snap-align: start;
+}
+
+.polymons-native-app .game-card,
+.polymons-native-app .friend-server-card,
+.polymons-native-app .marketplace-card {
+  content-visibility: auto;
+  contain-intrinsic-size: 260px;
+}
+
+.polymons-native-app .game-card:hover .game-art {
+  transform: none;
+}
+
+.polymons-native-app .ios-install-prompt {
+  display: none;
+}
+
+.polymons-native-app .baseplate-player[data-mobile="true"] .touch-controls button,
+.polymons-native-app .baseplate-player[data-mobile="true"] .mobile-joystick,
+.polymons-native-app .baseplate-player[data-mobile="true"] .game-menu-button {
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
+.polymons-native-app .baseplate-player[data-mobile="true"] .mobile-joystick {
+  width: 148px;
+  height: 148px;
+  background: rgba(12, 14, 22, 0.52);
+}
+
+.polymons-native-app .baseplate-player[data-mobile="true"] .mobile-joystick-knob {
+  width: 64px;
+  height: 64px;
+  margin: -32px;
+  background: rgba(119, 78, 205, 0.92);
+  box-shadow: none;
+}
+
+.polymons-native-app .baseplate-player[data-mobile="true"] .touch-actions {
+  grid-template-columns: repeat(2, minmax(74px, auto));
+  gap: 12px;
+}
+
+.polymons-native-app .baseplate-player[data-mobile="true"] .touch-actions button {
+  min-width: 74px;
+  min-height: 58px;
+  font-size: 12px;
+}
+
+@media (orientation: landscape) and (max-height: 430px) {
+  .polymons-native-app .baseplate-player[data-mobile="true"] .mobile-joystick {
+    width: 122px;
+    height: 122px;
+  }
+
+  .polymons-native-app .baseplate-player[data-mobile="true"] .mobile-joystick-knob {
+    width: 54px;
+    height: 54px;
+    margin: -27px;
   }
 }

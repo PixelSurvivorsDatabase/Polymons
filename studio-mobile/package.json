@@ -1,0 +1,16 @@
+{
+  "name": "poly-studio-mobile-shell",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@capacitor/android": "^7.6.7",
+    "@capacitor/app": "^7.1.2",
+    "@capacitor/core": "^7.6.7",
+    "@capacitor/splash-screen": "^7.0.5",
+    "@capacitor/status-bar": "^7.0.6"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.6.7",
+    "typescript": "^5.8.3"
+  }
+}

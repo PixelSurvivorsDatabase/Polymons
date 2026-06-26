@@ -24,8 +24,22 @@ export const PANTS_IDS = [
 ] as const;
 export type BuiltInPantsId = (typeof PANTS_IDS)[number];
 export type PantsId = string;
-export type AvatarItemId = ShirtId | PantsId;
-export type AvatarItemType = "shirt" | "pants";
+export type HairId = string;
+export type HatId = string;
+export type AvatarItemId = ShirtId | PantsId | HairId | HatId;
+export type AvatarItemType = "shirt" | "pants" | "hair" | "hat";
+export type AvatarModelFormat =
+  | "glb"
+  | "gltf"
+  | "obj"
+  | "fbx"
+  | "stl"
+  | "dae"
+  | "zip"
+  | "rbxm"
+  | "rbxmx"
+  | "rblx"
+  | "rbxlx";
 export type ShirtFace = "front" | "back" | "side" | "sleeve";
 export type PantsFace = "front" | "back" | "side" | "waist";
 
@@ -39,6 +53,9 @@ export type AvatarCatalogItem = {
   priceTix: number;
   bundleKey: string | null;
   textureUrl?: string | null;
+  modelUrl?: string | null;
+  modelFormat?: AvatarModelFormat | null;
+  modelPreviewUrl?: string | null;
   creatorId?: string | null;
   createdFromUpload?: boolean;
   reviewStatus?: "pending" | "approved" | "rejected";
@@ -47,11 +64,15 @@ export type AvatarCatalogItem = {
 };
 
 export function isShirtId(value: unknown): value is ShirtId {
-  return typeof value === "string" && /^[a-z0-9][a-z0-9-]{1,63}$/.test(value);
+  return typeof value === "string" && /^[a-z0-9][a-z0-9-]{1,95}$/.test(value);
 }
 
 export function isPantsId(value: unknown): value is PantsId {
-  return typeof value === "string" && /^[a-z0-9][a-z0-9-]{1,63}$/.test(value);
+  return typeof value === "string" && /^[a-z0-9][a-z0-9-]{1,95}$/.test(value);
+}
+
+export function isAccessoryId(value: unknown): value is HairId | HatId {
+  return typeof value === "string" && /^[a-z0-9][a-z0-9-]{1,95}$/.test(value);
 }
 
 function roundedRect(

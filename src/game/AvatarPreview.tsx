@@ -1,6 +1,6 @@
 import { Canvas } from "@react-three/fiber";
 import { Suspense } from "react";
-import type { PantsId, ShirtId } from "./avatarCatalog";
+import type { AvatarModelFormat, HairId, HatId, PantsId, ShirtId } from "./avatarCatalog";
 import type { AvatarAppearance } from "./avatarAppearance";
 import { R6Avatar } from "./R6Avatar";
 
@@ -9,12 +9,24 @@ export default function AvatarPreview({
   pantsId,
   shirtTextureUrl,
   pantsTextureUrl,
+  hairId,
+  hairModelUrl,
+  hairModelFormat,
+  hatId,
+  hatModelUrl,
+  hatModelFormat,
   appearance,
 }: {
   shirtId: ShirtId | null;
   pantsId?: PantsId | null;
   shirtTextureUrl?: string | null;
   pantsTextureUrl?: string | null;
+  hairId?: HairId | null;
+  hairModelUrl?: string | null;
+  hairModelFormat?: AvatarModelFormat | null;
+  hatId?: HatId | null;
+  hatModelUrl?: string | null;
+  hatModelFormat?: AvatarModelFormat | null;
   appearance?: AvatarAppearance;
 }) {
   return (
@@ -35,8 +47,14 @@ export default function AvatarPreview({
               displayName: "",
               equippedShirtId: shirtId,
               equippedPantsId: pantsId,
+              equippedHairId: hairId,
+              equippedHatId: hatId,
               equippedShirtTextureUrl: shirtTextureUrl,
               equippedPantsTextureUrl: pantsTextureUrl,
+              equippedHairModelUrl: hairModelUrl,
+              equippedHairModelFormat: hairModelFormat,
+              equippedHatModelUrl: hatModelUrl,
+              equippedHatModelFormat: hatModelFormat,
               avatarAppearance: appearance,
             }}
           />

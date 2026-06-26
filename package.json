@@ -1,7 +1,7 @@
 {
   "name": "polymons",
   "productName": "Polymons Player",
-  "description": "The Polymons website, game server, and portable Windows Player.",
+  "description": "The Polymons website, game server, Player, and Studio.",
   "author": "Polymons",
   "private": true,
   "version": "0.1.0",
@@ -9,8 +9,16 @@
   "main": "player-dist/main/main.js",
   "scripts": {
     "dev": "vite",
+    "dev:web": "vite --host 0.0.0.0",
+    "dev:local": "node scripts/dev-local.mjs",
     "build": "npm run web:build && npm run server:build",
     "web:build": "tsc -b && vite build",
+    "pwa:icons": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generate-pwa-icons.ps1",
+    "mobile:build": "tsc -b && vite build --config vite.mobile.config.ts --mode android",
+    "mobile:sync": "npm run mobile:build && cap sync android",
+    "mobile:open": "cap open android",
+    "mobile:run": "npm run mobile:sync && cap run android",
+    "mobile:apk:debug": "npm run mobile:sync && node scripts/build-android.mjs",
     "lint": "eslint .",
     "preview": "vite preview",
     "server:build": "tsc -p tsconfig.server.json",
@@ -22,20 +30,36 @@
     "player:main": "tsc -p tsconfig.player.json && node scripts/copy-player-assets.mjs",
     "player:renderer": "tsc -p tsconfig.player-renderer.json && vite build --config vite.player.config.ts",
     "player:build": "npm run player:main && npm run player:renderer",
-    "player:package": "npm run player:build && electron-builder --win portable",
+    "player:package": "npm run player:package:win",
+    "player:package:win": "npm run player:build && electron-builder --win portable",
+    "player:package:mac": "npm run player:build && electron-builder --mac dmg zip --x64 --arm64",
     "studio:main": "tsc -p tsconfig.studio.json && node scripts/copy-studio-assets.mjs",
     "studio:renderer": "tsc -p tsconfig.studio-renderer.json && vite build --config vite.studio.config.ts",
     "studio:build": "npm run studio:main && npm run studio:renderer",
-    "studio:package": "npm run studio:build && electron-builder --config electron-builder.studio.json --win portable",
+    "studio:test": "tsx --test studio/tests/builderTools.test.ts",
+    "studio:package": "npm run studio:package:win",
+    "studio:package:win": "npm run studio:build && electron-builder --config electron-builder.studio.json --win portable",
+    "studio:package:mac": "npm run studio:build && electron-builder --config electron-builder.studio.json --mac dmg zip --x64 --arm64",
+    "studio:mobile:build": "tsc -p tsconfig.studio-renderer.json && vite build --config vite.studio-mobile.config.ts --mode studio-mobile",
+    "studio:mobile:sync": "npm run studio:mobile:build && cd studio-mobile && node ../node_modules/@capacitor/cli/bin/capacitor sync android",
+    "studio:mobile:open": "cd studio-mobile && node ../node_modules/@capacitor/cli/bin/capacitor open android",
+    "studio:mobile:apk:debug": "npm run studio:mobile:sync && node scripts/build-android.mjs android-studio",
     "admin:main": "tsc -p tsconfig.admin.json && node scripts/copy-admin-assets.mjs",
     "admin:renderer": "tsc -p tsconfig.admin-renderer.json && vite build --config vite.admin.config.ts",
     "admin:build": "npm run admin:main && npm run admin:renderer",
-    "admin:package": "npm run admin:build && electron-builder --config electron-builder.admin.json --win portable",
+    "admin:package": "npm run admin:package:win",
+    "admin:package:win": "npm run admin:build && electron-builder --config electron-builder.admin.json --win portable",
+    "admin:package:mac": "npm run admin:build && electron-builder --config electron-builder.admin.json --mac dmg zip --x64 --arm64",
     "supabase:push": "supabase db push --linked",
     "supabase:lint": "supabase db lint --linked --schema public,private --level warning --fail-on error",
     "supabase:advisors": "supabase db advisors --linked --type security --level warn --fail-on error"
   },
   "dependencies": {
+    "@capacitor/android": "^7.6.7",
+    "@capacitor/app": "^7.1.2",
+    "@capacitor/core": "^7.6.7",
+    "@capacitor/splash-screen": "^7.0.5",
+    "@capacitor/status-bar": "^7.0.6",
     "@react-three/fiber": "^9.6.1",
     "@react-three/rapier": "^2.2.0",
     "@supabase/supabase-js": "^2.108.1",
@@ -53,6 +77,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@capacitor/cli": "^7.6.7",
     "@eslint/js": "^9.17.0",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
@@ -87,7 +112,8 @@
     },
     "files": [
       "player-dist/**/*",
-      "package.json"
+      "package.json",
+      "!node_modules/**/*"
     ],
     "win": {
       "target": [
@@ -95,6 +121,26 @@
       ],
       "icon": "assets/polymons-logo.png",
       "artifactName": "PolymonsPlayer.exe"
-    }
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "assets/polymons-logo.png",
+      "category": "public.app-category.games",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "artifactName": "PolymonsPlayer-mac-${arch}.${ext}"
+    },
+    "protocols": [
+      {
+        "name": "Polymons Player",
+        "schemes": [
+          "polymons"
+        ]
+      }
+    ]
   }
 }
