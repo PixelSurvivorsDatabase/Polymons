@@ -12,7 +12,8 @@
   },
   "files": [
     "studio-dist/**/*",
-    "package.json"
+    "package.json",
+    "!node_modules/**/*"
   ],
   "win": {
     "target": [
@@ -20,5 +21,17 @@
     ],
     "icon": "assets/studio/poly-studio-logo-dark.png",
     "artifactName": "PolyStudio.exe"
+  },
+  "mac": {
+    "target": [
+      "dmg",
+      "zip"
+    ],
+    "icon": "assets/studio/poly-studio-logo-dark.png",
+    "category": "public.app-category.developer-tools",
+    "hardenedRuntime": true,
+    "entitlements": "build/entitlements.mac.plist",
+    "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+    "artifactName": "PolyStudio-mac-${arch}.${ext}"
   }
 }

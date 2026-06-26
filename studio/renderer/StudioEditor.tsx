@@ -1,5 +1,6 @@
-import { Canvas, useThree } from "@react-three/fiber";
+import { Canvas, useFrame, useLoader, useThree } from "@react-three/fiber";
 import {
+  Activity,
   Award,
   Box,
   Boxes,
@@ -8,6 +9,7 @@ import {
   ChevronRight,
   Code2,
   Copy,
+  Crosshair,
   Database,
   Download,
   FileCode2,
@@ -25,6 +27,7 @@ import {
   Redo2,
   RotateCw,
   Save,
+  Search,
   Server,
   Settings2,
   Square,
@@ -37,10 +40,14 @@ import {
   UserRound,
   Volume2,
   CircleHelp,
+  Camera,
+  PanelLeft,
+  SlidersHorizontal,
   Sun,
 } from "lucide-react";
 import {
   type ReactNode,
+  type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -49,10 +56,13 @@ import {
 } from "react";
 import {
   ACESFilmicToneMapping,
+  ArrowHelper,
   Color,
   Euler,
   Object3D,
   PCFSoftShadowMap,
+  SRGBColorSpace,
+  TextureLoader,
   Vector3,
 } from "three";
 import { TransformControls as ThreeTransformControls } from "three/examples/jsm/controls/TransformControls.js";
@@ -62,9 +72,43 @@ import {
   type PolyProject,
 } from "../../src/game/polyProject";
 import { createSurfaceTexture } from "../../src/game/surfaceTextures";
+import {
+  R6_ARM_CENTER_Y,
+  R6_ARM_SIZE,
+  R6_AVATAR_SCALE,
+  R6_COLLIDER_HALF_HEIGHT,
+  R6_COLLIDER_RADIUS,
+  R6_HEAD_CENTER_Y,
+  R6_HEAD_SIZE,
+  R6_HIP_X,
+  R6_HIP_Y,
+  R6_LEG_CENTER_Y,
+  R6_LEG_SIZE,
+  R6_SHOULDER_X,
+  R6_SHOULDER_Y,
+  R6_TORSO_CENTER_Y,
+  R6_TORSO_SIZE,
+  R6_VISUAL_OFFSET,
+} from "../../src/game/r6Geometry";
+import {
+  PART_IMAGE_FACE_KEYS,
+  hasPartImageFaces,
+  normalizePartImageFaces,
+  type PartImageFace,
+} from "../../src/game/partImageFaces";
+import { usePartImageTextures } from "../../src/game/usePartImageTextures";
 import { LightingRig } from "../../src/game/LightingRig";
+import { normalizedObjGeometry } from "../../src/game/objMesh";
+import classicSmileFaceUrl from "../../assets/avatar/faces/classic-smile.png";
+import classicHeadObjSource from "../../assets/avatar/heads/classic-head.obj?raw";
 import logo from "../../assets/studio/poly-studio-logo-dark.png";
 import CodeEditor from "./CodeEditor";
+import {
+  alignSelectedObjects,
+  distributeSelectedObjects,
+  type AlignEdge,
+  type ArrangeAxis,
+} from "./builderTools";
 
 type Selection =
   | { type: "world"; id: string }
@@ -77,7 +121,12 @@ type Selection =
   | { type: "service"; id: string }
   | null;
 
-type StudioTool = "select" | "move" | "rotate" | "scale";
+type StudioTool = "select" | "move" | "rotate" | "scale" | "camera";
+
+type StudioPlaySpawn = {
+  position: [number, number, number];
+  rotationY: number;
+};
 type ContextTarget = Exclude<Selection, null>;
 type ContextMenuState = {
   x: number;
@@ -206,6 +255,372 @@ function nextName(existing: string[], base: string): string {
   while (existing.includes(`${base}${number}`)) number += 1;
   return `${base}${number}`;
 }
+
+type StudioSearchResult = {
+  key: string;
+  label: string;
+  path: string;
+  detail: string;
+  selection: Exclude<Selection, null>;
+};
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function isIdentifierName(value: string): boolean {
+  return /^[A-Za-z_]\w*$/.test(value);
+}
+
+function quoteScriptString(value: string, quote: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(new RegExp(escapeRegExp(quote), "g"), `\\${quote}`);
+}
+
+function replaceNameReferences(
+  source: string,
+  oldName: string,
+  newName: string,
+  roots: string[],
+): string {
+  if (!oldName || oldName === newName) return source;
+  const oldLiteral = escapeRegExp(oldName);
+  let next = source;
+  for (const root of roots) {
+    const safeRoot = escapeRegExp(root);
+    next = next
+      .replace(
+        new RegExp(`\\b${safeRoot}:FindFirstChild\\(\\s*(["'])${oldLiteral}\\1\\s*\\)`, "g"),
+        (_match, quote: string) =>
+          `${root}:FindFirstChild(${quote}${quoteScriptString(newName, quote)}${quote})`,
+      )
+      .replace(
+        new RegExp(`\\b${safeRoot}\\.Find\\(\\s*(["'])${oldLiteral}\\1\\s*\\)`, "g"),
+        (_match, quote: string) =>
+          `${root}.Find(${quote}${quoteScriptString(newName, quote)}${quote})`,
+      );
+    if (isIdentifierName(oldName) && isIdentifierName(newName)) {
+      next = next.replace(
+        new RegExp(`\\b${safeRoot}\\.${escapeRegExp(oldName)}\\b`, "g"),
+        () => `${root}.${newName}`,
+      );
+    }
+  }
+  return next;
+}
+
+function projectWithUpdatedReferences(
+  project: StudioProject,
+  oldName: string,
+  newName: string,
+  roots: string[],
+): StudioProject {
+  if (!oldName || oldName === newName) return project;
+  let changed = false;
+  const scripts = project.scripts.map((script) => {
+    const source = replaceNameReferences(script.source, oldName, newName, roots);
+    if (source === script.source) return script;
+    changed = true;
+    return { ...script, source };
+  });
+  return changed ? { ...project, scripts } : project;
+}
+
+function studioParentPath(project: StudioProject, parent: string, visited = new Set<string>()): string {
+  if (visited.has(parent)) return "Circular parent";
+  const nextVisited = new Set(visited).add(parent);
+  const world = project.objects.find((item) => item.id === parent);
+  if (world) return studioObjectPath(project, world);
+  const model = project.models.find((item) => item.id === parent);
+  if (model) return `Workspace / ${model.name}`;
+  const gui = project.gui.find((item) => item.id === parent);
+  if (gui) return studioGuiPath(project, gui);
+  const script = project.scripts.find((item) => item.id === parent);
+  if (script) return `${studioParentPath(project, script.parent, nextVisited)} / ${script.name}`;
+  const value = project.values.find((item) => item.id === parent);
+  if (value) return `${studioParentPath(project, value.parent, nextVisited)} / ${value.name}`;
+  return parent;
+}
+
+function studioObjectPath(project: StudioProject, object: StudioObject): string {
+  const names = [object.name];
+  const visited = new Set([object.id]);
+  let parentId = object.parentId;
+  while (parentId && !visited.has(parentId)) {
+    visited.add(parentId);
+    const parent = project.objects.find((item) => item.id === parentId);
+    if (!parent) break;
+    names.unshift(parent.name);
+    parentId = parent.parentId;
+  }
+  const model = object.modelId
+    ? project.models.find((item) => item.id === object.modelId)
+    : null;
+  return ["Workspace", model?.name, ...names].filter(Boolean).join(" / ");
+}
+
+function studioGuiPath(project: StudioProject, gui: StudioGuiObject): string {
+  const names = [gui.name];
+  const visited = new Set([gui.id]);
+  let parentId = gui.parentId;
+  while (parentId && !visited.has(parentId)) {
+    visited.add(parentId);
+    const parent = project.gui.find((item) => item.id === parentId);
+    if (!parent) break;
+    names.unshift(parent.name);
+    parentId = parent.parentId;
+  }
+  return ["StarterGui", ...names].join(" / ");
+}
+
+function buildStudioSearchResults(project: StudioProject, query: string): StudioSearchResult[] {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return [];
+  const results: StudioSearchResult[] = [];
+  const add = (
+    label: string,
+    path: string,
+    detail: string,
+    selection: Exclude<Selection, null>,
+    searchText = "",
+  ) => {
+    if (`${label} ${path} ${detail} ${searchText}`.toLowerCase().includes(normalized)) {
+      results.push({
+        key: `${selection.type}:${selection.id}:${results.length}`,
+        label,
+        path,
+        detail,
+        selection,
+      });
+    }
+  };
+
+  [
+    "Workspace",
+    "ServerScriptService",
+    "ReplicatedStorage",
+    "ServerStorage",
+    "Lighting",
+    "Players",
+    "StarterPlayerScripts",
+    "StarterGui",
+    "DataStoreService",
+    "Sky",
+  ].forEach((service) =>
+    add(service, service === "Sky" ? "Workspace / Sky" : service, "Service", {
+      type: "service",
+      id: service,
+    }),
+  );
+  add("LocalPlayer", "Players / LocalPlayer", "Player", {
+    type: "player",
+    id: "LocalPlayer",
+  });
+  project.models.forEach((model) =>
+    add(model.name, `Workspace / ${model.name}`, "Model", {
+      type: "model",
+      id: model.id,
+    }),
+  );
+  project.objects.forEach((object) =>
+    add(object.name, studioObjectPath(project, object), object.type, {
+      type: "world",
+      id: object.id,
+    }),
+  );
+  project.scripts.forEach((script) =>
+    add(
+      script.name,
+      `${studioParentPath(project, script.parent)} / ${script.name}`,
+      script.source.toLowerCase().includes(normalized)
+        ? `${script.kind} source match`
+        : script.kind,
+      { type: "script", id: script.id },
+      script.source,
+    ),
+  );
+  project.gui.forEach((gui) =>
+    add(gui.name, studioGuiPath(project, gui), gui.type, {
+      type: "gui",
+      id: gui.id,
+    }),
+  );
+  project.remotes.forEach((remote) =>
+    add(remote.name, `ReplicatedStorage / ${remote.name}`, remote.kind, {
+      type: "remote",
+      id: remote.id,
+    }),
+  );
+  project.values.forEach((value) =>
+    add(value.name, `${studioParentPath(project, value.parent)} / ${value.name}`, value.type, {
+      type: "value",
+      id: value.id,
+    }),
+  );
+  return results.slice(0, 200);
+}
+
+function collectWorldSubtreeIds(rootIds: string[], objects: StudioObject[]): string[] {
+  const ids = new Set(rootIds);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const object of objects) {
+      if (object.parentId && ids.has(object.parentId) && !ids.has(object.id)) {
+        ids.add(object.id);
+        changed = true;
+      }
+    }
+  }
+  return objects.filter((object) => ids.has(object.id)).map((object) => object.id);
+}
+
+function collectGuiSubtreeIds(rootId: string, gui: StudioGuiObject[]): string[] {
+  const ids = new Set([rootId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const item of gui) {
+      if (item.parentId && ids.has(item.parentId) && !ids.has(item.id)) {
+        ids.add(item.id);
+        changed = true;
+      }
+    }
+  }
+  return gui.filter((item) => ids.has(item.id)).map((item) => item.id);
+}
+
+function duplicateNestedScriptsAndValues(
+  project: StudioProject,
+  parentIdMap: Map<string, string>,
+): { scripts: StudioScript[]; values: StudioValueObject[] } {
+  const scripts: StudioScript[] = [];
+  const values: StudioValueObject[] = [];
+  const scriptNames = [...project.scripts.map((script) => script.name)];
+  const valueNames = [...project.values.map((value) => value.name)];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const script of project.scripts) {
+      if (!parentIdMap.has(script.parent) || parentIdMap.has(script.id)) continue;
+      const id = crypto.randomUUID();
+      const name = nextName(scriptNames, script.name);
+      scriptNames.push(name);
+      parentIdMap.set(script.id, id);
+      scripts.push({
+        ...structuredClone(script),
+        id,
+        name,
+        parent: parentIdMap.get(script.parent)!,
+      });
+      changed = true;
+    }
+  }
+  changed = true;
+  while (changed) {
+    changed = false;
+    for (const value of project.values) {
+      if (!parentIdMap.has(value.parent) || parentIdMap.has(value.id)) continue;
+      const id = crypto.randomUUID();
+      const name = nextName(valueNames, value.name);
+      valueNames.push(name);
+      parentIdMap.set(value.id, id);
+      values.push({
+        ...structuredClone(value),
+        id,
+        name,
+        parent: parentIdMap.get(value.parent)!,
+      });
+      changed = true;
+    }
+  }
+  return { scripts, values };
+}
+
+const SCRIPT_API_SECTIONS = [
+  {
+    title: "Remote Events",
+    items: [
+      {
+        name: "Client to server",
+        code: `local remote = ReplicatedStorage.Clicker\n\nbutton.Activated:Connect(function()\n    remote:FireServer()\nend)`,
+      },
+      {
+        name: "Server receives",
+        code: `local remote = ReplicatedStorage.Clicker\n\nremote.OnServerEvent:Connect(function(player)\n    Leaderstats:Add(player, "Coins", 1)\nend)`,
+      },
+    ],
+  },
+  {
+    title: "Remote Functions",
+    items: [
+      {
+        name: "Invoke server",
+        code: `local result = ReplicatedStorage.Shop:InvokeServer("BuyUpgrade")\nprint(result)`,
+      },
+      {
+        name: "Server invoke",
+        code: `ReplicatedStorage.Shop.OnServerInvoke = function(player, action)\n    return player.leaderstats.Coins.Value\nend`,
+      },
+    ],
+  },
+  {
+    title: "Leaderstats",
+    items: [
+      {
+        name: "Add or subtract",
+        code: `Leaderstats:Add(player, "lava", 1)\nLeaderstats:Subtract(player, "lava", 30)`,
+      },
+      {
+        name: "Direct value path",
+        code: `player.leaderstats.lava.Value = player.leaderstats.lava.Value + 1`,
+      },
+    ],
+  },
+  {
+    title: "Parts and Humanoids",
+    items: [
+      {
+        name: "Touched damage",
+        code: `script.Parent.Touched:Connect(function(hit)\n    local player = Players:GetPlayerFromCharacter(hit.Parent)\n    if player then\n        player.Humanoid:TakeDamage(10)\n    end\nend)`,
+      },
+      {
+        name: "Move a part",
+        code: `local part = Workspace.Platform\npart.Position = part.Position + Vector3.new(0, 5, 0)`,
+      },
+    ],
+  },
+  {
+    title: "GUI",
+    items: [
+      {
+        name: "Button activated",
+        code: `local button = script.Parent\n\nbutton.Activated:Connect(function()\n    button.Text = "Clicked"\nend)`,
+      },
+      {
+        name: "Open a frame",
+        code: `local shop = script.Parent.Parent.ShopGui\nshop.Visible = true`,
+      },
+    ],
+  },
+  {
+    title: "Effects",
+    items: [
+      {
+        name: "Tween",
+        code: `TweenService:Create(script.Parent, 0.5, {\n    Transparency = 0.5,\n    Position = Vector3.new(0, 8, 0),\n}):Play()`,
+      },
+      {
+        name: "Sound",
+        code: `local sound = Workspace.blank\nsound:Play()`,
+      },
+    ],
+  },
+] satisfies Array<{
+  title: string;
+  items: Array<{ name: string; code: string }>;
+}>;
 
 function guiDefault(
   type: StudioGuiObject["type"],
@@ -386,10 +801,19 @@ export default function StudioEditor({
   const [backups, setBackups] = useState<
     Array<{ id: string; name: string; savedAt: string }>
   >([]);
-  const [openMenu, setOpenMenu] = useState<"file" | "project" | null>(null);
+  const [openMenu, setOpenMenu] = useState<
+    "file" | "project" | "arrange" | null
+  >(null);
+  const [physicsDebug, setPhysicsDebug] = useState(false);
+  const [mobilePanel, setMobilePanel] = useState<
+    "explorer" | "properties" | null
+  >(null);
   const [message, setMessage] = useState("Ready");
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showHealth, setShowHealth] = useState(false);
+  const [showSearchEverywhere, setShowSearchEverywhere] = useState(false);
+  const [searchEverywhereQuery, setSearchEverywhereQuery] = useState("");
+  const [showApiExplorer, setShowApiExplorer] = useState(false);
   const [commandPalette, setCommandPalette] = useState(false);
   const [diagnostics, setDiagnostics] = useState<
     Record<string, PolyDiagnostic[]>
@@ -402,6 +826,10 @@ export default function StudioEditor({
     center: [number, number, number];
   } | null>(null);
   const clipboard = useRef<StudioObject[]>([]);
+  const playHereSpawn = useRef<StudioPlaySpawn>({
+    position: [16, 13, 18],
+    rotationY: 0,
+  });
 
   const selectedWorld =
     selection?.type === "world"
@@ -432,6 +860,19 @@ export default function StudioEditor({
         .filter((object) => object.modelId === selectedModel.id)
         .map((object) => object.id)
     : selectedPartIds;
+  const canDuplicateSelection = Boolean(
+    selectedWorld ||
+      selectedModel ||
+      selectedGui ||
+      selectedScript ||
+      selectedRemote ||
+      selectedValue ||
+      activeWorldIds.length > 0,
+  );
+  const searchEverywhereResults = useMemo(
+    () => buildStudioSearchResults(project, searchEverywhereQuery),
+    [project, searchEverywhereQuery],
+  );
   const healthIssues = useMemo(() => {
     const issues: string[] = [];
     const objectIds = new Set(project.objects.map((object) => object.id));
@@ -490,6 +931,25 @@ export default function StudioEditor({
       setSaving(false);
     }
   }, [project]);
+
+  useEffect(() => {
+    const onMobileBack = () => {
+      if (mobilePanel) {
+        setMobilePanel(null);
+        return;
+      }
+      if (openMenu) {
+        setOpenMenu(null);
+        return;
+      }
+      void save().then((saved) => {
+        if (saved) onExit();
+      });
+    };
+    window.addEventListener("poly-studio:mobile-back", onMobileBack);
+    return () =>
+      window.removeEventListener("poly-studio:mobile-back", onMobileBack);
+  }, [mobilePanel, onExit, openMenu, save]);
 
   async function saveVersion() {
     setSaving(true);
@@ -559,6 +1019,29 @@ export default function StudioEditor({
     return () => window.removeEventListener("beforeunload", warnBeforeClose);
   }, [dirty]);
 
+  const shortcutActions = useRef({
+    save,
+    undo,
+    redo,
+    duplicateSelected,
+    createModel,
+    ungroupModel,
+    copySelected,
+    pasteClipboard,
+    removeSelected,
+  });
+  shortcutActions.current = {
+    save,
+    undo,
+    redo,
+    duplicateSelected,
+    createModel,
+    ungroupModel,
+    copySelected,
+    pasteClipboard,
+    removeSelected,
+  };
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -567,60 +1050,87 @@ export default function StudioEditor({
         target?.tagName === "TEXTAREA" ||
         target?.tagName === "SELECT" ||
         target?.closest(".monaco-editor");
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+      const commandKey = event.ctrlKey || event.metaKey;
+      if (!editing && commandKey && event.code === "Digit1") {
         event.preventDefault();
-        void save();
+        setTool("select");
+      } else if (!editing && commandKey && event.code === "Digit2") {
+        event.preventDefault();
+        setTool("move");
+      } else if (!editing && commandKey && event.code === "Digit3") {
+        event.preventDefault();
+        setTool("scale");
+      } else if (!editing && commandKey && event.code === "Digit4") {
+        event.preventDefault();
+        setTool("rotate");
+      } else if (commandKey && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        void shortcutActions.current.save();
       } else if (
         !editing &&
-        (event.ctrlKey || event.metaKey) &&
+        commandKey &&
         event.key.toLowerCase() === "z"
       ) {
         event.preventDefault();
-        if (event.shiftKey) redo();
-        else undo();
+        if (event.shiftKey) shortcutActions.current.redo();
+        else shortcutActions.current.undo();
       } else if (
         !editing &&
-        (event.ctrlKey || event.metaKey) &&
+        commandKey &&
         event.key.toLowerCase() === "y"
       ) {
         event.preventDefault();
-        redo();
+        shortcutActions.current.redo();
       } else if (
         !editing &&
-        (event.ctrlKey || event.metaKey) &&
+        commandKey &&
         event.key.toLowerCase() === "d"
       ) {
         event.preventDefault();
-        duplicateSelected();
+        shortcutActions.current.duplicateSelected();
       } else if (
         !editing &&
-        (event.ctrlKey || event.metaKey) &&
+        commandKey &&
         event.key.toLowerCase() === "g"
       ) {
         event.preventDefault();
-        if (event.shiftKey) ungroupModel();
-        else createModel();
+        if (event.shiftKey) shortcutActions.current.ungroupModel();
+        else shortcutActions.current.createModel();
       } else if (
         !editing &&
-        (event.ctrlKey || event.metaKey) &&
+        commandKey &&
         event.key.toLowerCase() === "c"
       ) {
         event.preventDefault();
-        copySelected();
+        shortcutActions.current.copySelected();
       } else if (
         !editing &&
-        (event.ctrlKey || event.metaKey) &&
+        commandKey &&
         event.key.toLowerCase() === "v"
       ) {
         event.preventDefault();
-        pasteClipboard();
+        shortcutActions.current.pasteClipboard();
       } else if (
-        (event.ctrlKey || event.metaKey) &&
+        commandKey &&
+        event.shiftKey &&
+        event.key.toLowerCase() === "f"
+      ) {
+        event.preventDefault();
+        setSearchEverywhereQuery("");
+        setShowSearchEverywhere(true);
+      } else if (
+        commandKey &&
         event.shiftKey &&
         event.key.toLowerCase() === "p"
       ) {
         event.preventDefault();
         setCommandPalette(true);
+      } else if (
+        !editing &&
+        (event.key === "Delete" || event.key === "Backspace")
+      ) {
+        event.preventDefault();
+        shortcutActions.current.removeSelected();
       } else if (!editing && event.key === "F2") {
         event.preventDefault();
         document.querySelector<HTMLInputElement>(".project-title input")?.focus();
@@ -628,7 +1138,7 @@ export default function StudioEditor({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  });
+  }, []);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -663,6 +1173,23 @@ export default function StudioEditor({
     });
     setDirty(true);
     setMessage("Unsaved changes");
+  }
+
+  function selectSearchResult(next: Exclude<Selection, null>) {
+    if (next.type === "world") {
+      selectWorld(next.id);
+      setWorkspace("scene");
+    } else if (next.type === "model") {
+      selectModel(next.id);
+      setWorkspace("scene");
+    } else {
+      setSelection(next);
+      setSelectedPartIds([]);
+      if (next.type === "script") setWorkspace("script");
+      else if (next.type === "gui") setWorkspace("ui");
+      else setWorkspace("scene");
+    }
+    setShowSearchEverywhere(false);
   }
 
   function undo() {
@@ -795,6 +1322,22 @@ export default function StudioEditor({
       : [0, 3, 0];
     const modelId = crypto.randomUUID();
     const rootId = crypto.randomUUID();
+    const scaledOffset = (
+      x: number,
+      y: number,
+      z = 0,
+    ): [number, number, number] => [
+      x * R6_AVATAR_SCALE,
+      R6_VISUAL_OFFSET + y * R6_AVATAR_SCALE,
+      z * R6_AVATAR_SCALE,
+    ];
+    const scaledSize = (
+      size: [number, number, number],
+    ): [number, number, number] => [
+      size[0] * R6_AVATAR_SCALE,
+      size[1] * R6_AVATAR_SCALE,
+      size[2] * R6_AVATAR_SCALE,
+    ];
     const part = (
       name: string,
       type: StudioObject["type"],
@@ -838,7 +1381,11 @@ export default function StudioEditor({
         "HumanoidRootPart",
         "humanoidRootPart",
         [0, 0, 0],
-        [2, 2, 1],
+        [
+          R6_COLLIDER_RADIUS * 2,
+          R6_COLLIDER_HALF_HEIGHT * 2,
+          R6_COLLIDER_RADIUS * 2,
+        ],
         "#7F8FA6",
         {
           visible: false,
@@ -848,12 +1395,48 @@ export default function StudioEditor({
           tags: ["Humanoid", "RigRoot"],
         },
       ),
-      part("Torso", "part", [0, 0, 0], [2, 2, 1], "#5635B8"),
-      part("Head", "part", [0, 1.65, 0], [1.55, 1.15, 1.45], "#C9A978"),
-      part("Left Arm", "part", [-1.5, 0, 0], [1, 2.05, 1], "#C9A978"),
-      part("Right Arm", "part", [1.5, 0, 0], [1, 2.05, 1], "#C9A978"),
-      part("Left Leg", "part", [-0.5, -2, 0], [1, 2, 1], "#181A23"),
-      part("Right Leg", "part", [0.5, -2, 0], [1, 2, 1], "#181A23"),
+      part(
+        "Torso",
+        "part",
+        scaledOffset(0, R6_TORSO_CENTER_Y),
+        scaledSize(R6_TORSO_SIZE),
+        "#5635B8",
+      ),
+      part(
+        "Head",
+        "part",
+        scaledOffset(0, R6_HEAD_CENTER_Y),
+        scaledSize([1.25, R6_HEAD_SIZE[1], 1.25]),
+        "#C9A978",
+      ),
+      part(
+        "Left Arm",
+        "part",
+        scaledOffset(-R6_SHOULDER_X, R6_SHOULDER_Y + R6_ARM_CENTER_Y),
+        scaledSize(R6_ARM_SIZE),
+        "#C9A978",
+      ),
+      part(
+        "Right Arm",
+        "part",
+        scaledOffset(R6_SHOULDER_X, R6_SHOULDER_Y + R6_ARM_CENTER_Y),
+        scaledSize(R6_ARM_SIZE),
+        "#C9A978",
+      ),
+      part(
+        "Left Leg",
+        "part",
+        scaledOffset(-R6_HIP_X, R6_HIP_Y + R6_LEG_CENTER_Y),
+        scaledSize(R6_LEG_SIZE),
+        "#181A23",
+      ),
+      part(
+        "Right Leg",
+        "part",
+        scaledOffset(R6_HIP_X, R6_HIP_Y + R6_LEG_CENTER_Y),
+        scaledSize(R6_LEG_SIZE),
+        "#181A23",
+      ),
     ];
     const model: StudioModel = {
       id: modelId,
@@ -1118,7 +1701,12 @@ end)
   function selectWorld(id: string, additive = false) {
     const object = project.objects.find((item) => item.id === id);
     if (!object) return;
-    if (object.modelId) {
+    const selectingAnimationLimb =
+      workspace === "animation" &&
+      object.modelId &&
+      (object.tags.includes("HumanoidLimb") ||
+        object.type === "humanoidRootPart");
+    if (object.modelId && !selectingAnimationLimb) {
       setSelection({ type: "model", id: object.modelId });
       setSelectedPartIds(
         project.objects
@@ -1135,7 +1723,20 @@ end)
       : [id];
     setSelectedPartIds(ids);
     setSelection(ids.length > 0 ? { type: "world", id: ids[ids.length - 1] } : null);
-    setWorkspace("scene");
+    setWorkspace(selectingAnimationLimb ? "animation" : "scene");
+  }
+
+  function selectAnimationParts(ids: string[]) {
+    const validIds = ids.filter((id) =>
+      project.objects.some((object) => object.id === id),
+    );
+    setSelectedPartIds(validIds);
+    setSelection(
+      validIds.length > 0
+        ? { type: "world", id: validIds[validIds.length - 1] }
+        : null,
+    );
+    setWorkspace("animation");
   }
 
   function selectModel(id: string) {
@@ -1199,60 +1800,151 @@ end)
   }
 
   function duplicateSelected() {
-    const sourceIds = activeWorldIds;
-    if (sourceIds.length === 0) return;
+    if (!canDuplicateSelection) return;
     const offset = Math.max(0.1, gridSnap);
-    const sourceObjects = project.objects.filter((object) => sourceIds.includes(object.id));
-    const nextModelId = selectedModel ? crypto.randomUUID() : null;
-    const idMap = new Map<string, string>();
-    const usedNames = project.objects.map((item) => item.name);
-    const copies = sourceObjects.map((object) => {
+    if (selectedWorld || selectedModel || activeWorldIds.length > 0) {
+      const sourceIds = collectWorldSubtreeIds(activeWorldIds, project.objects);
+      const sourceObjects = project.objects.filter((object) => sourceIds.includes(object.id));
+      const nextModelId = selectedModel ? crypto.randomUUID() : null;
+      const idMap = new Map<string, string>();
+      const usedNames = project.objects.map((item) => item.name);
+      const copies = sourceObjects.map((object) => {
+        const id = crypto.randomUUID();
+        idMap.set(object.id, id);
+        const name = nextName(usedNames, object.name);
+        usedNames.push(name);
+        return {
+          ...structuredClone(object),
+          id,
+          name,
+          position: [
+            object.position[0] + offset,
+            object.position[1],
+            object.position[2] + offset,
+          ] as [number, number, number],
+          modelId: nextModelId,
+        };
+      }).map((object) => ({
+        ...object,
+        parentId: object.parentId ? idMap.get(object.parentId) ?? null : null,
+      }));
+      const modelCopy: StudioModel | null =
+        selectedModel && nextModelId
+          ? {
+              ...structuredClone(selectedModel),
+              id: nextModelId,
+              name: nextName(project.models.map((item) => item.name), selectedModel.name),
+              primaryPartId: selectedModel.primaryPartId
+                ? idMap.get(selectedModel.primaryPartId) ?? copies[0]?.id ?? null
+                : copies[0]?.id ?? null,
+            }
+          : null;
+      const parentIdMap = new Map<string, string>(idMap);
+      if (selectedModel && nextModelId) parentIdMap.set(selectedModel.id, nextModelId);
+      const nested = duplicateNestedScriptsAndValues(project, parentIdMap);
+      updateProject((current) => ({
+        ...current,
+        objects: [...current.objects, ...copies],
+        models: modelCopy ? [...current.models, modelCopy] : current.models,
+        scripts: [...current.scripts, ...nested.scripts],
+        values: [...current.values, ...nested.values],
+      }));
+      setSelectedPartIds(copies.map((copy) => copy.id));
+      setSelection(
+        modelCopy
+          ? { type: "model", id: modelCopy.id }
+          : copies[0]
+            ? { type: "world", id: copies[0].id }
+            : null,
+      );
+      setMessage("Duplicated selection with children");
+      return;
+    }
+
+    if (selectedGui) {
+      const sourceIds = collectGuiSubtreeIds(selectedGui.id, project.gui);
+      const idMap = new Map<string, string>();
+      const usedNames = project.gui.map((item) => item.name);
+      const copies = project.gui
+        .filter((item) => sourceIds.includes(item.id))
+        .map((item) => {
+          const id = crypto.randomUUID();
+          idMap.set(item.id, id);
+          const name = nextName(usedNames, item.name);
+          usedNames.push(name);
+          return {
+            ...structuredClone(item),
+            id,
+            name,
+            position: item.id === selectedGui.id
+              ? ([item.position[0] + 0.03, item.position[1] + 0.03] as [number, number])
+              : item.position,
+          };
+        })
+        .map((item) => ({
+          ...item,
+          parentId: item.parentId ? idMap.get(item.parentId) ?? null : null,
+        }));
+      const nested = duplicateNestedScriptsAndValues(project, idMap);
+      updateProject((current) => ({
+        ...current,
+        gui: [...current.gui, ...copies],
+        scripts: [...current.scripts, ...nested.scripts],
+        values: [...current.values, ...nested.values],
+      }));
+      const rootId = idMap.get(selectedGui.id);
+      if (rootId) setSelection({ type: "gui", id: rootId });
+      setWorkspace("ui");
+      setSelectedPartIds([]);
+      setMessage("Duplicated GUI with children");
+      return;
+    }
+
+    if (selectedScript) {
       const id = crypto.randomUUID();
-      idMap.set(object.id, id);
-      const name = nextName(usedNames, object.name);
-      usedNames.push(name);
-      return {
-        ...structuredClone(object),
-        id,
-        name,
-        position: [object.position[0] + offset, ...object.position.slice(1)] as [
-          number,
-          number,
-          number,
-        ],
-        modelId: nextModelId,
-      };
-    }).map((object) => ({
-      ...object,
-      parentId: object.parentId
-        ? idMap.get(object.parentId) ?? null
-        : null,
-    }));
-    const modelCopy: StudioModel | null =
-      selectedModel && nextModelId
-        ? {
-            ...structuredClone(selectedModel),
-            id: nextModelId,
-            name: nextName(project.models.map((item) => item.name), selectedModel.name),
-            primaryPartId: selectedModel.primaryPartId
-              ? idMap.get(selectedModel.primaryPartId) ?? copies[0]?.id ?? null
-              : copies[0]?.id ?? null,
-          }
-        : null;
-    updateProject((current) => ({
-      ...current,
-      objects: [...current.objects, ...copies],
-      models: modelCopy ? [...current.models, modelCopy] : current.models,
-    }));
-    setSelectedPartIds(copies.map((copy) => copy.id));
-    setSelection(
-      modelCopy
-        ? { type: "model", id: modelCopy.id }
-        : copies[0]
-          ? { type: "world", id: copies[0].id }
-          : null,
-    );
-    setMessage("Duplicated selection");
+      const name = nextName(project.scripts.map((script) => script.name), selectedScript.name);
+      const rootCopy: StudioScript = { ...structuredClone(selectedScript), id, name };
+      const parentIdMap = new Map([[selectedScript.id, id]]);
+      const nested = duplicateNestedScriptsAndValues(project, parentIdMap);
+      updateProject((current) => ({
+        ...current,
+        scripts: [...current.scripts, rootCopy, ...nested.scripts],
+        values: [...current.values, ...nested.values],
+      }));
+      setSelection({ type: "script", id });
+      setWorkspace("script");
+      setSelectedPartIds([]);
+      setMessage("Duplicated script with children");
+      return;
+    }
+
+    if (selectedRemote) {
+      const id = crypto.randomUUID();
+      const name = nextName(project.remotes.map((remote) => remote.name), selectedRemote.name);
+      updateProject((current) => ({
+        ...current,
+        remotes: [...current.remotes, { ...structuredClone(selectedRemote), id, name }],
+      }));
+      setSelection({ type: "remote", id });
+      setSelectedPartIds([]);
+      setMessage("Duplicated remote");
+      return;
+    }
+
+    if (selectedValue) {
+      const id = crypto.randomUUID();
+      const name = nextName(project.values.map((value) => value.name), selectedValue.name);
+      const rootCopy: StudioValueObject = { ...structuredClone(selectedValue), id, name };
+      const parentIdMap = new Map([[selectedValue.id, id]]);
+      const nested = duplicateNestedScriptsAndValues(project, parentIdMap);
+      updateProject((current) => ({
+        ...current,
+        values: [...current.values, rootCopy, ...nested.values],
+      }));
+      setSelection({ type: "value", id });
+      setSelectedPartIds([]);
+      setMessage("Duplicated value with children");
+    }
   }
 
   function copySelected() {
@@ -1414,6 +2106,31 @@ end)
       ),
     }));
     setMessage("Selection snapped to grid");
+  }
+
+  function alignSelection(axis: ArrangeAxis, edge: AlignEdge) {
+    if (selectedModel || activeWorldIds.length < 2) return;
+    updateProject((current) => ({
+      ...current,
+      objects: alignSelectedObjects(
+        current.objects,
+        activeWorldIds,
+        axis,
+        edge,
+        selectedWorld?.id,
+      ),
+    }));
+    const axisName = ["X", "Y", "Z"][axis];
+    setMessage(`Aligned ${edge} edges on ${axisName}`);
+  }
+
+  function distributeSelection(axis: ArrangeAxis) {
+    if (selectedModel || activeWorldIds.length < 3) return;
+    updateProject((current) => ({
+      ...current,
+      objects: distributeSelectedObjects(current.objects, activeWorldIds, axis),
+    }));
+    setMessage(`Distributed selection on ${["X", "Y", "Z"][axis]}`);
   }
 
   async function exportSelectedModel() {
@@ -1653,6 +2370,20 @@ end)
       icon: ReactNode;
       run: () => void;
     }> = [];
+    if (
+      target.type === "world" ||
+      target.type === "model" ||
+      target.type === "gui" ||
+      target.type === "script" ||
+      target.type === "remote" ||
+      target.type === "value"
+    ) {
+      actions.push({
+        label: "Duplicate with children",
+        icon: <Copy size={14} />,
+        run: duplicateSelected,
+      });
+    }
     const addWorldActions = () => {
       actions.push(
         { label: "Part", icon: <Box size={14} />, run: () => addPart("part", target) },
@@ -1936,7 +2667,7 @@ end)
     setSelectedPartIds([]);
   }
 
-  async function play() {
+  async function play(mode: "default" | "here" = "default") {
     const allDiagnostics = project.scripts.flatMap((script) =>
       analyzePolyScript(script, project as PolyProject).map((item) => ({
         ...item,
@@ -1954,8 +2685,15 @@ end)
     const saved = await save();
     if (saved) {
       try {
-        await window.polyStudio.playProject(saved.id);
-        setMessage("Opening Polymons Player...");
+        await window.polyStudio.playProject(
+          saved.id,
+          mode === "here" ? playHereSpawn.current : undefined,
+        );
+        setMessage(
+          mode === "here"
+            ? "Opening Polymons Player here..."
+            : "Opening Polymons Player...",
+        );
       } catch (launchError) {
         setMessage(
           launchError instanceof Error
@@ -2025,6 +2763,15 @@ end)
           <UserRound size={15} />
           {auth.user.displayName}
         </div>
+        <button
+          className="mobile-title-save"
+          type="button"
+          aria-label="Save project"
+          disabled={saving}
+          onClick={() => void save()}
+        >
+          <Save size={18} />
+        </button>
       </header>
 
       <div className="editor-toolbar">
@@ -2080,6 +2827,9 @@ end)
               <button onClick={() => void play()}>
                 <Play size={14} /> Playtest
               </button>
+              <button onClick={() => void play("here")}>
+                <Play size={14} /> Play here
+              </button>
               <button onClick={openPublishDialog}>
                 <Upload size={14} />
                 {project.publication ? "Update game" : "Publish game"}
@@ -2103,21 +2853,75 @@ end)
             </div>
           )}
         </div>
-        <div className="toolbar-group">
-          <button title="Select" className={tool === "select" ? "active" : ""} onClick={() => setTool("select")}>
+        <div className="toolbar-group tool-selector">
+          <button title="Select (Ctrl+1)" className={tool === "select" ? "active" : ""} onClick={() => setTool("select")}>
             <MousePointer2 size={17} />
           </button>
-          <button title="Move" className={tool === "move" ? "active" : ""} onClick={() => setTool("move")}><Move3D size={17} /></button>
-          <button title="Rotate" className={tool === "rotate" ? "active" : ""} onClick={() => setTool("rotate")}><RotateCw size={17} /></button>
-          <button title="Scale" className={tool === "scale" ? "active" : ""} onClick={() => setTool("scale")}><Settings2 size={17} /></button>
+          <button title="Move (Ctrl+2)" className={tool === "move" ? "active" : ""} onClick={() => setTool("move")}><Move3D size={17} /></button>
+          <button title="Rotate (Ctrl+4)" className={tool === "rotate" ? "active" : ""} onClick={() => setTool("rotate")}><RotateCw size={17} /></button>
+          <button title="Scale (Ctrl+3)" className={tool === "scale" ? "active" : ""} onClick={() => setTool("scale")}><Settings2 size={17} /></button>
+          <button
+            className={`mobile-camera-tool ${tool === "camera" ? "active" : ""}`}
+            title="Camera: drag to look and pinch to move"
+            onClick={() => setTool("camera")}
+          >
+            <Camera size={17} /> Camera
+          </button>
         </div>
-        <div className="toolbar-group">
+        <div className="toolbar-group history-tools">
           <button title="Undo" disabled={undoStack.current.length === 0} onClick={undo}><Undo2 size={17} /></button>
           <button title="Redo" disabled={redoStack.current.length === 0} onClick={redo}><Redo2 size={17} /></button>
-          <button title="Duplicate selection" disabled={activeWorldIds.length === 0} onClick={duplicateSelected}><Copy size={16} /></button>
+          <button title="Duplicate selection with children" disabled={!canDuplicateSelection} onClick={duplicateSelected}><Copy size={16} /></button>
           <button title="Group selection into Model (Ctrl+G)" disabled={activeWorldIds.length < 2} onClick={createModel}><Boxes size={16} /></button>
           <button title="Ungroup Model (Ctrl+Shift+G)" disabled={!selectedModel} onClick={ungroupModel}><Ungroup size={16} /></button>
           <button title="Snap selection to grid" disabled={activeWorldIds.length === 0} onClick={snapSelection}><Grid3X3 size={16} /></button>
+        </div>
+        <div
+          className="toolbar-group arrange-tools"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            title={selectedModel ? "Ungroup a Model before arranging its Parts" : "Align and distribute selection"}
+            disabled={activeWorldIds.length < 2 || Boolean(selectedModel)}
+            className={openMenu === "arrange" ? "active" : ""}
+            onClick={() =>
+              setOpenMenu((current) => (current === "arrange" ? null : "arrange"))
+            }
+          >
+            <Crosshair size={16} /> Arrange
+          </button>
+          {openMenu === "arrange" && (
+            <div className="arrange-popover">
+              <header>
+                <strong>Align to active Part</strong>
+                <span>Min, center, or max edge</span>
+              </header>
+              {([0, 1, 2] as ArrangeAxis[]).map((axis) => (
+                <div className="arrange-row" key={axis}>
+                  <strong>{["X", "Y", "Z"][axis]}</strong>
+                  {(["min", "center", "max"] as AlignEdge[]).map((edge) => (
+                    <button key={edge} onClick={() => alignSelection(axis, edge)}>
+                      {edge === "center" ? "Ctr" : edge[0].toUpperCase() + edge.slice(1)}
+                    </button>
+                  ))}
+                  <button
+                    title="Evenly distribute centers"
+                    disabled={activeWorldIds.length < 3}
+                    onClick={() => distributeSelection(axis)}
+                  >
+                    Space
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <button
+            title="Show collider, velocity, and mass debugging"
+            className={physicsDebug ? "active" : ""}
+            onClick={() => setPhysicsDebug((current) => !current)}
+          >
+            <Activity size={16} /> Physics
+          </button>
         </div>
         <div className="insert-hint">
           <Plus size={13} />
@@ -2211,21 +3015,58 @@ end)
           <Play size={16} fill="currentColor" />
           {playing ? "Opening" : "Play"}
         </button>
+        <button
+          className="play-here-button"
+          onClick={() => void play("here")}
+          disabled={playing}
+          title="Spawn where the Studio camera is looking from"
+        >
+          <Play size={16} fill="currentColor" />
+          Play Here
+        </button>
         <button title="Project health" onClick={() => setShowHealth(true)}>
           Health {healthIssues.length > 0 ? `(${healthIssues.length})` : ""}
+        </button>
+        <button
+          title="Search every object, script, GUI, value, and service"
+          onClick={() => {
+            setSearchEverywhereQuery("");
+            setShowSearchEverywhere(true);
+          }}
+        >
+          <Search size={16} /> Search
+        </button>
+        <button title="Open scripting API explorer" onClick={() => setShowApiExplorer(true)}>
+          <Code2 size={16} /> API
         </button>
         <button title="Keyboard shortcuts" onClick={() => setShowShortcuts(true)}>
           Shortcuts
         </button>
       </div>
 
-      <div className="editor-workspace">
+      <div
+        className={`editor-workspace${mobilePanel ? ` mobile-panel-${mobilePanel}` : ""}`}
+      >
+        {mobilePanel && (
+          <button
+            className="mobile-panel-backdrop"
+            type="button"
+            aria-label="Close panel"
+            onClick={() => setMobilePanel(null)}
+          />
+        )}
         <Explorer
           project={project}
           selection={selection}
           selectedPartIds={selectedPartIds}
-          onSelectWorld={selectWorld}
-          onSelectModel={selectModel}
+          onSelectWorld={(id, additive) => {
+            selectWorld(id, additive);
+            setMobilePanel(null);
+          }}
+          onSelectModel={(id) => {
+            selectModel(id);
+            setMobilePanel(null);
+          }}
           onSelect={(next) => {
             setSelection(next);
             if (next.type !== "world" && next.type !== "model") {
@@ -2234,18 +3075,61 @@ end)
             if (next.type === "script") setWorkspace("script");
             else if (next.type === "gui") setWorkspace("ui");
             else if (next.type !== "service") setWorkspace("scene");
+            setMobilePanel(null);
           }}
           onContextMenu={openContextMenu}
         />
 
         <section className="editor-center">
           {workspace === "animation" ? (
-            <AnimationWorkspace
-              project={project}
-              onChange={updateProject}
-              onExport={(animation) => void exportAnimation(animation)}
-              onImport={(rigModelId) => void importAnimation(rigModelId)}
-            />
+            <>
+              <SceneViewport
+                objects={project.objects}
+                gui={project.gui}
+                lighting={project.lighting}
+                selectedWorldIds={activeWorldIds}
+                selectedGuiId={selectedGui?.id ?? null}
+                showGui={false}
+                tool={tool}
+                gridSnap={gridSnap}
+                angleSnap={angleSnap}
+                physicsDebug={physicsDebug}
+                onTransformStart={beginViewportTransform}
+                onTransformChange={updateViewportTransform}
+                onTransformEnd={finishViewportTransform}
+                onSelectWorld={(id, additive) => {
+                  if (id) selectWorld(id, additive);
+                  else {
+                    setSelection(null);
+                    setSelectedPartIds([]);
+                  }
+                }}
+                onSelectGui={(id) =>
+                  setSelection(id ? { type: "gui", id } : null)
+                }
+                onGuiChange={(id, patch) =>
+                  updateProject((current) => ({
+                    ...current,
+                    gui: current.gui.map((item) =>
+                      item.id === id ? { ...item, ...patch } : item,
+                    ),
+                  }))
+                }
+                onCameraChange={(spawn) => {
+                  playHereSpawn.current = spawn;
+                }}
+              />
+              <AnimationWorkspace
+                project={project}
+                selectedPartIds={selectedPartIds}
+                activeTool={tool}
+                onChange={updateProject}
+                onSelectParts={selectAnimationParts}
+                onToolChange={setTool}
+                onExport={(animation) => void exportAnimation(animation)}
+                onImport={(rigModelId) => void importAnimation(rigModelId)}
+              />
+            </>
           ) : workspace === "script" && selectedScript ? (
             <ScriptWorkspace
               key={selectedScript.id}
@@ -2281,6 +3165,7 @@ end)
               tool={tool}
               gridSnap={gridSnap}
               angleSnap={angleSnap}
+              physicsDebug={physicsDebug}
               onTransformStart={beginViewportTransform}
               onTransformChange={updateViewportTransform}
               onTransformEnd={finishViewportTransform}
@@ -2302,6 +3187,9 @@ end)
                   ),
                 }))
               }
+              onCameraChange={(spawn) => {
+                playHereSpawn.current = spawn;
+              }}
             />
           )}
         </section>
@@ -2313,7 +3201,12 @@ end)
             if (!selectedWorld) return;
             const ids = new Set(activeWorldIds);
             updateProject((current) => ({
-              ...current,
+              ...projectWithUpdatedReferences(
+                current,
+                typeof patch.name === "string" ? selectedWorld.name : "",
+                typeof patch.name === "string" ? patch.name : "",
+                ["Workspace", "workspace"],
+              ),
               objects: current.objects.map((item) =>
                 ids.has(item.id) ? { ...item, ...patch } : item,
               ),
@@ -2322,7 +3215,12 @@ end)
           onModelChange={(patch) => {
             if (!selectedModel) return;
             updateProject((current) => ({
-              ...current,
+              ...projectWithUpdatedReferences(
+                current,
+                typeof patch.name === "string" ? selectedModel.name : "",
+                typeof patch.name === "string" ? patch.name : "",
+                ["Workspace", "workspace"],
+              ),
               models: current.models.map((model) =>
                 model.id === selectedModel.id ? { ...model, ...patch } : model,
               ),
@@ -2331,7 +3229,12 @@ end)
           onRemoteChange={(patch) => {
             if (!selectedRemote) return;
             updateProject((current) => ({
-              ...current,
+              ...projectWithUpdatedReferences(
+                current,
+                typeof patch.name === "string" ? selectedRemote.name : "",
+                typeof patch.name === "string" ? patch.name : "",
+                ["ReplicatedStorage"],
+              ),
               remotes: current.remotes.map((remote) =>
                 remote.id === selectedRemote.id ? { ...remote, ...patch } : remote,
               ),
@@ -2340,7 +3243,12 @@ end)
           onGuiChange={(patch) => {
             if (!selectedGui) return;
             updateProject((current) => ({
-              ...current,
+              ...projectWithUpdatedReferences(
+                current,
+                typeof patch.name === "string" ? selectedGui.name : "",
+                typeof patch.name === "string" ? patch.name : "",
+                ["StarterGui", "PlayerGui"],
+              ),
               gui: current.gui.map((item) =>
                 item.id === selectedGui.id ? { ...item, ...patch } : item,
               ),
@@ -2348,17 +3256,39 @@ end)
           }}
           onScriptChange={(patch) => {
             if (!selectedScript) return;
-            updateProject((current) => ({
-              ...current,
-              scripts: current.scripts.map((item) =>
-                item.id === selectedScript.id ? { ...item, ...patch } : item,
-              ),
-            }));
+            updateProject((current) => {
+              const renamed = projectWithUpdatedReferences(
+                current,
+                typeof patch.name === "string" ? selectedScript.name : "",
+                typeof patch.name === "string" ? patch.name : "",
+                ["ReplicatedStorage", "ServerScriptService", "StarterPlayerScripts", "StarterGui"],
+              );
+              return {
+                ...renamed,
+                scripts: renamed.scripts.map((item) =>
+                  item.id === selectedScript.id ? { ...item, ...patch } : item,
+                ),
+              };
+            });
           }}
           onValueChange={(patch) => {
             if (!selectedValue) return;
             updateProject((current) => ({
-              ...current,
+              ...projectWithUpdatedReferences(
+                current,
+                typeof patch.name === "string" ? selectedValue.name : "",
+                typeof patch.name === "string" ? patch.name : "",
+                [
+                  "Workspace",
+                  "workspace",
+                  "ReplicatedStorage",
+                  "ServerStorage",
+                  "StarterGui",
+                  "PlayerGui",
+                  "LocalPlayer",
+                  "player",
+                ],
+              ),
               values: current.values.map((value) =>
                 value.id === selectedValue.id ? { ...value, ...patch } : value,
               ),
@@ -2384,6 +3314,64 @@ end)
           onExportModel={() => void exportSelectedModel()}
         />
       </div>
+
+      <nav className="mobile-studio-dock" aria-label="Mobile Studio tools">
+        <button
+          className={mobilePanel === "explorer" ? "active" : ""}
+          onClick={() =>
+            setMobilePanel((current) =>
+              current === "explorer" ? null : "explorer",
+            )
+          }
+        >
+          <PanelLeft size={18} />
+          Explorer
+        </button>
+        <button
+          className={!mobilePanel && workspace === "scene" ? "active" : ""}
+          onClick={() => {
+            setWorkspace("scene");
+            setMobilePanel(null);
+          }}
+        >
+          <Grid3X3 size={18} />
+          Scene
+        </button>
+        <button
+          className={!mobilePanel && workspace === "ui" ? "active" : ""}
+          onClick={() => {
+            setWorkspace("ui");
+            setMobilePanel(null);
+          }}
+        >
+          <Monitor size={18} />
+          UI
+        </button>
+        <button
+          className={!mobilePanel && workspace === "script" ? "active" : ""}
+          onClick={() => {
+            if (!selectedScript && project.scripts[0]) {
+              setSelection({ type: "script", id: project.scripts[0].id });
+            }
+            setWorkspace("script");
+            setMobilePanel(null);
+          }}
+        >
+          <Code2 size={18} />
+          Script
+        </button>
+        <button
+          className={mobilePanel === "properties" ? "active" : ""}
+          onClick={() =>
+            setMobilePanel((current) =>
+              current === "properties" ? null : "properties",
+            )
+          }
+        >
+          <SlidersHorizontal size={18} />
+          Properties
+        </button>
+      </nav>
 
       {contextMenu && (
         <div
@@ -2513,10 +3501,11 @@ end)
             <code>Ctrl+S</code><span>Save</span>
             <code>Ctrl+Z / Ctrl+Y</code><span>Undo / redo</span>
             <code>Ctrl+C / Ctrl+V</code><span>Copy / paste selection</span>
-            <code>Ctrl+D</code><span>Duplicate selection</span>
+            <code>Ctrl+D</code><span>Duplicate selection with children</span>
             <code>Ctrl+G</code><span>Group as Model</span>
             <code>Ctrl+Shift+G</code><span>Ungroup Model</span>
             <code>Ctrl+Shift+P</code><span>Command palette</span>
+            <code>Ctrl+Shift+F</code><span>Search everywhere</span>
             <code>F2</code><span>Rename project</span>
             <code>WASD / Arrows</code><span>Move / look around viewport</span>
           </div>
@@ -2531,7 +3520,13 @@ end)
               ["Playtest", () => void play()],
               ["Group selection into Model", createModel],
               ["Duplicate selection", duplicateSelected],
+              ["Search everywhere", () => {
+                setSearchEverywhereQuery("");
+                setShowSearchEverywhere(true);
+              }],
+              ["Open Script API Explorer", () => setShowApiExplorer(true)],
               ["Open Project Health", () => setShowHealth(true)],
+              ["Toggle Physics Debug", () => setPhysicsDebug((current) => !current)],
               ["Switch to Scene", () => setWorkspace("scene")],
               ["Switch to UI", () => setWorkspace("ui")],
               ["Switch to Script", () => setWorkspace("script")],
@@ -2548,6 +3543,26 @@ end)
             ))}
           </div>
         </StudioInfoDialog>
+      )}
+
+      {showSearchEverywhere && (
+        <SearchEverywhereDialog
+          query={searchEverywhereQuery}
+          results={searchEverywhereResults}
+          onQuery={setSearchEverywhereQuery}
+          onClose={() => setShowSearchEverywhere(false)}
+          onSelect={selectSearchResult}
+        />
+      )}
+
+      {showApiExplorer && (
+        <ScriptApiExplorerDialog
+          onClose={() => setShowApiExplorer(false)}
+          onCopy={(code) => {
+            void navigator.clipboard.writeText(code);
+            setMessage("Copied API example");
+          }}
+        />
       )}
 
       <footer className="editor-statusbar">
@@ -2577,6 +3592,112 @@ function StudioInfoDialog({
         <button className="dialog-close" onClick={onClose}>Close</button>
         <h2>{title}</h2>
         {children}
+      </section>
+    </div>
+  );
+}
+
+function SearchEverywhereDialog({
+  query,
+  results,
+  onQuery,
+  onClose,
+  onSelect,
+}: {
+  query: string;
+  results: StudioSearchResult[];
+  onQuery: (query: string) => void;
+  onClose: () => void;
+  onSelect: (selection: Exclude<Selection, null>) => void;
+}) {
+  return (
+    <div className="studio-modal-layer">
+      <button className="studio-modal-backdrop" onClick={onClose} />
+      <section className="studio-info-dialog studio-search-dialog">
+        <button className="dialog-close" onClick={onClose}>Close</button>
+        <h2>Search Everywhere</h2>
+        <label className="studio-global-search">
+          <Search size={16} />
+          <input
+            autoFocus
+            value={query}
+            onChange={(event) => onQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") onClose();
+              if (event.key === "Enter" && results[0]) {
+                onSelect(results[0].selection);
+              }
+            }}
+            placeholder="Search objects, scripts, GUI, remotes, values, services..."
+          />
+        </label>
+        <div className="studio-search-results">
+          {results.map((result) => (
+            <button key={result.key} onClick={() => onSelect(result.selection)}>
+              {explorerResultIcon(result.selection.type)}
+              <span>
+                <strong>{result.label}</strong>
+                <small>{result.path}</small>
+              </span>
+              <em>{result.detail}</em>
+            </button>
+          ))}
+          {query.trim() && results.length === 0 && <p>No matches.</p>}
+          {!query.trim() && <p>Start typing to jump anywhere in the project.</p>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ScriptApiExplorerDialog({
+  onClose,
+  onCopy,
+}: {
+  onClose: () => void;
+  onCopy: (code: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const normalized = query.trim().toLowerCase();
+  const sections = SCRIPT_API_SECTIONS.map((section) => ({
+    ...section,
+    items: section.items.filter((item) =>
+      `${section.title} ${item.name} ${item.code}`.toLowerCase().includes(normalized),
+    ),
+  })).filter((section) => !normalized || section.items.length > 0);
+  return (
+    <div className="studio-modal-layer">
+      <button className="studio-modal-backdrop" onClick={onClose} />
+      <section className="studio-info-dialog studio-api-dialog">
+        <button className="dialog-close" onClick={onClose}>Close</button>
+        <h2>Script API Explorer</h2>
+        <p>Quick examples for common Polymons scripting patterns.</p>
+        <label className="studio-global-search">
+          <Search size={16} />
+          <input
+            autoFocus
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search API examples"
+          />
+        </label>
+        <div className="script-api-grid">
+          {sections.map((section) => (
+            <article key={section.title} className="script-api-section">
+              <h3>{section.title}</h3>
+              {section.items.map((item) => (
+                <div className="script-api-card" key={item.name}>
+                  <header>
+                    <strong>{item.name}</strong>
+                    <button onClick={() => onCopy(item.code)}>Copy</button>
+                  </header>
+                  <pre>{item.code}</pre>
+                </div>
+              ))}
+            </article>
+          ))}
+          {sections.length === 0 && <p>No API examples matched.</p>}
+        </div>
       </section>
     </div>
   );
@@ -3008,6 +4129,7 @@ function PublishDialog({
             )}
           </button>
           <input
+            className="explorer-search-input"
             ref={thumbnailInput}
             hidden
             type="file"
@@ -3065,26 +4187,46 @@ function PublishDialog({
 
 function AnimationWorkspace({
   project,
+  selectedPartIds,
+  activeTool,
   onChange,
+  onSelectParts,
+  onToolChange,
   onExport,
   onImport,
 }: {
   project: StudioProject;
+  selectedPartIds: string[];
+  activeTool: StudioTool;
   onChange: (updater: (current: StudioProject) => StudioProject) => void;
+  onSelectParts: (ids: string[]) => void;
+  onToolChange: (tool: StudioTool) => void;
   onExport: (animation: StudioAnimation) => void;
   onImport: (rigModelId: string) => void;
 }) {
-  const rigs = project.models.filter((model) => model.tags.includes("Humanoid"));
+  const rigs = useMemo(
+    () => project.models.filter((model) => model.tags.includes("Humanoid")),
+    [project.models],
+  );
   const [rigId, setRigId] = useState(rigs[0]?.id ?? "");
   const [selectedId, setSelectedId] = useState(project.animations[0]?.id ?? "");
   const selected =
     project.animations.find((animation) => animation.id === selectedId) ?? null;
-  const parts = project.objects.filter(
-    (object) => object.modelId === (selected?.rigModelId ?? rigId),
+  const parts = useMemo(
+    () =>
+      project.objects.filter(
+        (object) => object.modelId === (selected?.rigModelId ?? rigId),
+      ),
+    [project.objects, rigId, selected?.rigModelId],
   );
   const [partId, setPartId] = useState(parts[0]?.id ?? "");
   const [time, setTime] = useState(0);
-  const [rotation, setRotation] = useState<[number, number, number]>([0, 0, 0]);
+  const restPose = useRef(
+    new Map<
+      string,
+      { position: [number, number, number]; rotation: [number, number, number] }
+    >(),
+  );
 
   useEffect(() => {
     if (!rigs.some((rig) => rig.id === rigId)) setRigId(rigs[0]?.id ?? "");
@@ -3099,6 +4241,24 @@ function AnimationWorkspace({
       setPartId(parts[0]?.id ?? "");
     }
   }, [partId, parts]);
+  useEffect(() => {
+    for (const part of parts) {
+      if (!restPose.current.has(part.id)) {
+        restPose.current.set(part.id, {
+          position: [...part.position],
+          rotation: [...part.rotation],
+        });
+      }
+    }
+  }, [parts]);
+  useEffect(() => {
+    const selectedRigPart = selectedPartIds.find((id) =>
+      parts.some((part) => part.id === id),
+    );
+    if (selectedRigPart && selectedRigPart !== partId) {
+      setPartId(selectedRigPart);
+    }
+  }, [partId, parts, selectedPartIds]);
 
   const patchAnimation = (patch: Partial<StudioAnimation>) => {
     if (!selected) return;
@@ -3130,158 +4290,544 @@ function AnimationWorkspace({
     setSelectedId(next.id);
   };
 
-  const addKeyframe = () => {
-    if (!selected || !partId) return;
-    const keyTime = Math.min(selected.duration, Math.max(0, time));
-    const pose = {
-      rotation: rotation.map(
-        (value) => (value * Math.PI) / 180,
-      ) as [number, number, number],
+  const poseForObject = (object: StudioObject) => {
+    const rest =
+      restPose.current.get(object.id) ?? {
+        position: [...object.position] as [number, number, number],
+        rotation: [...object.rotation] as [number, number, number],
+      };
+    restPose.current.set(object.id, rest);
+    return {
+      position: [
+        object.position[0] - rest.position[0],
+        object.position[1] - rest.position[1],
+        object.position[2] - rest.position[2],
+      ] as [number, number, number],
+      rotation: [
+        object.rotation[0] - rest.rotation[0],
+        object.rotation[1] - rest.rotation[1],
+        object.rotation[2] - rest.rotation[2],
+      ] as [number, number, number],
     };
+  };
+
+  const mergeKeyframePoses = (
+    poses: StudioAnimation["keyframes"][number]["poses"],
+  ) => {
+    if (!selected || Object.keys(poses).length === 0) return;
+    const keyTime = Math.min(selected.duration, Math.max(0, time));
     const existing = selected.keyframes.find(
       (keyframe) => Math.abs(keyframe.time - keyTime) < 0.0001,
     );
     const keyframes = existing
       ? selected.keyframes.map((keyframe) =>
           keyframe === existing
-            ? { ...keyframe, poses: { ...keyframe.poses, [partId]: pose } }
+            ? { ...keyframe, poses: { ...keyframe.poses, ...poses } }
             : keyframe,
         )
       : [
           ...selected.keyframes,
-          { time: keyTime, poses: { [partId]: pose } },
+          { time: keyTime, poses },
         ].sort((a, b) => a.time - b.time);
     patchAnimation({ keyframes });
   };
 
+  const captureSelectedPose = () => {
+    const selectedRigIds = selectedPartIds.filter((id) =>
+      parts.some((part) => part.id === id),
+    );
+    const ids = selectedRigIds.length > 0 ? selectedRigIds : partId ? [partId] : [];
+    const poses = Object.fromEntries(
+      parts
+        .filter((part) => ids.includes(part.id))
+        .map((part) => [part.id, poseForObject(part)] as const),
+    );
+    mergeKeyframePoses(poses);
+  };
+
+  const captureWholeRigPose = () => {
+    mergeKeyframePoses(
+      Object.fromEntries(parts.map((part) => [part.id, poseForObject(part)] as const)),
+    );
+  };
+
+  const setCurrentAsRestPose = () => {
+    for (const part of parts) {
+      restPose.current.set(part.id, {
+        position: [...part.position],
+        rotation: [...part.rotation],
+      });
+    }
+  };
+
+  const poseAtTime = useCallback((objectId: string, keyTime: number) => {
+    if (!selected) return null;
+    const posed = selected.keyframes
+      .filter((keyframe) => keyframe.poses[objectId])
+      .sort((a, b) => a.time - b.time);
+    if (posed.length === 0) return null;
+    const before =
+      [...posed].reverse().find((keyframe) => keyframe.time <= keyTime) ?? posed[0];
+    const after =
+      posed.find((keyframe) => keyframe.time >= keyTime) ?? posed[posed.length - 1];
+    const span = Math.max(0.0001, after.time - before.time);
+    const alpha = before === after ? 0 : (keyTime - before.time) / span;
+    const interpolate = (
+      first: [number, number, number] | undefined,
+      second: [number, number, number] | undefined,
+    ): [number, number, number] => {
+      const a = first ?? [0, 0, 0];
+      const b = second ?? a;
+      return [
+        a[0] + (b[0] - a[0]) * alpha,
+        a[1] + (b[1] - a[1]) * alpha,
+        a[2] + (b[2] - a[2]) * alpha,
+      ];
+    };
+    return {
+      position: interpolate(
+        before.poses[objectId].position,
+        after.poses[objectId].position,
+      ),
+      rotation: interpolate(
+        before.poses[objectId].rotation,
+        after.poses[objectId].rotation,
+      ),
+    };
+  }, [selected]);
+
+  const applyPoseAtCurrentTime = useCallback((targetTime: number) => {
+    if (!selected) return;
+    const keyTime = Math.min(selected.duration, Math.max(0, targetTime));
+    onChange((current) => ({
+      ...current,
+      objects: current.objects.map((object) => {
+        if (!parts.some((part) => part.id === object.id)) return object;
+        const rest = restPose.current.get(object.id);
+        const pose = poseAtTime(object.id, keyTime);
+        if (!rest || !pose) return object;
+        return {
+          ...object,
+          position: [
+            rest.position[0] + pose.position[0],
+            rest.position[1] + pose.position[1],
+            rest.position[2] + pose.position[2],
+          ],
+          rotation: [
+            rest.rotation[0] + pose.rotation[0],
+            rest.rotation[1] + pose.rotation[1],
+            rest.rotation[2] + pose.rotation[2],
+          ],
+        };
+      }),
+    }));
+  }, [onChange, parts, poseAtTime, selected]);
+
+  const resetRigToRestPose = () => {
+    onChange((current) => ({
+      ...current,
+      objects: current.objects.map((object) => {
+        const rest = restPose.current.get(object.id);
+        return rest
+          ? {
+              ...object,
+              position: [...rest.position],
+              rotation: [...rest.rotation],
+            }
+          : object;
+      }),
+    }));
+  };
+
+  const [windowState, setWindowState] = useState({
+    x: 18,
+    y: 18,
+    width: 560,
+    height: 300,
+    minimized: false,
+  });
+  const [playingPreview, setPlayingPreview] = useState(false);
+  const fps = 60;
+  const frame = selected ? Math.round(time * fps) : 0;
+  const totalFrames = selected
+    ? Math.max(1, Math.round(selected.duration * fps))
+    : 60;
+  const timelineFrames = useMemo(() => {
+    const interval = totalFrames <= 90 ? 10 : totalFrames <= 180 ? 15 : 30;
+    const frames: number[] = [];
+    for (let cursor = 0; cursor <= totalFrames; cursor += interval) {
+      frames.push(cursor);
+    }
+    if (!frames.includes(totalFrames)) frames.push(totalFrames);
+    return frames;
+  }, [totalFrames]);
+  const selectedRig = rigs.find((rig) => rig.id === (selected?.rigModelId ?? rigId));
+  const keyframeCount = selected?.keyframes.reduce(
+    (total, keyframe) => total + Object.keys(keyframe.poses).length,
+    0,
+  ) ?? 0;
+  const posedFramesForPart = (id: string) =>
+    selected?.keyframes
+      .filter((keyframe) => keyframe.poses[id])
+      .map((keyframe) => Math.round(keyframe.time * fps)) ?? [];
+  const setFrame = (nextFrame: number, apply = false) => {
+    if (!selected) return;
+    const nextTime = Math.min(
+      selected.duration,
+      Math.max(0, nextFrame / fps),
+    );
+    setTime(nextTime);
+    if (apply) applyPoseAtCurrentTime(nextTime);
+  };
+  const moveFrame = (delta: number) => setFrame(frame + delta, true);
+  const jumpToNearestKeyframe = (direction: -1 | 1) => {
+    if (!selected) return;
+    const frames = selected.keyframes
+      .map((keyframe) => Math.round(keyframe.time * fps))
+      .sort((a, b) => a - b);
+    const target =
+      direction < 0
+        ? [...frames].reverse().find((candidate) => candidate < frame)
+        : frames.find((candidate) => candidate > frame);
+    if (target !== undefined) setFrame(target, true);
+  };
+  const startWindowDrag = (
+    event: ReactPointerEvent<HTMLElement>,
+    mode: "move" | "resize",
+  ) => {
+    event.preventDefault();
+    const origin = {
+      pointerX: event.clientX,
+      pointerY: event.clientY,
+      ...windowState,
+    };
+    const target = event.currentTarget;
+    target.setPointerCapture?.(event.pointerId);
+    const onMove = (moveEvent: PointerEvent) => {
+      const dx = moveEvent.clientX - origin.pointerX;
+      const dy = moveEvent.clientY - origin.pointerY;
+      setWindowState((current) =>
+        mode === "move"
+          ? {
+              ...current,
+              x: Math.max(8, origin.x + dx),
+              y: Math.max(8, origin.y + dy),
+            }
+          : {
+              ...current,
+              width: Math.max(390, origin.width + dx),
+              height: Math.max(210, origin.height + dy),
+            },
+      );
+    };
+    const onUp = () => {
+      target.releasePointerCapture?.(event.pointerId);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  useEffect(() => {
+    if (!playingPreview || !selected) return;
+    let frameId = 0;
+    let previous = performance.now();
+    const tick = (now: number) => {
+      const delta = (now - previous) / 1000;
+      previous = now;
+      setTime((current) => {
+        if (!selected) return current;
+        let next = current + delta;
+        if (next > selected.duration) {
+          if (selected.looped) next %= selected.duration;
+          else {
+            next = selected.duration;
+            setPlayingPreview(false);
+          }
+        }
+        applyPoseAtCurrentTime(next);
+        return next;
+      });
+      frameId = requestAnimationFrame(tick);
+    };
+    frameId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frameId);
+  }, [applyPoseAtCurrentTime, playingPreview, selected]);
+
   return (
-    <div className="animation-workspace">
-      <header>
+    <section
+      className={`animation-floating-window${windowState.minimized ? " minimized" : ""}`}
+      style={{
+        left: windowState.x,
+        top: windowState.y,
+        width: windowState.width,
+        height: windowState.minimized ? undefined : windowState.height,
+      }}
+    >
+      <header
+        className="animation-titlebar"
+        onPointerDown={(event) => startWindowDrag(event, "move")}
+      >
         <div>
-          <span>Animation editor</span>
-          <h2>Blocky humanoid animation</h2>
+          <RotateCw size={14} />
+          <strong>{selected?.name ?? "Animation"} - Poly Animator</strong>
         </div>
-        <div className="animation-header-actions">
-          <button disabled={!rigId} onClick={() => onImport(rigId)}>
-            <Upload size={15} /> Import .pma
-          </button>
-          <button disabled={!selected} onClick={() => selected && onExport(selected)}>
-            <Download size={15} /> Export .pma
-          </button>
-        </div>
+        <button
+          type="button"
+          title={windowState.minimized ? "Restore" : "Minimize"}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() =>
+            setWindowState((current) => ({
+              ...current,
+              minimized: !current.minimized,
+            }))
+          }
+        >
+          {windowState.minimized ? "□" : "–"}
+        </button>
       </header>
-      {rigs.length === 0 ? (
-        <div className="animation-empty">
-          <UserRound size={32} />
-          <h3>Add a HumanoidRootPart first.</h3>
-          <p>Studio will create the full editable humanoid rig automatically.</p>
-        </div>
-      ) : (
-        <div className="animation-layout">
-          <aside>
-            <label>
-              Humanoid rig
-              <select value={rigId} onChange={(event) => setRigId(event.target.value)}>
-                {rigs.map((rig) => <option key={rig.id} value={rig.id}>{rig.name}</option>)}
-              </select>
-            </label>
-            <button className="animation-create" onClick={createAnimation}>
-              <Plus size={15} /> New animation
-            </button>
-            <div className="animation-list">
-              {project.animations.map((animation) => (
-                <button
-                  key={animation.id}
-                  className={animation.id === selectedId ? "active" : ""}
-                  onClick={() => {
-                    setSelectedId(animation.id);
-                    if (animation.rigModelId) setRigId(animation.rigModelId);
-                  }}
-                >
-                  <RotateCw size={14} />
-                  <span>{animation.name}</span>
-                  <small>{animation.duration.toFixed(2)}s</small>
-                </button>
-              ))}
+
+      {!windowState.minimized && (
+        <>
+          <nav className="animation-menu-row">
+            <button onClick={createAnimation}>File</button>
+            <button onClick={captureSelectedPose} disabled={!selected}>Keyframe</button>
+            <button onClick={() => setFrame(frame - 1, true)} disabled={!selected}>Frame</button>
+            <button onClick={() => onToolChange("camera")}>Camera</button>
+            <button onClick={setCurrentAsRestPose} disabled={!selected}>Options</button>
+            <button onClick={() => onImport(rigId)} disabled={!rigId}>Import</button>
+            <button onClick={() => selected && onExport(selected)} disabled={!selected}>Export</button>
+          </nav>
+
+          {rigs.length === 0 ? (
+            <div className="animation-empty floating-empty">
+              <UserRound size={28} />
+              <h3>Add a HumanoidRootPart first.</h3>
+              <p>Studio will create the full editable humanoid rig automatically.</p>
             </div>
-          </aside>
-          <section>
-            {selected ? (
-              <>
-                <div className="animation-fields">
-                  <TextField
-                    label="Name"
-                    value={selected.name}
-                    onChange={(name) => patchAnimation({ name })}
-                  />
-                  <NumberField
-                    label="Duration"
-                    value={selected.duration}
-                    minimum={0.05}
-                    maximum={600}
-                    step={0.05}
-                    onChange={(duration) => patchAnimation({ duration })}
-                  />
-                  <ToggleField
-                    label="Looped"
-                    value={selected.looped}
-                    onChange={(looped) => patchAnimation({ looped })}
-                  />
+          ) : (
+            <div className="moon-animator-body">
+              <aside className="moon-track-panel">
+                <div className="moon-toolbar">
+                  <button title="New animation" onClick={createAnimation}>
+                    <Plus size={14} />
+                  </button>
+                  <button title="Move tool" className={activeTool === "move" ? "active" : ""} onClick={() => onToolChange("move")}>
+                    <Move3D size={14} />
+                  </button>
+                  <button title="Rotate tool" className={activeTool === "rotate" ? "active" : ""} onClick={() => onToolChange("rotate")}>
+                    <RotateCw size={14} />
+                  </button>
+                  <button title="Set selected frame" disabled={!selected} onClick={captureSelectedPose}>
+                    ●
+                  </button>
+                  <span>{keyframeCount} keyframes</span>
                 </div>
-                <div className="keyframe-builder">
-                  <h3>Add or update a pose</h3>
-                  <label>
-                    Limb
-                    <select value={partId} onChange={(event) => setPartId(event.target.value)}>
-                      {parts.map((part) => <option key={part.id} value={part.id}>{part.name}</option>)}
-                    </select>
-                  </label>
-                  <NumberField
-                    label="Time (seconds)"
-                    value={time}
-                    minimum={0}
-                    maximum={selected.duration}
-                    step={0.05}
-                    onChange={setTime}
-                  />
-                  <VectorField
-                    label="Rotation offset (degrees)"
-                    value={rotation}
-                    step={1}
-                    onChange={setRotation}
-                  />
-                  <button onClick={addKeyframe}>Set keyframe</button>
-                </div>
-                <div className="keyframe-list">
-                  <h3>Keyframes</h3>
-                  {selected.keyframes.map((keyframe, index) => (
-                    <div key={`${keyframe.time}-${index}`}>
-                      <strong>{keyframe.time.toFixed(2)}s</strong>
-                      <span>{Object.keys(keyframe.poses).length} posed part(s)</span>
+
+                <label className="moon-select">
+                  <span>Rig</span>
+                  <select
+                    value={rigId}
+                    onChange={(event) => {
+                      setRigId(event.target.value);
+                      onSelectParts(
+                        project.objects
+                          .filter((object) => object.modelId === event.target.value)
+                          .map((object) => object.id),
+                      );
+                    }}
+                  >
+                    {rigs.map((rig) => (
+                      <option key={rig.id} value={rig.id}>{rig.name}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="moon-select">
+                  <span>Clip</span>
+                  <select
+                    value={selectedId}
+                    onChange={(event) => {
+                      setSelectedId(event.target.value);
+                      const animation = project.animations.find((item) => item.id === event.target.value);
+                      if (animation?.rigModelId) setRigId(animation.rigModelId);
+                    }}
+                  >
+                    {project.animations.map((animation) => (
+                      <option key={animation.id} value={animation.id}>{animation.name}</option>
+                    ))}
+                  </select>
+                </label>
+
+                {selected && (
+                  <div className="moon-track-list">
+                    <button
+                      className="moon-track rig"
+                      onClick={() => onSelectParts(parts.map((part) => part.id))}
+                    >
+                      <ChevronDown size={13} />
+                      <Folder size={13} />
+                      <strong>{selectedRig?.name ?? "R6"}</strong>
+                      <span>{selected.duration.toFixed(2)}s</span>
+                    </button>
+                    <button className="moon-track event">
+                      <ChevronRight size={13} />
+                      <Activity size={13} />
+                      <span>Events</span>
+                      <small>{selected.keyframes.length}</small>
+                    </button>
+                    <button
+                      className="moon-track group"
+                      onClick={() => onSelectParts(parts.map((part) => part.id))}
+                    >
+                      <ChevronDown size={13} />
+                      <Boxes size={13} />
+                      <span>Rig</span>
+                      <small>{parts.length}</small>
+                    </button>
+                    {parts.map((part) => (
                       <button
-                        title="Delete keyframe"
-                        onClick={() =>
-                          patchAnimation({
-                            keyframes: selected.keyframes.filter(
-                              (_, keyframeIndex) => keyframeIndex !== index,
-                            ),
-                          })
-                        }
+                        key={part.id}
+                        className={`moon-track limb${part.id === partId ? " active" : ""}`}
+                        onClick={() => {
+                          setPartId(part.id);
+                          onSelectParts([part.id]);
+                        }}
                       >
-                        <Trash2 size={14} />
+                        <ChevronRight size={12} />
+                        <span>{part.name}</span>
+                        <small title="Visible in viewport">●</small>
+                        <i title="Keyframes">{posedFramesForPart(part.id).length}</i>
                       </button>
+                    ))}
+                  </div>
+                )}
+              </aside>
+
+              <main className="moon-timeline-panel">
+                {selected ? (
+                  <>
+                    <div className="moon-timeline-top">
+                      <button onClick={() => setPlayingPreview((current) => !current)}>
+                        {playingPreview ? "Pause" : "Play"}
+                      </button>
+                      <button onClick={() => moveFrame(-1)}>-1</button>
+                      <strong>{frame}</strong>
+                      <button onClick={() => moveFrame(1)}>+1</button>
+                      <button className="moon-primary-action" onClick={captureSelectedPose}>
+                        Add Frame
+                      </button>
+                      <button onClick={() => partId && onSelectParts([partId])}>
+                        Select Limb
+                      </button>
+                      <label>
+                        FPS
+                        <span>{fps}</span>
+                      </label>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={selected.looped}
+                          onChange={(event) => patchAnimation({ looped: event.target.checked })}
+                        />
+                        Loop
+                      </label>
+                      <NumberField
+                        label="Length"
+                        value={selected.duration}
+                        minimum={0.05}
+                        maximum={600}
+                        step={0.05}
+                        onChange={(duration) => patchAnimation({ duration })}
+                      />
                     </div>
-                  ))}
-                </div>
-                <code>Animations.Play("{selected.name}")</code>
-              </>
-            ) : (
-              <div className="animation-empty"><p>Create an animation to begin.</p></div>
-            )}
-          </section>
-        </div>
+
+                    <div className="moon-ruler">
+                      {timelineFrames.map((tick) => (
+                        <button
+                          key={tick}
+                          style={{ left: `${(tick / totalFrames) * 100}%` }}
+                          onClick={() => setFrame(tick, true)}
+                        >
+                          {tick}
+                        </button>
+                      ))}
+                      <input
+                        type="range"
+                        min={0}
+                        max={totalFrames}
+                        value={frame}
+                        onChange={(event) => setFrame(Number(event.target.value), true)}
+                      />
+                    </div>
+
+                    <div className="moon-timeline-grid">
+                      <div className="moon-playhead" style={{ left: `${(frame / totalFrames) * 100}%` }} />
+                      <div className="moon-event-row">
+                        {selected.keyframes.map((keyframe, index) => (
+                          <button
+                            key={`${keyframe.time}-${index}`}
+                            className="moon-key event"
+                            title={`${Math.round(keyframe.time * fps)} frame event`}
+                            style={{ left: `${(Math.round(keyframe.time * fps) / totalFrames) * 100}%` }}
+                            onClick={() => setFrame(Math.round(keyframe.time * fps), true)}
+                          />
+                        ))}
+                      </div>
+                      {parts.map((part) => (
+                        <div key={part.id} className="moon-key-row">
+                          {posedFramesForPart(part.id).map((posedFrame) => (
+                            <button
+                              key={`${part.id}-${posedFrame}`}
+                              className={`moon-key${part.id === partId ? " selected" : ""}`}
+                              style={{ left: `${(posedFrame / totalFrames) * 100}%` }}
+                              onClick={() => {
+                                setPartId(part.id);
+                                onSelectParts([part.id]);
+                                setFrame(posedFrame, true);
+                              }}
+                            />
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="moon-action-bar">
+                      <strong>Simple flow:</strong>
+                      <span>1. Select limb</span>
+                      <span>2. Rotate/move it</span>
+                      <span>3. Click Add Frame</span>
+                      <span>4. Move frame and pose again</span>
+                      <details className="moon-advanced-actions">
+                        <summary>Advanced</summary>
+                        <button onClick={captureWholeRigPose}>Set full rig frame</button>
+                        <button onClick={() => applyPoseAtCurrentTime(time)}>Apply frame</button>
+                        <button onClick={resetRigToRestPose}>Reset rig</button>
+                        <button onClick={setCurrentAsRestPose}>Use current as rest</button>
+                        <button onClick={() => jumpToNearestKeyframe(-1)}>Prev key</button>
+                        <button onClick={() => jumpToNearestKeyframe(1)}>Next key</button>
+                      </details>
+                    </div>
+                    <code className="moon-code">Animations.Play("{selected.name}")</code>
+                  </>
+                ) : (
+                  <div className="animation-empty floating-empty">
+                    <p>Create an animation to begin.</p>
+                    <button onClick={createAnimation}>New animation</button>
+                  </div>
+                )}
+              </main>
+            </div>
+          )}
+
+          <span
+            className="animation-resize-handle"
+            onPointerDown={(event) => startWindowDrag(event, "resize")}
+          />
+        </>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -3305,6 +4851,9 @@ function Explorer({
     event: React.MouseEvent<HTMLElement>,
   ) => void;
 }) {
+  const [query, setQuery] = useState("");
+  const [revealVersion, setRevealVersion] = useState(0);
+  const panelRef = useRef<HTMLElement>(null);
   const scriptsAt = (parent: string) =>
     project.scripts.filter((script) => script.parent === parent);
   const valuesAt = (parent: string) =>
@@ -3314,11 +4863,206 @@ function Explorer({
   const looseObjects = project.objects.filter(
     (object) => !object.modelId && !object.parentId,
   );
+  const searchResults = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return [];
+    const results: Array<{
+      key: string;
+      label: string;
+      path: string;
+      detail: string;
+      selection: Exclude<Selection, null>;
+    }> = [];
+    const add = (
+      label: string,
+      path: string,
+      detail: string,
+      nextSelection: Exclude<Selection, null>,
+    ) => {
+      if (`${label} ${path} ${detail}`.toLowerCase().includes(normalized)) {
+        results.push({
+          key: `${nextSelection.type}:${nextSelection.id}`,
+          label,
+          path,
+          detail,
+          selection: nextSelection,
+        });
+      }
+    };
+    const objectPath = (object: StudioObject) => {
+      const names = [object.name];
+      const visited = new Set([object.id]);
+      let parentId = object.parentId;
+      while (parentId && !visited.has(parentId)) {
+        visited.add(parentId);
+        const parent = project.objects.find((item) => item.id === parentId);
+        if (!parent) break;
+        names.unshift(parent.name);
+        parentId = parent.parentId;
+      }
+      const model = object.modelId
+        ? project.models.find((item) => item.id === object.modelId)
+        : null;
+      return ["Workspace", model?.name, ...names].filter(Boolean).join(" / ");
+    };
+    const guiPath = (gui: StudioGuiObject) => {
+      const names = [gui.name];
+      const visited = new Set([gui.id]);
+      let parentId = gui.parentId;
+      while (parentId && !visited.has(parentId)) {
+        visited.add(parentId);
+        const parent = project.gui.find((item) => item.id === parentId);
+        if (!parent) break;
+        names.unshift(parent.name);
+        parentId = parent.parentId;
+      }
+      return ["StarterGui", ...names].join(" / ");
+    };
+    const parentPath = (parent: string, visited = new Set<string>()): string => {
+      if (visited.has(parent)) return "Circular parent";
+      const nextVisited = new Set(visited).add(parent);
+      const world = project.objects.find((item) => item.id === parent);
+      if (world) return objectPath(world);
+      const model = project.models.find((item) => item.id === parent);
+      if (model) return `Workspace / ${model.name}`;
+      const gui = project.gui.find((item) => item.id === parent);
+      if (gui) return guiPath(gui);
+      const script = project.scripts.find((item) => item.id === parent);
+      if (script) return `${parentPath(script.parent, nextVisited)} / ${script.name}`;
+      const value = project.values.find((item) => item.id === parent);
+      if (value) return `${parentPath(value.parent, nextVisited)} / ${value.name}`;
+      return parent;
+    };
+
+    [
+      "Workspace",
+      "ServerScriptService",
+      "ReplicatedStorage",
+      "ServerStorage",
+      "Lighting",
+      "Players",
+      "StarterPlayerScripts",
+      "StarterGui",
+      "DataStoreService",
+      "Sky",
+    ].forEach((service) =>
+      add(service, service === "Sky" ? "Workspace / Sky" : service, "Service", {
+        type: "service",
+        id: service,
+      }),
+    );
+    add("LocalPlayer", "Players / LocalPlayer", "Player", {
+      type: "player",
+      id: "LocalPlayer",
+    });
+    project.models.forEach((model) =>
+      add(model.name, `Workspace / ${model.name}`, "Model", {
+        type: "model",
+        id: model.id,
+      }),
+    );
+    project.objects.forEach((object) =>
+      add(object.name, objectPath(object), object.type, {
+        type: "world",
+        id: object.id,
+      }),
+    );
+    project.scripts.forEach((script) =>
+      add(script.name, `${parentPath(script.parent)} / ${script.name}`, script.kind, {
+        type: "script",
+        id: script.id,
+      }),
+    );
+    project.gui.forEach((gui) =>
+      add(gui.name, guiPath(gui), gui.type, { type: "gui", id: gui.id }),
+    );
+    project.remotes.forEach((remote) =>
+      add(remote.name, `ReplicatedStorage / ${remote.name}`, remote.kind, {
+        type: "remote",
+        id: remote.id,
+      }),
+    );
+    project.values.forEach((value) =>
+      add(value.name, `${parentPath(value.parent)} / ${value.name}`, value.type, {
+        type: "value",
+        id: value.id,
+      }),
+    );
+    return results.slice(0, 150);
+  }, [project, query]);
+
+  const selectSearchResult = (next: Exclude<Selection, null>) => {
+    if (next.type === "world") onSelectWorld(next.id);
+    else if (next.type === "model") onSelectModel(next.id);
+    else onSelect(next);
+  };
+
+  const revealSelected = () => {
+    setQuery("");
+    setRevealVersion((current) => current + 1);
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        panelRef.current
+          ?.querySelector<HTMLElement>(".tree-item.active, .tree-root.active")
+          ?.scrollIntoView({ block: "center" });
+      });
+    });
+  };
 
   return (
-    <aside className="explorer-panel">
+    <aside className="explorer-panel" ref={panelRef}>
       <PanelHeading icon={<Folder size={15} />} title="Explorer" />
-      <div className="tree">
+      <div className="explorer-tools">
+        <label>
+          <Search size={13} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setQuery("");
+            }}
+            placeholder="Search objects"
+            aria-label="Search Explorer"
+          />
+        </label>
+        <button
+          title="Reveal selected in Explorer"
+          aria-label="Reveal selected in Explorer"
+          disabled={!selection}
+          onClick={revealSelected}
+        >
+          <Crosshair size={14} />
+        </button>
+      </div>
+      {query.trim() ? (
+        <div className="explorer-results">
+          <header>{searchResults.length} results</header>
+          {searchResults.map((result) => {
+            const active =
+              result.selection.type === "world"
+                ? selectedPartIds.includes(result.selection.id)
+                : selection?.type === result.selection.type &&
+                  selection.id === result.selection.id;
+            return (
+              <button
+                key={result.key}
+                className={active ? "active" : ""}
+                onClick={() => selectSearchResult(result.selection)}
+                onContextMenu={(event) => onContextMenu(result.selection, event)}
+              >
+                {explorerResultIcon(result.selection.type)}
+                <span>
+                  <strong>{result.label}</strong>
+                  <small>{result.path}</small>
+                </span>
+                <em>{result.detail}</em>
+              </button>
+            );
+          })}
+          {searchResults.length === 0 && <p>No Explorer items matched.</p>}
+        </div>
+      ) : (
+      <div className="tree" key={revealVersion}>
         <TreeRoot
           icon={<Grid3X3 size={14} />}
           label="Workspace"
@@ -3573,8 +5317,20 @@ function Explorer({
           ))}
         </TreeRoot>
       </div>
+      )}
     </aside>
   );
+}
+
+function explorerResultIcon(type: Exclude<Selection, null>["type"]) {
+  if (type === "world") return <Box size={14} />;
+  if (type === "model") return <Boxes size={14} />;
+  if (type === "script") return <FileCode2 size={14} />;
+  if (type === "gui") return <Monitor size={14} />;
+  if (type === "remote") return <Cable size={14} />;
+  if (type === "value") return <Database size={14} />;
+  if (type === "player") return <UserRound size={14} />;
+  return <Folder size={14} />;
 }
 
 function TreeRoot({
@@ -4008,7 +5764,13 @@ function PanelHeading({ icon, title }: { icon: ReactNode; title: string }) {
   );
 }
 
-function CameraControls({ enabled }: { enabled: boolean }) {
+function CameraControls({
+  enabled,
+  touchLookEnabled,
+}: {
+  enabled: boolean;
+  touchLookEnabled: boolean;
+}) {
   const { camera, gl } = useThree();
   useEffect(() => {
     const pressed = new Set<string>();
@@ -4021,6 +5783,12 @@ function CameraControls({ enabled }: { enabled: boolean }) {
     let pitch = camera.rotation.x;
     let looking = false;
     let activePointerId: number | null = null;
+    let rightMouseHeld = false;
+    let lastPointerX = 0;
+    let lastPointerY = 0;
+    let dollyVelocity = 0;
+    const touchPoints = new Map<number, { x: number; y: number }>();
+    let pinchDistance: number | null = null;
     const supportedKeys = new Set([
       "KeyW",
       "KeyA",
@@ -4046,18 +5814,106 @@ function CameraControls({ enabled }: { enabled: boolean }) {
     gl.domElement.tabIndex = 0;
     const onPointerDown = (event: PointerEvent) => {
       gl.domElement.focus({ preventScroll: true });
+      if (event.pointerType === "touch") {
+        if (!enabled || !touchLookEnabled) return;
+        event.preventDefault();
+        touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        gl.domElement.setPointerCapture(event.pointerId);
+        if (touchPoints.size === 1) {
+          looking = true;
+          activePointerId = event.pointerId;
+          lastPointerX = event.clientX;
+          lastPointerY = event.clientY;
+        } else {
+          looking = false;
+          activePointerId = null;
+          const points = [...touchPoints.values()];
+          pinchDistance = Math.hypot(
+            points[0].x - points[1].x,
+            points[0].y - points[1].y,
+          );
+        }
+        return;
+      }
       if (!enabled || event.button !== 2) return;
       event.preventDefault();
+      rightMouseHeld = true;
       looking = true;
       activePointerId = event.pointerId;
-      gl.domElement.setPointerCapture(event.pointerId);
+      lastPointerX = event.clientX;
+      lastPointerY = event.clientY;
       gl.domElement.style.cursor = "grabbing";
+      const captureFallback = () => {
+        if (
+          rightMouseHeld &&
+          activePointerId === event.pointerId &&
+          !gl.domElement.hasPointerCapture(event.pointerId)
+        ) {
+          gl.domElement.setPointerCapture(event.pointerId);
+        }
+      };
+      try {
+        const lockRequest = gl.domElement.requestPointerLock();
+        if (lockRequest) void lockRequest.catch(captureFallback);
+      } catch {
+        captureFallback();
+      }
     };
     const onPointerMove = (event: PointerEvent) => {
+      if (event.pointerType === "touch") {
+        if (!enabled || !touchLookEnabled || !touchPoints.has(event.pointerId)) {
+          return;
+        }
+        event.preventDefault();
+        touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        if (touchPoints.size >= 2) {
+          const points = [...touchPoints.values()];
+          const nextDistance = Math.hypot(
+            points[0].x - points[1].x,
+            points[0].y - points[1].y,
+          );
+          if (pinchDistance !== null) {
+            camera.getWorldDirection(forward).normalize();
+            camera.position.addScaledVector(
+              forward,
+              (nextDistance - pinchDistance) * 0.035,
+            );
+          }
+          pinchDistance = nextDistance;
+          return;
+        }
+      }
       if (!enabled || !looking || event.pointerId !== activePointerId) return;
-      applyLook(event.movementX * 0.003, event.movementY * 0.003);
+      if (document.pointerLockElement === gl.domElement) return;
+      const clientDeltaX = event.clientX - lastPointerX;
+      const clientDeltaY = event.clientY - lastPointerY;
+      const deltaX = event.movementX || clientDeltaX;
+      const deltaY = event.movementY || clientDeltaY;
+      lastPointerX = event.clientX;
+      lastPointerY = event.clientY;
+      applyLook(deltaX * 0.0032, deltaY * 0.0032);
     };
     const stopLooking = (event?: PointerEvent) => {
+      if (event?.pointerType === "touch") {
+        touchPoints.delete(event.pointerId);
+        if (gl.domElement.hasPointerCapture(event.pointerId)) {
+          gl.domElement.releasePointerCapture(event.pointerId);
+        }
+        pinchDistance = null;
+        const remaining = touchPoints.entries().next().value as
+          | [number, { x: number; y: number }]
+          | undefined;
+        if (remaining) {
+          looking = true;
+          activePointerId = remaining[0];
+          lastPointerX = remaining[1].x;
+          lastPointerY = remaining[1].y;
+        } else {
+          looking = false;
+          activePointerId = null;
+        }
+        return;
+      }
       if (
         event &&
         activePointerId !== null &&
@@ -4071,17 +5927,35 @@ function CameraControls({ enabled }: { enabled: boolean }) {
       ) {
         gl.domElement.releasePointerCapture(activePointerId);
       }
+      rightMouseHeld = false;
       looking = false;
       activePointerId = null;
       gl.domElement.style.cursor = "";
+      if (document.pointerLockElement === gl.domElement) {
+        void document.exitPointerLock();
+      }
+    };
+    const onLockedMouseMove = (event: MouseEvent) => {
+      if (
+        !enabled ||
+        !rightMouseHeld ||
+        document.pointerLockElement !== gl.domElement
+      ) {
+        return;
+      }
+      applyLook(event.movementX * 0.0032, event.movementY * 0.0032);
+    };
+    const onDocumentMouseUp = (event: MouseEvent) => {
+      if (event.button !== 2 || !rightMouseHeld) return;
+      stopLooking();
     };
     const onWheel = (event: WheelEvent) => {
       if (!enabled) return;
       event.preventDefault();
-      camera.getWorldDirection(forward).normalize();
-      camera.position.addScaledVector(
-        forward,
-        Math.max(-8, Math.min(8, -event.deltaY * 0.015)),
+      const scale = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 0.55 : 0.018;
+      dollyVelocity = Math.max(
+        -14,
+        Math.min(14, dollyVelocity - event.deltaY * scale),
       );
     };
     const preventContextMenu = (event: MouseEvent) => event.preventDefault();
@@ -4094,6 +5968,10 @@ function CameraControls({ enabled }: { enabled: boolean }) {
       pressed.delete(event.code);
     };
     const clearKeys = () => pressed.clear();
+    const onWindowBlur = () => {
+      clearKeys();
+      stopLooking();
+    };
     gl.domElement.addEventListener("pointerdown", onPointerDown);
     gl.domElement.addEventListener("pointermove", onPointerMove);
     gl.domElement.addEventListener("pointerup", stopLooking);
@@ -4101,8 +5979,10 @@ function CameraControls({ enabled }: { enabled: boolean }) {
     gl.domElement.addEventListener("wheel", onWheel, { passive: false });
     gl.domElement.addEventListener("contextmenu", preventContextMenu);
     gl.domElement.addEventListener("keydown", onKeyDown);
+    document.addEventListener("mousemove", onLockedMouseMove);
+    document.addEventListener("mouseup", onDocumentMouseUp);
     window.addEventListener("keyup", onKeyUp);
-    window.addEventListener("blur", clearKeys);
+    window.addEventListener("blur", onWindowBlur);
 
     let previousTime = performance.now();
     let frameId = requestAnimationFrame(function frame(time) {
@@ -4112,18 +5992,25 @@ function CameraControls({ enabled }: { enabled: boolean }) {
         const yawInput =
           (Number(pressed.has("ArrowRight")) -
             Number(pressed.has("ArrowLeft"))) *
-          0.8 *
+          1.65 *
           delta;
         const pitchInput =
           (Number(pressed.has("ArrowDown")) -
             Number(pressed.has("ArrowUp"))) *
-          0.7 *
+          1.35 *
           delta;
         if (yawInput !== 0 || pitchInput !== 0) {
           applyLook(yawInput, pitchInput);
         }
 
         camera.getWorldDirection(forward).normalize();
+        if (Math.abs(dollyVelocity) > 0.001) {
+          const dollyStep = dollyVelocity * (1 - Math.exp(-18 * delta));
+          camera.position.addScaledVector(forward, dollyStep);
+          dollyVelocity -= dollyStep;
+        } else {
+          dollyVelocity = 0;
+        }
         right.crossVectors(forward, up).normalize();
         movement
           .set(0, 0, 0)
@@ -4142,7 +6029,7 @@ function CameraControls({ enabled }: { enabled: boolean }) {
         if (movement.lengthSq() > 0) {
           const fast =
             pressed.has("ShiftLeft") || pressed.has("ShiftRight");
-          movement.normalize().multiplyScalar((fast ? 24 : 10) * delta);
+          movement.normalize().multiplyScalar((fast ? 30 : 11.5) * delta);
           camera.position.add(movement);
         }
       }
@@ -4158,10 +6045,38 @@ function CameraControls({ enabled }: { enabled: boolean }) {
       gl.domElement.removeEventListener("wheel", onWheel);
       gl.domElement.removeEventListener("contextmenu", preventContextMenu);
       gl.domElement.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("mousemove", onLockedMouseMove);
+      document.removeEventListener("mouseup", onDocumentMouseUp);
       window.removeEventListener("keyup", onKeyUp);
-      window.removeEventListener("blur", clearKeys);
+      window.removeEventListener("blur", onWindowBlur);
     };
-  }, [camera, enabled, gl]);
+  }, [camera, enabled, gl, touchLookEnabled]);
+  return null;
+}
+
+function ViewportCameraTracker({
+  onCameraChange,
+}: {
+  onCameraChange: (spawn: StudioPlaySpawn) => void;
+}) {
+  const { camera } = useThree();
+  const forward = useRef(new Vector3());
+  const last = useRef("");
+
+  useFrame(() => {
+    camera.getWorldDirection(forward.current);
+    const rotationY = Math.atan2(-forward.current.x, -forward.current.z);
+    const position: [number, number, number] = [
+      camera.position.x,
+      camera.position.y,
+      camera.position.z,
+    ];
+    const key = `${position.map((value) => value.toFixed(2)).join(",")}:${rotationY.toFixed(3)}`;
+    if (key === last.current) return;
+    last.current = key;
+    onCameraChange({ position, rotationY });
+  });
+
   return null;
 }
 
@@ -4175,12 +6090,14 @@ function SceneViewport({
   tool,
   gridSnap,
   angleSnap,
+  physicsDebug,
   onTransformStart,
   onTransformChange,
   onTransformEnd,
   onSelectWorld,
   onSelectGui,
   onGuiChange,
+  onCameraChange,
 }: {
   objects: StudioObject[];
   gui: StudioGuiObject[];
@@ -4191,12 +6108,14 @@ function SceneViewport({
   tool: StudioTool;
   gridSnap: number;
   angleSnap: number;
+  physicsDebug: boolean;
   onTransformStart: (center: [number, number, number]) => void;
   onTransformChange: (transform: ViewportTransform) => void;
   onTransformEnd: () => void;
   onSelectWorld: (id: string | null, additive?: boolean) => void;
   onSelectGui: (id: string | null) => void;
   onGuiChange: (id: string, patch: Partial<StudioGuiObject>) => void;
+  onCameraChange: (spawn: StudioPlaySpawn) => void;
 }) {
   const [transforming, setTransforming] = useState(false);
   const selectedObjects = objects.filter((object) =>
@@ -4212,13 +6131,26 @@ function SceneViewport({
         [0, 0, 0],
       )
     : null;
+  const selectedMass = selectedObjects.reduce(
+    (total, object) => total + Math.max(0.01, object.mass ?? 1),
+    0,
+  );
+  const selectedSpeed = selectedObjects.reduce((highest, object) => {
+    const velocity = object.velocity ?? [0, 0, 0];
+    return Math.max(highest, Math.hypot(...velocity));
+  }, 0);
+  const mobileViewport = document.documentElement.classList.contains(
+    "poly-studio-mobile",
+  );
   return (
     <div className="scene-viewport">
       <Canvas
-        shadows="soft"
+        shadows={mobileViewport ? false : "soft"}
+        dpr={mobileViewport ? [0.55, 0.85] : [1, 1.5]}
         camera={{ position: [16, 13, 18], fov: 48, near: 0.1, far: 300 }}
         gl={{
-          antialias: true,
+          antialias: !mobileViewport,
+          powerPreference: "high-performance",
           toneMapping: ACESFilmicToneMapping,
           toneMappingExposure: 1.08,
         }}
@@ -4246,6 +6178,7 @@ function SceneViewport({
             castShadow={object.castShadow}
             receiveShadow
             onPointerDown={(event) => {
+              if (tool === "camera") return;
               if (event.button !== 0) return;
               event.stopPropagation();
               onSelectWorld(
@@ -4266,22 +6199,48 @@ function SceneViewport({
               </>
             ) : (
               <>
-                <StudioPartGeometry shape={object.shape ?? "block"} />
+                <StudioObjectGeometry object={object} />
                 <StudioSurfaceMaterial
                   object={object}
                   selected={selectedWorldIds.includes(object.id)}
                 />
+                {isStudioHumanoidHead(object) && <StudioHeadFace />}
               </>
             )}
             {selectedWorldIds.includes(object.id) && (
               <mesh scale={1.012}>
-                <StudioPartGeometry shape={object.shape ?? "block"} />
+                <StudioObjectGeometry object={object} />
                 <meshBasicMaterial color="#B78CFF" wireframe />
+              </mesh>
+            )}
+            {physicsDebug && object.type !== "sound" && (
+              <mesh scale={1.018} renderOrder={5}>
+                <StudioObjectGeometry object={object} />
+                <meshBasicMaterial
+                  color={
+                    !object.canCollide
+                      ? "#FFB45B"
+                      : object.anchored
+                        ? "#67A8FF"
+                        : "#49E1A7"
+                  }
+                  wireframe
+                  transparent
+                  opacity={0.88}
+                  depthTest={false}
+                  depthWrite={false}
+                />
               </mesh>
             )}
           </mesh>
         ))}
-        {center && tool !== "select" && (
+        {physicsDebug &&
+          objects
+            .filter((object) => object.visible !== false)
+            .map((object) => (
+              <PhysicsVelocityArrow key={object.id} object={object} />
+            ))}
+        {center && tool !== "select" && tool !== "camera" && (
           <ViewportTransformControls
             center={center}
             tool={tool}
@@ -4293,8 +6252,29 @@ function SceneViewport({
             onTransformEnd={onTransformEnd}
           />
         )}
-        <CameraControls enabled={!transforming} />
+        <CameraControls
+          enabled={!transforming}
+          touchLookEnabled={tool === "camera"}
+        />
+        <ViewportCameraTracker onCameraChange={onCameraChange} />
       </Canvas>
+      {physicsDebug && (
+        <aside className="physics-debug-panel">
+          <strong>Physics debug</strong>
+          <div><i className="physics-anchored" /> Anchored collider</div>
+          <div><i className="physics-dynamic" /> Dynamic collider</div>
+          <div><i className="physics-disabled" /> Collision disabled</div>
+          {selectedObjects.length > 0 ? (
+            <dl>
+              <div><dt>Selected</dt><dd>{selectedObjects.length}</dd></div>
+              <div><dt>Total mass</dt><dd>{selectedMass.toFixed(2)}</dd></div>
+              <div><dt>Top speed</dt><dd>{selectedSpeed.toFixed(2)}</dd></div>
+            </dl>
+          ) : (
+            <small>Select Parts to inspect mass and velocity.</small>
+          )}
+        </aside>
+      )}
       {showGui && (
         <GuiPreview
           objects={gui}
@@ -4303,11 +6283,15 @@ function SceneViewport({
           onChange={onGuiChange}
         />
       )}
-      <div className="viewport-badge">{showGui ? "UI editor" : "Perspective"}</div>
+      <div className="viewport-badge">
+        {showGui ? "UI editor" : "Perspective"}{physicsDebug ? " · Physics" : ""}
+      </div>
       <div className="viewport-help">
         {tool === "select"
           ? "Click parts to select"
-          : `Drag handles to ${tool}`}{" "}
+          : tool === "camera"
+            ? "Drag to look | Pinch to move"
+            : `Drag handles to ${tool}`}{" "}
         | WASD move | Q/E vertical | Right drag look | Wheel dolly
       </div>
     </div>
@@ -4325,34 +6309,96 @@ function StudioSurfaceMaterial({
     () => createSurfaceTexture(object.surfaceTexture),
     [object.surfaceTexture],
   );
+  const imageTextures = usePartImageTextures(object.imageFaces);
+  const hasImages = hasPartImageFaces(object.imageFaces);
   useEffect(() => () => surfaceTexture?.dispose(), [surfaceTexture]);
+  const common = {
+    color: object.color,
+    transparent: object.transparency > 0,
+    opacity: Math.max(0, Math.min(1, 1 - object.transparency)),
+    depthWrite: object.transparency <= 0.02,
+    alphaTest: object.transparency >= 1 ? 1 : 0,
+    roughness:
+      object.material === "metal"
+        ? 0.24
+        : object.material === "neon"
+          ? 0.35
+          : object.material === "wood"
+            ? 0.9
+            : object.surfaceTexture === "none"
+              ? 0.38
+              : 0.7,
+    metalness: object.material === "metal" ? 0.82 : 0,
+    emissive: selected ? "#2B174D" : "#000000",
+    emissiveIntensity:
+      object.material === "neon" ? 0.9 : selected ? 0.75 : 0,
+  };
+  if (hasImages && (object.shape ?? "block") === "block") {
+    return (
+      <>
+        {([
+          ["right", 0],
+          ["left", 1],
+          ["top", 2],
+          ["bottom", 3],
+          ["back", 4],
+          ["front", 5],
+        ] as const).map(([face, index]) => (
+          <meshStandardMaterial
+            key={`${object.material}-${object.surfaceTexture}-${face}-${object.imageFaces?.[face] ?? object.imageFaces?.all ?? ""}`}
+            attach={`material-${index}`}
+            map={imageTextures[face] ?? imageTextures.all ?? surfaceTexture}
+            {...common}
+          />
+        ))}
+      </>
+    );
+  }
   return (
     <meshStandardMaterial
-      key={`${object.material}-${object.surfaceTexture}`}
-      color={object.color}
-      map={surfaceTexture}
-      transparent={object.transparency > 0}
-      opacity={Math.max(0, Math.min(1, 1 - object.transparency))}
-      depthWrite={object.transparency <= 0.02}
-      alphaTest={object.transparency >= 1 ? 1 : 0}
-      roughness={
-        object.material === "metal"
-          ? 0.24
-          : object.material === "neon"
-            ? 0.35
-            : object.material === "wood"
-              ? 0.9
-              : object.surfaceTexture === "none"
-                ? 0.38
-                : 0.7
-      }
-      metalness={object.material === "metal" ? 0.82 : 0}
-      emissive={selected ? "#2B174D" : "#000000"}
-      emissiveIntensity={
-        object.material === "neon" ? 0.9 : selected ? 0.75 : 0
-      }
+      key={`${object.material}-${object.surfaceTexture}-${object.imageFaces?.all ?? object.imageFaces?.front ?? ""}`}
+      map={imageTextures.all ?? imageTextures.front ?? surfaceTexture}
+      {...common}
     />
   );
+}
+
+function PhysicsVelocityArrow({ object }: { object: StudioObject }) {
+  const [velocityX, velocityY, velocityZ] = object.velocity ?? [0, 0, 0];
+  const speed = Math.hypot(velocityX, velocityY, velocityZ);
+  const arrow = useMemo(() => {
+    const direction = new Vector3(velocityX, velocityY, velocityZ);
+    if (direction.lengthSq() < 0.0001) direction.set(0, 1, 0);
+    else direction.normalize();
+    const length = Math.min(12, Math.max(0.8, speed * 0.35));
+    return new ArrowHelper(
+      direction,
+      new Vector3(0, 0, 0),
+      length,
+      "#FFE06B",
+      Math.min(0.45, length * 0.22),
+      Math.min(0.3, length * 0.14),
+    );
+  }, [speed, velocityX, velocityY, velocityZ]);
+
+  useEffect(
+    () => () => {
+      arrow.line.geometry.dispose();
+      const lineMaterials = Array.isArray(arrow.line.material)
+        ? arrow.line.material
+        : [arrow.line.material];
+      lineMaterials.forEach((material) => material.dispose());
+      arrow.cone.geometry.dispose();
+      const coneMaterials = Array.isArray(arrow.cone.material)
+        ? arrow.cone.material
+        : [arrow.cone.material];
+      coneMaterials.forEach((material) => material.dispose());
+    },
+    [arrow],
+  );
+
+  if (speed < 0.01) return null;
+  return <primitive object={arrow} position={object.position} />;
 }
 
 function ViewportTransformControls({
@@ -4366,7 +6412,7 @@ function ViewportTransformControls({
   onTransformEnd,
 }: {
   center: [number, number, number];
-  tool: Exclude<StudioTool, "select">;
+  tool: Exclude<StudioTool, "select" | "camera">;
   gridSnap: number;
   angleSnap: number;
   onDraggingChange: (dragging: boolean) => void;
@@ -4377,6 +6423,8 @@ function ViewportTransformControls({
   const { camera, gl, scene } = useThree();
   const pivot = useMemo(() => new Object3D(), []);
   const controlsRef = useRef<ThreeTransformControls | null>(null);
+  const pendingTransform = useRef<ViewportTransform | null>(null);
+  const transformFrame = useRef<number | null>(null);
   const [dragging, setDragging] = useState(false);
   const values = useRef({
     center,
@@ -4410,6 +6458,7 @@ function ViewportTransformControls({
 
     const onMouseDown = () => {
       const current = values.current;
+      pendingTransform.current = null;
       pivot.position.set(...current.center);
       pivot.rotation.set(0, 0, 0);
       pivot.scale.set(1, 1, 1);
@@ -4417,14 +6466,28 @@ function ViewportTransformControls({
       current.onDraggingChange(true);
       current.onTransformStart(current.center);
     };
+    const flushTransform = () => {
+      transformFrame.current = null;
+      const next = pendingTransform.current;
+      pendingTransform.current = null;
+      if (next) values.current.onTransformChange(next);
+    };
     const onObjectChange = () => {
-      values.current.onTransformChange({
+      pendingTransform.current = {
         position: [pivot.position.x, pivot.position.y, pivot.position.z],
         rotation: [pivot.rotation.x, pivot.rotation.y, pivot.rotation.z],
         scale: [pivot.scale.x, pivot.scale.y, pivot.scale.z],
-      });
+      };
+      if (transformFrame.current === null) {
+        transformFrame.current = requestAnimationFrame(flushTransform);
+      }
     };
     const onMouseUp = () => {
+      if (transformFrame.current !== null) {
+        cancelAnimationFrame(transformFrame.current);
+        transformFrame.current = null;
+      }
+      flushTransform();
       setDragging(false);
       values.current.onDraggingChange(false);
       values.current.onTransformEnd();
@@ -4433,6 +6496,11 @@ function ViewportTransformControls({
     controls.addEventListener("objectChange", onObjectChange);
     controls.addEventListener("mouseUp", onMouseUp);
     return () => {
+      if (transformFrame.current !== null) {
+        cancelAnimationFrame(transformFrame.current);
+        transformFrame.current = null;
+      }
+      pendingTransform.current = null;
       controls.removeEventListener("mouseDown", onMouseDown);
       controls.removeEventListener("objectChange", onObjectChange);
       controls.removeEventListener("mouseUp", onMouseUp);
@@ -4810,6 +6878,10 @@ function Properties({
                     surfaceTexture as StudioObject["surfaceTexture"],
                 })
               }
+            />
+            <PartImageFacesField
+              value={world.imageFaces}
+              onChange={(imageFaces) => onWorldChange({ imageFaces })}
             />
             <NumberField label="Transparency" value={world.transparency} minimum={0} maximum={1} step={0.05} onChange={(transparency) => onWorldChange({ transparency })} />
             <ToggleField label="CastShadow" value={world.castShadow} onChange={(castShadow) => onWorldChange({ castShadow })} />
@@ -5294,6 +7366,7 @@ const PROPERTY_HELP: Record<string, string> = {
   Color: "The base color used to render this object.",
   Material: "Changes how the surface reflects light.",
   "Surface texture": "Adds a visible surface pattern. None uses smooth plastic.",
+  "Part images": "Uploads images onto all faces or individual block faces.",
   Transparency: "0 is fully visible. 1 is fully invisible.",
   CastShadow: "Controls whether this object casts a shadow.",
   Visible: "Hides or shows the object without deleting it.",
@@ -5349,6 +7422,53 @@ function StudioPartGeometry({
     return <cylinderGeometry args={[0.5, 0.5, 1, 32]} />;
   }
   return <boxGeometry args={[1, 1, 1]} />;
+}
+
+function isStudioHumanoidHead(object: StudioObject): boolean {
+  return (
+    object.attributes.RigPart === "Head" ||
+    (object.name === "Head" && object.tags.includes("HumanoidLimb"))
+  );
+}
+
+function StudioHeadGeometry() {
+  const geometry = useMemo(
+    () => normalizedObjGeometry(classicHeadObjSource, [1, 1, 1]),
+    [],
+  );
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  return <primitive object={geometry} attach="geometry" />;
+}
+
+function StudioHeadFace() {
+  const faceTexture = useLoader(TextureLoader, classicSmileFaceUrl);
+  faceTexture.colorSpace = SRGBColorSpace;
+  return (
+    <mesh
+      name="StudioHeadFace"
+      position={[0, -0.035, -0.515]}
+      rotation={[0, Math.PI, 0]}
+      renderOrder={3}
+    >
+      <planeGeometry args={[0.82, 0.55]} />
+      <meshBasicMaterial
+        map={faceTexture}
+        transparent
+        alphaTest={0.08}
+        depthWrite={false}
+        polygonOffset
+        polygonOffsetFactor={-2}
+        toneMapped={false}
+      />
+    </mesh>
+  );
+}
+
+function StudioObjectGeometry({ object }: { object: StudioObject }) {
+  if (isStudioHumanoidHead(object)) {
+    return <StudioHeadGeometry />;
+  }
+  return <StudioPartGeometry shape={object.shape ?? "block"} />;
 }
 
 function NameField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
@@ -5684,6 +7804,57 @@ function ImageUploadField({
           reader.readAsDataURL(file);
         }}
       />
+    </div>
+  );
+}
+
+const PART_IMAGE_FACE_LABELS: Record<PartImageFace, string> = {
+  all: "All faces image",
+  front: "Front image",
+  back: "Back image",
+  left: "Left image",
+  right: "Right image",
+  top: "Top image",
+  bottom: "Bottom image",
+};
+
+function PartImageFacesField({
+  value,
+  onChange,
+}: {
+  value?: StudioPartImageFaces;
+  onChange: (value: StudioPartImageFaces) => void;
+}) {
+  const imageFaces = normalizePartImageFaces(value);
+  const setFace = (face: PartImageFace, image: string) => {
+    const next: StudioPartImageFaces = { ...imageFaces };
+    if (image) next[face] = image;
+    else delete next[face];
+    onChange(next);
+  };
+  const hasImages = hasPartImageFaces(imageFaces);
+  return (
+    <div className="part-image-faces">
+      <div className="part-image-faces-heading">
+        <PropertyLabel label="Part images" />
+        {hasImages && (
+          <button type="button" onClick={() => onChange({})}>
+            Clear all
+          </button>
+        )}
+      </div>
+      <p>
+        Upload an image for every face, or override one side at a time. Images
+        render on block parts; round shapes use the all/front image.
+      </p>
+      {PART_IMAGE_FACE_KEYS.map((face) => (
+        <ImageUploadField
+          key={face}
+          label={PART_IMAGE_FACE_LABELS[face]}
+          value={imageFaces[face] ?? ""}
+          onChange={(image) => setFace(face, image)}
+        />
+      ))}
     </div>
   );
 }

@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  cameraArrowDelta,
+  movementAxis,
+  normalizeJoystickAxis,
+  shouldPreventGameplayDefault,
+} from "./gameInput";
+import {
   activatePolyGui,
   activatePolyInput,
   activatePolyTouched,
@@ -10,6 +16,7 @@ import {
   type PolyProject,
   resumePolyScheduledScript,
   runPolyProject,
+  withRuntimePlayerPosition,
 } from "./polyProject";
 import { parseServerMessage } from "./multiplayer";
 import { avatarThumbnailDataUrl } from "./avatarThumbnail";
@@ -142,6 +149,77 @@ player.CameraMaxZoomDistance = 96`;
   assert.equal(result.diagnostics.length, 0);
   assert.equal(result.project.playerSettings.cameraMinZoomDistance, 12);
   assert.equal(result.project.playerSettings.cameraMaxZoomDistance, 96);
+});
+
+test("supports Roblox-style leaderstats Value paths in remote callbacks", () => {
+  const fixture = project();
+  fixture.remotes = [{ id: "add-lava", name: "AddLava", kind: "remoteEvent" }];
+  fixture.leaderstats = [
+    {
+      id: "lava-stat",
+      name: "lava",
+      type: "number",
+      defaultValue: 0,
+      showOnLeaderboard: true,
+    },
+    {
+      id: "multiplier-stat",
+      name: "Multiplier",
+      type: "number",
+      defaultValue: 2,
+      showOnLeaderboard: true,
+    },
+  ];
+  fixture.scripts = [
+    {
+      id: "server",
+      name: "LavaServer",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `local remote = ReplicatedStorage:FindFirstChild("AddLava")
+remote.OnServerEvent:Connect(function(player, amount)
+    player.leaderstats.lava.Value += amount
+end)`,
+    },
+    {
+      id: "client",
+      name: "LavaClient",
+      kind: "localScript",
+      parent: "StarterPlayerScripts",
+      source: `local player = Players.LocalPlayer
+local remote = ReplicatedStorage:FindFirstChild("AddLava")
+remote:FireServer(1 * player.Multiplier)`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+
+  assert.equal(result.diagnostics.length, 0, JSON.stringify(result.diagnostics));
+  assert.equal(result.project.leaderstats[0].defaultValue, 2);
+});
+
+test("supports hit.Parent player lookup and Humanoid TakeDamage", () => {
+  const fixture = project();
+  fixture.scripts = [
+    {
+      id: "damage-part",
+      name: "DamagePart",
+      kind: "script",
+      parent: "part",
+      source: `script.Parent.Touched:Connect(function(hit)
+    local player = Players:GetPlayerFromCharacter(hit.Parent)
+    if player then
+        local humanoid = player.Character.Humanoid
+        humanoid:TakeDamage(25)
+    end
+end)`,
+    },
+  ];
+
+  const result = activatePolyTouched(fixture, "part");
+
+  assert.equal(result.diagnostics.length, 0, JSON.stringify(result.diagnostics));
+  assert.equal(result.project.playerSettings.health, 75);
 });
 
 test("applies project Lighting properties from scripts", () => {
@@ -1111,6 +1189,20 @@ player.Coins = 40`;
   assert.equal(result.project.leaderstats[0].defaultValue, 40);
 });
 
+test("applies image faces to parts from scripts", () => {
+  const fixture = project();
+  const image =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+  fixture.scripts[0].source = `local part = Workspace:FindFirstChild("Part")
+part.Image = "${image}"
+part.FrontImage = "${image}"`;
+
+  const result = runPolyProject(fixture);
+  const part = result.project.objects.find((object) => object.name === "Part");
+  assert.equal(part?.imageFaces?.all, image);
+  assert.equal(part?.imageFaces?.front, image);
+});
+
 test("requires an immutable game room id in multiplayer welcomes", () => {
   const player = {
     id: "connection-1",
@@ -1120,6 +1212,10 @@ test("requires an immutable game room id in multiplayer welcomes", () => {
     displayName: "Lava",
     equippedShirtId: "polymon-shirt",
     equippedPantsId: "classic-denim-pants",
+    equippedShirtTextureUrl:
+      "https://fbzjxrybfooxttxbxgxc.supabase.co/storage/v1/object/public/avatar-item-textures/shirts/custom.png",
+    equippedPantsTextureUrl:
+      "https://fbzjxrybfooxttxbxgxc.supabase.co/storage/v1/object/public/avatar-item-textures/pants/custom.png",
   };
   const valid = parseServerMessage(
     JSON.stringify({
@@ -1140,6 +1236,10 @@ test("requires an immutable game room id in multiplayer welcomes", () => {
   );
 
   assert.equal(valid?.type, "welcome");
+  assert.equal(
+    valid?.player.equippedShirtTextureUrl,
+    player.equippedShirtTextureUrl,
+  );
   assert.equal(missingRoom, null);
 });
 
@@ -1280,7 +1380,7 @@ test("activates sword tools, restarts animations, and damages nearby humanoids",
       id: toolId,
       name: "LinkedSword",
       type: "tool",
-      position: [0, 3, 0],
+      position: [99, 3, 0],
       scale: [1, 1, 1],
       modelId: null,
       parentId: null,
@@ -1329,7 +1429,10 @@ tool.Activated:Connect(function()
 end)`,
   });
 
-  const result = activatePolyTool(fixture, toolId);
+  const result = activatePolyTool(
+    withRuntimePlayerPosition(fixture, [0, 2, 0]),
+    toolId,
+  );
 
   assert.deepEqual(result.animationRequests, ["LinkedSwordSwing"]);
   assert.equal(result.animationVersion, 1);
@@ -2168,6 +2271,42 @@ end)`,
   assert.equal(result.project.dataStores.__poly_runtime__?.OtherPlayerHealth, 90);
 });
 
+test("teleports all players with Players:GetPlayers round scripts", () => {
+  const fixture = project();
+  fixture.objects.push({
+    ...fixture.objects[0],
+    id: "lobby-spawn",
+    name: "LobbySpawn",
+    position: [12, 6, -8],
+    scale: [4, 1, 4],
+  });
+  fixture.scripts = [
+    {
+      id: "round-manager",
+      name: "RoundManager",
+      kind: "script",
+      parent: "ServerScriptService",
+      source: `local lobbySpawn = Workspace.LobbySpawn
+
+for _, player in Players:GetPlayers() do
+    local root = player.Character.HumanoidRootPart
+    root.Position = lobbySpawn.Position
+end`,
+    },
+  ];
+
+  const result = runPolyProject(fixture);
+  assert.equal(result.diagnostics.length, 0, JSON.stringify(result.diagnostics));
+  assert.deepEqual(
+    result.project.dataStores.__poly_runtime__?.LocalPlayerPosition,
+    [12, 6, -8],
+  );
+  assert.deepEqual(
+    result.project.dataStores.__poly_runtime__?.OtherPlayerPosition,
+    [12, 6, -8],
+  );
+});
+
 test("schedules task.delay and requests configured badges", () => {
   const fixture = project();
   fixture.badges = [
@@ -2195,4 +2334,45 @@ end)`,
   assert.deepEqual(result.badgeAwards, ["First Click"]);
   assert.equal(result.scheduledScripts.length, 1);
   assert.equal(result.scheduledScripts[0].delayMs, 100);
+});
+test("prevents browser shortcuts from hijacking gameplay movement", () => {
+  for (const code of [
+    "KeyW",
+    "KeyA",
+    "KeyS",
+    "KeyD",
+    "KeyR",
+    "Space",
+    "ArrowLeft",
+    "ArrowRight",
+    "ArrowUp",
+    "ArrowDown",
+  ]) {
+    assert.equal(shouldPreventGameplayDefault(code), true);
+  }
+  assert.equal(shouldPreventGameplayDefault("ControlLeft"), false);
+  assert.equal(shouldPreventGameplayDefault("KeyF"), false);
+});
+
+test("rotates the camera continuously from held horizontal arrow keys", () => {
+  const left = cameraArrowDelta(true, false, 0.5, false);
+  const invertedLeft = cameraArrowDelta(true, false, 0.5, true);
+
+  assert.ok(left > 1);
+  assert.equal(invertedLeft, -left);
+});
+
+test("uses vertical arrow keys as alternate forward movement", () => {
+  assert.equal(movementAxis(false, false, true, false, 0), 1);
+  assert.equal(movementAxis(false, false, false, true, 0), -1);
+  assert.equal(movementAxis(true, false, false, true, 0), 0);
+});
+
+test("normalizes mobile joystick input with a stable dead zone", () => {
+  assert.equal(normalizeJoystickAxis(0.1), 0);
+  assert.equal(normalizeJoystickAxis(-0.14), 0);
+  assert.equal(normalizeJoystickAxis(1), 1);
+  assert.equal(normalizeJoystickAxis(-1), -1);
+  assert.ok(normalizeJoystickAxis(0.5) > 0.4);
+  assert.ok(normalizeJoystickAxis(0.5) < 0.5);
 });

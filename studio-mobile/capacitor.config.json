@@ -1,0 +1,26 @@
+{
+  "appId": "com.polymons.studio",
+  "appName": "Poly Studio",
+  "webDir": "../studio-mobile-dist",
+  "backgroundColor": "#09090d",
+  "loggingBehavior": "debug",
+  "zoomEnabled": false,
+  "android": {
+    "path": "../android-studio",
+    "backgroundColor": "#09090d",
+    "allowMixedContent": false,
+    "appendUserAgent": " PolyStudioAndroid/0.1"
+  },
+  "server": {
+    "hostname": "localhost",
+    "androidScheme": "https",
+    "cleartext": false
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchAutoHide": false,
+      "backgroundColor": "#09090d",
+      "showSpinner": false
+    }
+  }
+}

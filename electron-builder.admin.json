@@ -11,7 +11,8 @@
   },
   "files": [
     "admin-dist/**/*",
-    "package.json"
+    "package.json",
+    "!node_modules/**/*"
   ],
   "win": {
     "target": [
@@ -19,5 +20,17 @@
     ],
     "icon": "assets/polymons-logo.png",
     "artifactName": "PolyAdmin.exe"
+  },
+  "mac": {
+    "target": [
+      "dmg",
+      "zip"
+    ],
+    "icon": "assets/polymons-logo.png",
+    "category": "public.app-category.developer-tools",
+    "hardenedRuntime": true,
+    "entitlements": "build/entitlements.mac.plist",
+    "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+    "artifactName": "PolyAdmin-mac-${arch}.${ext}"
   }
 }

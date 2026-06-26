@@ -700,6 +700,27 @@ button {
   display: block;
 }
 
+.remote-debugger {
+  display: grid;
+  gap: 4px;
+  border: 1px solid rgba(145, 99, 255, 0.28);
+  border-radius: 8px;
+  background: rgba(93, 56, 170, 0.12);
+  color: #cdbaff;
+  padding: 8px;
+}
+
+.remote-debugger strong {
+  color: #efe8ff;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.remote-debugger span {
+  color: #b9a7df;
+}
+
 .console-scroll .output-warning {
   color: #e0bd75;
 }

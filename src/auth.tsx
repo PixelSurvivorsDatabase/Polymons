@@ -12,6 +12,7 @@ import {
 import {
   type AuthResponse,
   login,
+  PolymonsApiError,
   type PolymonsSession,
   type PolymonsUser,
   refreshSession,
@@ -71,10 +72,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [auth, setAuth] = useState<StoredAuth | null>(() => readStoredAuth());
   const authRef = useRef(auth);
   const refreshInFlight = useRef<Promise<PolymonsSession | null> | null>(null);
+  const refreshFailures = useRef(0);
+  const refreshRetryAt = useRef(0);
   const [ready, setReady] = useState(false);
   const [authMode, setAuthMode] = useState<"login" | "signup" | null>(null);
 
   const saveAuth = useCallback((next: AuthResponse | null) => {
+    refreshFailures.current = 0;
+    refreshRetryAt.current = 0;
     authRef.current = next;
     setAuth(next);
     writeStoredAuth(next);
@@ -82,6 +87,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     if (refreshInFlight.current) return refreshInFlight.current;
+    if (Date.now() < refreshRetryAt.current) {
+      return authRef.current?.session ?? null;
+    }
     const refreshToken = authRef.current?.session.refreshToken;
     if (!refreshToken) return null;
 
@@ -93,7 +101,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         return authRef.current?.session ?? null;
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         const stored = readStoredAuth();
         if (
           stored &&
@@ -102,8 +110,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           saveAuth(stored);
           return stored.session;
         }
+        if (
+          error instanceof PolymonsApiError &&
+          (error.status === 401 || error.status === 403)
+        ) {
+          saveAuth(null);
+          return null;
+        }
+        refreshFailures.current += 1;
+        const baseDelay =
+          error instanceof PolymonsApiError && error.status === 429
+            ? 60_000
+            : 10_000;
+        refreshRetryAt.current =
+          Date.now() +
+          Math.min(
+            5 * 60_000,
+            baseDelay * 2 ** Math.min(refreshFailures.current - 1, 4),
+          );
         // A different tab or desktop client may have rotated the token.
-        // Keep the last session and let the next authenticated request retry.
+        // Keep the last session while temporary server failures cool down.
         return authRef.current?.session ?? null;
       })
       .finally(() => {

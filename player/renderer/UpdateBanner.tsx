@@ -18,6 +18,7 @@ export default function UpdateBanner() {
 
   const downloading =
     update.status === "available" || update.status === "downloading";
+  const installerReady = update.message.toLowerCase().includes("installer");
   return (
     <aside className={`desktop-update-banner ${update.status}`}>
       <div>
@@ -40,7 +41,7 @@ export default function UpdateBanner() {
       )}
       {update.status === "ready" && (
         <button onClick={() => void window.polymons.installUpdate()}>
-          Restart to update
+          {installerReady ? "Open installer" : "Restart to update"}
         </button>
       )}
       {update.status === "error" && (

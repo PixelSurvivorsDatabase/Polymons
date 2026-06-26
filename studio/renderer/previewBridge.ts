@@ -60,7 +60,7 @@ player.WalkSpeed = 18
 `;
 }
 
-function createPreviewProject(
+export function createPreviewProject(
   name: string,
   language: StudioLanguage,
 ): StudioProject {

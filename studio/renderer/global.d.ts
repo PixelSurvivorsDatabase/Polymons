@@ -5,6 +5,17 @@ type StudioSettings = {
   polyCodeTrainingEnabled: boolean;
 };
 
+type StudioPartImageFace =
+  | "all"
+  | "front"
+  | "back"
+  | "left"
+  | "right"
+  | "top"
+  | "bottom";
+
+type StudioPartImageFaces = Partial<Record<StudioPartImageFace, string>>;
+
 type StudioUser = {
   id: string;
   polymonsId: number;
@@ -81,6 +92,7 @@ type StudioObject = {
     | "grass"
     | "fabric"
     | "marble";
+  imageFaces?: StudioPartImageFaces;
   canCollide: boolean;
   castShadow: boolean;
   friction?: number;
@@ -339,7 +351,13 @@ interface Window {
     exportProject: (project: StudioProject) => Promise<string | null>;
     importProject: () => Promise<StudioProject | null>;
     revealProject: (id: string) => Promise<void>;
-    playProject: (id: string) => Promise<void>;
+    playProject: (
+      id: string,
+      spawn?: {
+        position: [number, number, number];
+        rotationY: number;
+      },
+    ) => Promise<void>;
     exportModel: (input: {
       model: StudioModel;
       parts: StudioObject[];

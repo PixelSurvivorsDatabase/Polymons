@@ -1,3 +1,10 @@
+import {
+  normalizePartImageFaces,
+  isValidPartImageUrl,
+  type PartImageFaces,
+  type PartImageFace,
+} from "./partImageFaces";
+
 export type PolyLanguage = "luau" | "cpp" | "csharp";
 export type PolyScriptKind = "script" | "localScript" | "moduleScript";
 export type PolyScriptParent =
@@ -33,6 +40,7 @@ export type PolyWorldObject = {
     | "grass"
     | "fabric"
     | "marble";
+  imageFaces?: PartImageFaces;
   canCollide: boolean;
   castShadow: boolean;
   friction?: number;
@@ -195,7 +203,7 @@ export type PolyAnimation = {
   }>;
 };
 
-export type PolyStoredValue = string | number | boolean | null;
+export type PolyStoredValue = string | number | boolean | null | number[];
 
 export type PolyValueObject = {
   id: string;
@@ -345,6 +353,8 @@ type Reference =
   | { kind: "value"; id: string }
   | { kind: "service"; id: string }
   | { kind: "player"; id: RuntimePlayerId }
+  | { kind: "leaderstats"; id: RuntimePlayerId }
+  | { kind: "leaderstat"; id: RuntimePlayerId; name: string }
   | { kind: "character"; id: RuntimePlayerId }
   | {
       kind: "characterPart";
@@ -409,6 +419,14 @@ const WORLD_PROPERTIES = new Set([
   "Transparency",
   "Material",
   "Texture",
+  "Image",
+  "ImageAll",
+  "FrontImage",
+  "BackImage",
+  "LeftImage",
+  "RightImage",
+  "TopImage",
+  "BottomImage",
   "CanCollide",
   "CastShadow",
   "Friction",
@@ -532,6 +550,7 @@ function runtimeWorldObject(
     transparency: 0,
     material: "plastic",
     surfaceTexture: "none",
+    imageFaces: {},
     canCollide: type !== "sound",
     castShadow: type !== "sound",
     friction: 0.82,
@@ -588,6 +607,7 @@ export function normalizePolyProject(project: PolyProject): PolyProject {
     transparency: object.transparency ?? 0,
     material: object.material ?? "plastic",
     surfaceTexture: object.surfaceTexture ?? "none",
+    imageFaces: normalizePartImageFaces(object.imageFaces),
     canCollide: object.canCollide ?? true,
     castShadow: object.castShadow ?? true,
     friction: object.friction ?? 0.82,
@@ -884,6 +904,22 @@ function localPlayerData(project: PolyProject): PolyPlayerData {
   return projectPlayerData.get(project) ?? DEFAULT_PLAYER_DATA;
 }
 
+export function withRuntimePlayerPosition(
+  input: PolyProject,
+  position: [number, number, number],
+): PolyProject {
+  return {
+    ...input,
+    dataStores: {
+      ...input.dataStores,
+      [RUNTIME_STORE]: {
+        ...(input.dataStores[RUNTIME_STORE] ?? {}),
+        [playerPositionStoreKey("LocalPlayer")]: [...position],
+      },
+    },
+  };
+}
+
 function playerName(id: RuntimePlayerId): string {
   return id === "LocalPlayer" ? "localplayer" : "otherplayer";
 }
@@ -892,12 +928,37 @@ function playerDisplayName(id: RuntimePlayerId): string {
   return id === "LocalPlayer" ? "LocalPlayer" : "OtherPlayer";
 }
 
-function characterPosition(id: RuntimePlayerId): [number, number, number] {
+function playerPositionStoreKey(id: RuntimePlayerId): string {
+  return id === "LocalPlayer" ? "LocalPlayerPosition" : "OtherPlayerPosition";
+}
+
+function characterPosition(
+  project: PolyProject,
+  id: RuntimePlayerId,
+): [number, number, number] {
+  const value = project.dataStores[RUNTIME_STORE]?.[playerPositionStoreKey(id)];
+  if (
+    Array.isArray(value) &&
+    value.length === 3 &&
+    value.every(Number.isFinite)
+  ) {
+    return [...value] as [number, number, number];
+  }
   return id === "LocalPlayer" ? [0, 2, 0] : [0, 2, -4];
 }
 
-function characterLookVector(_id: RuntimePlayerId): [number, number, number] {
+function characterLookVector(id: RuntimePlayerId): [number, number, number] {
+  void id;
   return [0, 0, -1];
+}
+
+function setCharacterPosition(
+  project: PolyProject,
+  id: RuntimePlayerId,
+  value: [number, number, number],
+): void {
+  project.dataStores[RUNTIME_STORE] ??= {};
+  project.dataStores[RUNTIME_STORE][playerPositionStoreKey(id)] = [...value];
 }
 
 function runtimePlayerHealth(project: PolyProject, id: RuntimePlayerId): number {
@@ -948,6 +1009,9 @@ function setRuntimePlayerMaxHealth(
 function referenceKey(reference: Reference): string {
   if (reference.kind === "characterPart") {
     return `${reference.kind}:${reference.id}:${reference.part}`;
+  }
+  if (reference.kind === "leaderstat") {
+    return `${reference.kind}:${reference.id}:${reference.name}`;
   }
   return `${reference.kind}:${reference.id}`;
 }
@@ -1006,6 +1070,12 @@ function parentReference(
   if (reference.kind === "player") {
     return { kind: "service", id: "Players" };
   }
+  if (reference.kind === "leaderstats") {
+    return { kind: "player", id: reference.id };
+  }
+  if (reference.kind === "leaderstat") {
+    return { kind: "leaderstats", id: reference.id };
+  }
   if (reference.kind === "characterPart" || reference.kind === "humanoid") {
     return { kind: "character", id: reference.id };
   }
@@ -1032,6 +1102,20 @@ function childReference(
   }
   if (parent.kind === "player" && name === "Character") {
     return { kind: "character", id: parent.id };
+  }
+  if (
+    parent.kind === "player" &&
+    name.toLowerCase() === "leaderstats"
+  ) {
+    return { kind: "leaderstats", id: parent.id };
+  }
+  if (parent.kind === "leaderstats") {
+    const leaderstat = project.leaderstats.find(
+      (stat) => stat.name.toLowerCase() === name.toLowerCase(),
+    );
+    if (leaderstat) {
+      return { kind: "leaderstat", id: parent.id, name: leaderstat.name };
+    }
   }
   if (parent.kind === "character") {
     if (name === "HumanoidRootPart") {
@@ -1804,6 +1888,7 @@ function randomInteger(unit: number, minimum: number, maximum: number): number |
 }
 
 function rawStoredValue(value: PolyStoredValue): string {
+  if (Array.isArray(value)) return vectorToConstructor(value);
   if (typeof value === "string") return JSON.stringify(value);
   if (value === null) return "nil";
   return String(value);
@@ -1893,6 +1978,19 @@ function referencePropertyValue(
     if (property === "Shape") return object?.shape ?? "block";
     return undefined;
   }
+  if (reference.kind === "leaderstats") {
+    if (property === "Name") return "leaderstats";
+    return undefined;
+  }
+  if (reference.kind === "leaderstat") {
+    const leaderstat = project.leaderstats.find(
+      (stat) => stat.name.toLowerCase() === reference.name.toLowerCase(),
+    );
+    if (!leaderstat) return undefined;
+    if (property === "Name") return leaderstat.name;
+    if (property === "Value") return leaderstat.defaultValue;
+    return undefined;
+  }
   if (reference.kind === "character") {
     if (property === "Name") return `${playerName(reference.id)}Character`;
     return undefined;
@@ -1952,7 +2050,9 @@ function referencePropertyValue(
       ? playerData.displayName
       : playerDisplayName(reference.id);
   }
-  const leaderstat = project.leaderstats.find((stat) => stat.name === property);
+  const leaderstat = project.leaderstats.find(
+    (stat) => stat.name.toLowerCase() === property.toLowerCase(),
+  );
   if (leaderstat) return leaderstat.defaultValue;
   if (property === "Health") return project.playerSettings.health;
   if (property === "MaxHealth") return project.playerSettings.maxHealth;
@@ -1998,7 +2098,7 @@ function referenceVectorValue(
     return null;
   }
   if (reference.kind === "characterPart") {
-    if (property === "Position") return characterPosition(reference.id);
+    if (property === "Position") return characterPosition(project, reference.id);
     if (property === "LookVector") return characterLookVector(reference.id);
   }
   return null;
@@ -2095,6 +2195,22 @@ function resolveAssignmentValue(
     modules,
   );
   if (vector) return vectorToConstructor(vector);
+  const scalar = resolveExpressionValue(
+    expression,
+    project,
+    variables,
+    values,
+    modules,
+  );
+  if (
+    scalar !== undefined &&
+    (typeof scalar === "string" ||
+      typeof scalar === "number" ||
+      typeof scalar === "boolean" ||
+      scalar === null)
+  ) {
+    return rawStoredValue(scalar);
+  }
   const arithmetic = expression.match(
     /^([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*([+\-*/])\s*(.+)$/,
   );
@@ -2427,6 +2543,8 @@ function propertySetFor(
   if (reference.kind === "gui") return GUI_PROPERTIES;
   if (reference.kind === "remote") return new Set();
   if (reference.kind === "value") return new Set(["Name", "Value"]);
+  if (reference.kind === "leaderstats") return new Set(["Name"]);
+  if (reference.kind === "leaderstat") return new Set(["Name", "Value"]);
   if (reference.kind === "service") {
     return reference.id === "Lighting" ? LIGHTING_PROPERTIES : new Set();
   }
@@ -2491,6 +2609,34 @@ function assignProperty(
 ): string | null {
   if (reference.kind === "remote") {
     return "Remote objects do not expose editable properties.";
+  }
+  if (reference.kind === "leaderstats") {
+    return "leaderstats is a folder. Change a stat's Value instead.";
+  }
+  if (reference.kind === "leaderstat") {
+    const leaderstat = project.leaderstats.find(
+      (stat) => stat.name.toLowerCase() === reference.name.toLowerCase(),
+    );
+    if (!leaderstat) return `Leaderstat ${reference.name} does not exist.`;
+    if (property === "Name") {
+      const value = parseString(rawValue);
+      if (value === null) return "Name must be a string.";
+      leaderstat.name = value;
+      return null;
+    }
+    if (property !== "Value") {
+      return `${property} is not a supported property for leaderstats.`;
+    }
+    if (leaderstat.type === "number") {
+      const value = parseNumber(rawValue);
+      if (value === null) return `${leaderstat.name}.Value must be a number.`;
+      leaderstat.defaultValue = value;
+    } else {
+      const value = parseString(rawValue);
+      if (value === null) return `${leaderstat.name}.Value must be a string.`;
+      leaderstat.defaultValue = value;
+    }
+    return null;
   }
   if (
     reference.kind === "player" &&
@@ -2651,6 +2797,38 @@ function assignProperty(
         return "Texture must be None, Brick, Wood, Concrete, Grass, Fabric, or Marble.";
       }
       object.surfaceTexture = value as PolyWorldObject["surfaceTexture"];
+    } else if (
+      property === "Image" ||
+      property === "ImageAll" ||
+      property === "FrontImage" ||
+      property === "BackImage" ||
+      property === "LeftImage" ||
+      property === "RightImage" ||
+      property === "TopImage" ||
+      property === "BottomImage"
+    ) {
+      const value = parseString(rawValue) ?? "";
+      if (value && !isValidPartImageUrl(value)) {
+        return "Part image must be an HTTPS URL or uploaded image data.";
+      }
+      const face: PartImageFace =
+        property === "FrontImage"
+          ? "front"
+          : property === "BackImage"
+            ? "back"
+            : property === "LeftImage"
+              ? "left"
+              : property === "RightImage"
+                ? "right"
+                : property === "TopImage"
+                  ? "top"
+                  : property === "BottomImage"
+                    ? "bottom"
+                    : "all";
+      object.imageFaces = {
+        ...(object.imageFaces ?? {}),
+        [face]: value,
+      };
     } else if (property === "CanCollide") {
       const value = parseBoolean(rawValue);
       if (value === null) return "CanCollide must be true or false.";
@@ -2816,12 +2994,18 @@ function assignProperty(
       if (property === "MaxHealth") setRuntimePlayerMaxHealth(project, reference.id, value);
       return null;
     }
+    if (property !== "Position") {
+      return `${property} is not a supported property for character parts.`;
+    }
     const value = parseNumbers(rawValue, 3);
-    if (!value) return `${property} must be Vector3.new(x, y, z).`;
+    if (!value) return "Position must be Vector3.new(x, y, z).";
+    setCharacterPosition(project, reference.id, value as [number, number, number]);
     return null;
   }
 
-  const leaderstat = project.leaderstats.find((stat) => stat.name === property);
+  const leaderstat = project.leaderstats.find(
+    (stat) => stat.name.toLowerCase() === property.toLowerCase(),
+  );
   if (leaderstat) {
     if (leaderstat.type === "number") {
       const value = parseNumber(rawValue);
@@ -3272,6 +3456,18 @@ export function analyzePolyScript(
   for (const handler of serverRemoteHandlers) {
     for (const [index, parameter] of handler.parameters.entries()) {
       values.set(parameter, index === 0 ? "LocalPlayer" : null);
+      if (index === 0) {
+        variables.set(parameter, { kind: "player", id: "LocalPlayer" });
+      }
+    }
+  }
+  for (const handler of touchHandlers) {
+    if (handler.parameters[0]) {
+      variables.set(handler.parameters[0], {
+        kind: "characterPart",
+        id: "LocalPlayer",
+        part: "HumanoidRootPart",
+      });
     }
   }
   for (const handler of [...clientRemoteHandlers, ...inputHandlers]) {
@@ -3478,6 +3674,30 @@ export function analyzePolyScript(
       return;
     }
 
+    const playerFromCharacter = source.match(
+      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*Players(?::|\.|::)GetPlayerFromCharacter\(\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\)\s*;?\s*$/,
+    );
+    if (playerFromCharacter) {
+      const character =
+        variables.get(playerFromCharacter[2]) ??
+        resolveReferenceExpression(
+          playerFromCharacter[2],
+          validationProject,
+          script,
+          variables,
+        );
+      if (character?.kind === "character") {
+        variables.set(playerFromCharacter[1], {
+          kind: "player",
+          id: character.id,
+        });
+        values.set(playerFromCharacter[1], character.id);
+      } else {
+        values.set(playerFromCharacter[1], null);
+      }
+      return;
+    }
+
     const declaration = findReferenceDeclaration(
       source,
       project,
@@ -3615,6 +3835,111 @@ export function analyzePolyScript(
       return;
     }
 
+    const humanoidDamageCall = source.match(
+      /^\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?::|\.|::)TakeDamage\(\s*(.+?)\s*\)\s*;?\s*$/,
+    );
+    if (humanoidDamageCall) {
+      const reference =
+        variables.get(humanoidDamageCall[1]) ??
+        resolveReferenceExpression(
+          humanoidDamageCall[1],
+          validationProject,
+          script,
+          variables,
+        );
+      const damage = resolveExpressionValue(
+        humanoidDamageCall[2],
+        validationProject,
+        variables,
+        values,
+        modules,
+        script,
+      );
+      if (reference?.kind !== "humanoid") {
+        diagnostics.push(
+          lineDiagnostic(
+            line,
+            source,
+            `${humanoidDamageCall[1]} must reference a Humanoid.`,
+          ),
+        );
+      } else if (typeof damage !== "number") {
+        diagnostics.push(lineDiagnostic(line, source, "TakeDamage needs a number."));
+      }
+      return;
+    }
+
+    const compoundPropertyAssignment = source.match(
+      /^\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.([A-Za-z_]\w*)\s*([+\-*/])=\s*(.+?)\s*;?\s*$/,
+    );
+    if (compoundPropertyAssignment) {
+      if (
+        ["MouseButton1Click", "Activated", "Touched", "TouchEnded", "OnServerEvent", "OnClientEvent"].includes(
+          compoundPropertyAssignment[2],
+        ) &&
+        compoundPropertyAssignment[3] === "+" &&
+        /=>/.test(compoundPropertyAssignment[4])
+      ) {
+        return;
+      }
+      const reference =
+        variables.get(compoundPropertyAssignment[1]) ??
+        resolveReferenceExpression(
+          compoundPropertyAssignment[1],
+          validationProject,
+          script,
+          variables,
+        );
+      const left = reference
+        ? referencePropertyValue(
+            validationProject,
+            reference,
+            compoundPropertyAssignment[2],
+          )
+        : undefined;
+      const right = resolveExpressionValue(
+        compoundPropertyAssignment[4],
+        validationProject,
+        variables,
+        values,
+        modules,
+        script,
+      );
+      if (!reference) {
+        diagnostics.push(
+          lineDiagnostic(line, source, `Could not resolve ${compoundPropertyAssignment[1]}.`),
+        );
+      } else if (
+        right === null &&
+        values.has(compoundPropertyAssignment[4].trim().replace(/;$/, ""))
+      ) {
+        return;
+      } else if (typeof left !== "number" || typeof right !== "number") {
+        diagnostics.push(
+          lineDiagnostic(line, source, "Compound property math requires numbers."),
+        );
+      } else {
+        const next = {
+          "+": left + right,
+          "-": left - right,
+          "*": left * right,
+          "/": right === 0 ? Number.NaN : left / right,
+        }[compoundPropertyAssignment[3]];
+        if (!Number.isFinite(next)) {
+          diagnostics.push(lineDiagnostic(line, source, "Result must be finite."));
+        } else {
+          const valueError = assignProperty(
+            validationProject,
+            reference,
+            compoundPropertyAssignment[2],
+            String(next),
+          );
+          if (valueError) diagnostics.push(lineDiagnostic(line, source, valueError));
+        }
+      }
+      return;
+    }
+
     const assignment = source.match(
       /^\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.([A-Za-z_]\w*)\s*=\s*(.+?)\s*$/,
     );
@@ -3641,7 +3966,7 @@ export function analyzePolyScript(
       }
       if (
         script.kind === "script" &&
-        (reference.kind === "gui" || reference.kind === "player")
+        reference.kind === "gui"
       ) {
         diagnostics.push(
           lineDiagnostic(
@@ -3757,8 +4082,11 @@ function outputCall(source: string): { level: "info" | "warning"; text: string }
 
 function callArguments(
   source: string,
+  project: PolyProject,
+  variables: Map<string, Reference>,
   values: Map<string, PolyStoredValue>,
   modules: Map<string, Record<string, PolyStoredValue>>,
+  script?: PolyScript,
 ): PolyStoredValue[] {
   const argumentsList: string[] = [];
   let current = "";
@@ -3791,8 +4119,10 @@ function callArguments(
   }
   if (current.trim()) argumentsList.push(current.trim());
   return argumentsList.map((argument) => {
-    const resolved = resolveRawValue(argument, values, modules);
-    return parseStoredValue(resolved) ?? null;
+    return (
+      resolveExpressionValue(argument, project, variables, values, modules, script) ??
+      null
+    );
   });
 }
 
@@ -4138,10 +4468,11 @@ function expressionTruth(
 }
 
 function worldObjectOverlapsCharacter(
+  project: PolyProject,
   object: PolyWorldObject,
   playerId: RuntimePlayerId,
 ): boolean {
-  const position = characterPosition(playerId);
+  const position = characterPosition(project, playerId);
   const avatarHalfSize: [number, number, number] = [1.1, 2.4, 1.1];
   return object.position.every(
     (value, index) =>
@@ -4157,7 +4488,7 @@ function touchedHitReferences(
   const object = project.objects.find((item) => item.id === objectId);
   if (!object) return [];
   return (["LocalPlayer", "OtherPlayer"] as const)
-    .filter((playerId) => worldObjectOverlapsCharacter(object, playerId))
+    .filter((playerId) => worldObjectOverlapsCharacter(project, object, playerId))
     .map((playerId) => ({
       kind: "characterPart" as const,
       id: playerId,
@@ -4254,7 +4585,7 @@ function executeLuauControlFlow(
       }
 
       const playersLoopMatch = line.match(
-        /^for\s+(?:[A-Za-z_]\w*|_)\s*,\s*([A-Za-z_]\w*)\s+in\s+(?:pairs|ipairs)\(\s*Players(?::|\.|::)GetPlayers\(\s*\)\s*\)\s+do\s*$/,
+        /^for\s+(?:[A-Za-z_]\w*|_)\s*,\s*([A-Za-z_]\w*)\s+in\s+(?:(?:pairs|ipairs)\(\s*)?Players(?::|\.|::)GetPlayers\(\s*\)\s*\)?\s+do\s*$/,
       );
       if (playersLoopMatch) {
         const blockEnd = luauBlockEnd(lines, index);
@@ -4393,11 +4724,12 @@ function executeScript(
   const stores = executionContext?.stores ?? new Map<string, string>();
   const values =
     executionContext?.values ?? new Map<string, PolyStoredValue>(initialValues);
-  if (!executionContext) {
-    for (const [name, value] of values) {
-      if (value === "LocalPlayer") {
-        variables.set(name, { kind: "player", id: "LocalPlayer" });
-      }
+  for (const [name, value] of values) {
+    if (value === "LocalPlayer" || value === "OtherPlayer") {
+      variables.set(name, {
+        kind: "player",
+        id: value,
+      });
     }
   }
   const sourceText = sourceOverride ?? withoutEventHandlers(script);
@@ -4743,11 +5075,12 @@ function executeScript(
       continue;
     }
     const leaderstatCall = source.match(
-      /^\s*Leaderstats(?::|\.|::)(Set|Add)\(\s*[^,]+\s*,\s*["']([^"']+)["']\s*,\s*(.+?)\s*\)\s*;?\s*$/,
+      /^\s*Leaderstats(?::|\.|::)(Set|Add|Subtract)\(\s*[^,]+\s*,\s*["']([^"']+)["']\s*,\s*(.+?)\s*\)\s*;?\s*$/,
     );
     if (leaderstatCall) {
       const stat = project.leaderstats.find(
-        (candidate) => candidate.name === leaderstatCall[2],
+        (candidate) =>
+          candidate.name.toLowerCase() === leaderstatCall[2].toLowerCase(),
       );
       if (!stat) {
         output.push({
@@ -4774,12 +5107,14 @@ function executeScript(
           stat.defaultValue =
             leaderstatCall[1] === "Add"
               ? Number(stat.defaultValue) + value
+              : leaderstatCall[1] === "Subtract"
+                ? Number(stat.defaultValue) - value
               : value;
         }
-      } else if (leaderstatCall[1] === "Add") {
+      } else if (leaderstatCall[1] !== "Set") {
         output.push({
           level: "error",
-          message: `${stat.name} is a string and cannot use Add.`,
+          message: `${stat.name} is a string and cannot use ${leaderstatCall[1]}.`,
           scriptName: script.name,
         });
       } else {
@@ -4885,15 +5220,23 @@ function executeScript(
       continue;
     }
     const playerFromCharacter = source.match(
-      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*Players(?::|\.|::)GetPlayerFromCharacter\(\s*([A-Za-z_]\w*)\s*\)\s*;?\s*$/,
+      /(?:local|var|auto(?:\s*&)?|const\s+auto(?:\s*&)?)[\s]+([A-Za-z_]\w*)\s*=\s*Players(?::|\.|::)GetPlayerFromCharacter\(\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\)\s*;?\s*$/,
     );
     if (playerFromCharacter) {
-      const character = variables.get(playerFromCharacter[2]);
+      const character =
+        variables.get(playerFromCharacter[2]) ??
+        resolveReferenceExpression(
+          playerFromCharacter[2],
+          project,
+          script,
+          variables,
+        );
       if (character?.kind === "character") {
         variables.set(playerFromCharacter[1], {
           kind: "player",
           id: character.id,
         });
+        values.set(playerFromCharacter[1], character.id);
       } else {
         values.set(playerFromCharacter[1], null);
       }
@@ -4922,6 +5265,42 @@ function executeScript(
     );
     if (declaration?.reference) {
       variables.set(declaration.variable, declaration.reference);
+      continue;
+    }
+    const humanoidDamageCall = source.match(
+      /^\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?::|\.|::)TakeDamage\(\s*(.+?)\s*\)\s*;?\s*$/,
+    );
+    if (humanoidDamageCall) {
+      const reference =
+        variables.get(humanoidDamageCall[1]) ??
+        resolveReferenceExpression(
+          humanoidDamageCall[1],
+          project,
+          script,
+          variables,
+        );
+      const damage = resolveExpressionValue(
+        humanoidDamageCall[2],
+        project,
+        variables,
+        values,
+        modules,
+        script,
+      );
+      if (reference?.kind === "humanoid" && typeof damage === "number") {
+        setRuntimePlayerHealth(
+          project,
+          reference.id,
+          runtimePlayerHealth(project, reference.id) - Math.max(0, damage),
+        );
+      } else {
+        output.push({
+          level: "error",
+          message: `${humanoidDamageCall[1]} must reference a Humanoid and damage must be a number.`,
+          scriptName: script.name,
+          line: sourceIndex + 1,
+        });
+      }
       continue;
     }
     const soundCall = resolveSoundCall(source, project, script, variables);
@@ -4964,8 +5343,11 @@ function executeScript(
         if (remote && !error) {
           const argumentsList = callArguments(
             remoteCall[3],
+            project,
+            variables,
             values,
             modules,
+            script,
           );
           if (remoteCall[2] === "FireServer") {
             dispatchRemoteServerEvent(
@@ -5025,8 +5407,11 @@ function executeScript(
         if (remote && !error) {
           const argumentsList = callArguments(
             remoteInvoke[4],
+            project,
+            variables,
             values,
             modules,
+            script,
           );
           values.set(
             remoteInvoke[1],
@@ -5067,6 +5452,64 @@ function executeScript(
         values.set(localValueDeclaration[1], value);
         continue;
       }
+    }
+    const compoundPropertyAssignment = source.match(
+      /^\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.([A-Za-z_]\w*)\s*([+\-*/])=\s*(.+?)\s*;?\s*$/,
+    );
+    if (compoundPropertyAssignment) {
+      if (
+        ["MouseButton1Click", "Activated", "Touched", "TouchEnded", "OnServerEvent", "OnClientEvent"].includes(
+          compoundPropertyAssignment[2],
+        ) &&
+        compoundPropertyAssignment[3] === "+" &&
+        /=>/.test(compoundPropertyAssignment[4])
+      ) {
+        continue;
+      }
+      const reference =
+        variables.get(compoundPropertyAssignment[1]) ??
+        resolveReferenceExpression(
+          compoundPropertyAssignment[1],
+          project,
+          script,
+          variables,
+        );
+      const left = reference
+        ? referencePropertyValue(project, reference, compoundPropertyAssignment[2])
+        : undefined;
+      const right = resolveExpressionValue(
+        compoundPropertyAssignment[4],
+        project,
+        variables,
+        values,
+        modules,
+        script,
+      );
+      if (reference && typeof left === "number" && typeof right === "number") {
+        const next = {
+          "+": left + right,
+          "-": left - right,
+          "*": left * right,
+          "/": right === 0 ? Number.NaN : left / right,
+        }[compoundPropertyAssignment[3]];
+        if (Number.isFinite(next)) {
+          const error = assignProperty(
+            project,
+            reference,
+            compoundPropertyAssignment[2],
+            String(next),
+          );
+          if (error) {
+            output.push({
+              level: "error",
+              message: error,
+              scriptName: script.name,
+              line: sourceIndex + 1,
+            });
+          }
+        }
+      }
+      continue;
     }
     const compoundValueAssignment = source.match(
       /^\s*([A-Za-z_]\w*)\s*([+\-*/])=\s*(.+?)\s*;?\s*$/,
@@ -5257,6 +5700,7 @@ function applyNearestDamage(
   const range = Math.max(0, Math.min(100, Number(match[2])));
   const tool = project.objects.find((object) => object.id === toolId);
   if (!tool) return;
+  const origin = characterPosition(project, "LocalPlayer");
   const target = project.models
     .filter(
       (model) =>
@@ -5271,9 +5715,9 @@ function applyNearestDamage(
       );
       if (!root) return null;
       const distance = Math.hypot(
-        root.position[0] - tool.position[0],
-        root.position[1] - tool.position[1],
-        root.position[2] - tool.position[2],
+        root.position[0] - origin[0],
+        root.position[1] - origin[1],
+        root.position[2] - origin[2],
       );
       return { model, root, distance };
     })

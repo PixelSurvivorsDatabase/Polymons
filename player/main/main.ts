@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import {
   app,
   BrowserWindow,
+  dialog,
   ipcMain,
   safeStorage,
   shell,
@@ -30,21 +31,16 @@ type PlayerUser = {
   description: string;
   tix: number;
   avatarUrl: string | null;
-  equippedShirtId:
-    | "polymon-shirt"
-    | "beta-tester-shirt"
-    | "creators-shirt"
-    | "orange-polymons-shirt"
-    | "polymons-varsity-jacket"
-    | null;
-  equippedPantsId:
-    | "classic-denim-pants"
-    | "polymon-pants"
-    | "beta-tester-pants"
-    | "creators-pants"
-    | "orange-polymons-pants"
-    | "polymons-varsity-pants"
-    | null;
+  equippedShirtId: string | null;
+  equippedPantsId: string | null;
+  equippedHairId?: string | null;
+  equippedHatId?: string | null;
+  equippedShirtTextureUrl: string | null;
+  equippedPantsTextureUrl: string | null;
+  equippedHairModelUrl?: string | null;
+  equippedHairModelFormat?: string | null;
+  equippedHatModelUrl?: string | null;
+  equippedHatModelFormat?: string | null;
   avatarAppearance: {
     face: "classic-smile";
     bodyColors: {
@@ -79,6 +75,8 @@ type LaunchRequest = {
 } | {
   mode: "studio";
   projectId: string;
+  spawn?: [number, number, number];
+  rotationY?: number;
 };
 
 type ProtocolRequest = {
@@ -89,6 +87,8 @@ type ProtocolRequest = {
 let mainWindow: BrowserWindow | null = null;
 let pendingLaunch: LaunchRequest | null = null;
 let auth: StoredAuth | null = null;
+let startupComplete = false;
+let queuedProtocolRequest: ProtocolRequest | null = null;
 const discordPresence = new DiscordPresenceClient();
 const captureArgument = !app.isPackaged
   ? process.argv.find((argument) =>
@@ -98,6 +98,33 @@ const captureArgument = !app.isPackaged
 
 function sessionPath(): string {
   return join(app.getPath("userData"), "session.bin");
+}
+
+function macUntestedNoticePath(): string {
+  return join(app.getPath("userData"), "mac-untested-notice-v1.txt");
+}
+
+async function showMacUntestedNoticeOnce(window: BrowserWindow): Promise<void> {
+  if (process.platform !== "darwin" || !app.isPackaged) return;
+  const markerPath = macUntestedNoticePath();
+  try {
+    await readFile(markerPath);
+    return;
+  } catch {
+    // Missing marker means this user has not seen the note yet.
+  }
+  await dialog.showMessageBox(window, {
+    type: "warning",
+    buttons: ["I understand"],
+    defaultId: 0,
+    title: "Note from lava",
+    message: "Note from lava",
+    detail:
+      "This macOS version of Polymons Player may be extremely buggy because it is still untested. Please watch for bugs and report them when you see them.",
+    noLink: true,
+  });
+  await mkdir(dirname(markerPath), { recursive: true });
+  await writeFile(markerPath, new Date().toISOString(), "utf8");
 }
 
 function projectsRoot(): string {
@@ -289,9 +316,16 @@ function parseProtocolRequest(value: string): ProtocolRequest | null {
     if (url.hostname === "studio") {
       const projectId = url.searchParams.get("project");
       if (!projectId || !/^[a-f0-9-]{36}$/i.test(projectId)) return null;
+      const spawn = parseStudioSpawn(url.searchParams.get("spawn"));
+      const rotationY = parseStudioYaw(url.searchParams.get("yaw"));
       return {
         accountTicket: null,
-        launch: { mode: "studio", projectId },
+        launch: {
+          mode: "studio",
+          projectId,
+          ...(spawn ? { spawn } : {}),
+          ...(rotationY !== undefined ? { rotationY } : {}),
+        },
       };
     }
 
@@ -307,14 +341,70 @@ function parseProtocolRequest(value: string): ProtocolRequest | null {
   }
 }
 
+function mergeProtocolRequests(
+  current: ProtocolRequest | null,
+  next: ProtocolRequest | null,
+): ProtocolRequest | null {
+  if (!current) return next;
+  if (!next) return current;
+  return {
+    accountTicket: next.accountTicket ?? current.accountTicket,
+    launch: next.launch ?? current.launch,
+  };
+}
+
+function dispatchProtocolRequest(request: ProtocolRequest): void {
+  if (!startupComplete) {
+    queuedProtocolRequest = mergeProtocolRequests(
+      queuedProtocolRequest,
+      request,
+    );
+    return;
+  }
+  void handleProtocolRequest(request);
+}
+
+function parseStudioSpawn(value: string | null): [number, number, number] | undefined {
+  if (!value) return undefined;
+  const parts = value.split(",").map((part) => Number(part));
+  if (
+    parts.length !== 3 ||
+    parts.some((part) => !Number.isFinite(part) || Math.abs(part) > 100_000)
+  ) {
+    return undefined;
+  }
+  return [parts[0], parts[1], parts[2]];
+}
+
+function parseStudioYaw(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const yaw = Number(value);
+  return Number.isFinite(yaw) ? yaw : undefined;
+}
+
 function findProtocolRequest(args: string[]): ProtocolRequest | null {
+  const studioSpawn = parseStudioSpawn(
+    args
+      .find((arg) => arg.startsWith("--studio-spawn="))
+      ?.slice("--studio-spawn=".length) ?? null,
+  );
+  const studioYaw = parseStudioYaw(
+    args
+      .find((arg) => arg.startsWith("--studio-yaw="))
+      ?.slice("--studio-yaw=".length) ?? null,
+  );
   for (const arg of args) {
     if (arg.startsWith("--studio-project=")) {
       const projectId = arg.slice("--studio-project=".length);
       if (/^[a-f0-9-]{36}$/i.test(projectId)) {
         return {
           accountTicket: null,
-          launch: { mode: "studio", projectId },
+          launch: {
+            mode: "studio",
+            projectId,
+            ...(studioSpawn ? { spawn: studioSpawn } : {}),
+            ...(studioYaw !== undefined ? { rotationY: studioYaw } : {}),
+          },
         };
       }
     }
@@ -379,7 +469,12 @@ async function handleProtocolRequest(
 }
 
 async function registerProtocol(): Promise<void> {
-  if (process.platform !== "win32" || !app.isPackaged) return;
+  if (!app.isPackaged) return;
+  if (process.platform === "darwin") {
+    app.setAsDefaultProtocolClient("polymons");
+    return;
+  }
+  if (process.platform !== "win32") return;
   const executable = process.env.PORTABLE_EXECUTABLE_FILE ?? process.execPath;
   const key = "HKCU\\Software\\Classes\\polymons";
   const commands = [
@@ -414,7 +509,22 @@ function createWindow(): void {
       sandbox: true,
     },
   });
+  mainWindow.webContents.on("before-input-event", (event, input) => {
+    if (
+      input.type === "keyDown" &&
+      (input.control || (process.platform === "darwin" && input.meta)) &&
+      ["W", "A", "S", "D", "R"].includes(input.key.toUpperCase())
+    ) {
+      event.preventDefault();
+    }
+  });
   void mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
+  mainWindow.webContents.once("did-finish-load", () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    void showMacUntestedNoticeOnce(mainWindow).catch((error) => {
+      console.error("Could not show macOS first-run notice.", error);
+    });
+  });
   if (captureArgument) {
     const capturePath = captureArgument.slice(
       "--player-capture-studio=".length,
@@ -434,15 +544,24 @@ function createWindow(): void {
     if (url.startsWith("https://")) void shell.openExternal(url);
     return { action: "deny" };
   });
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
 }
 
 const hasLock = app.requestSingleInstanceLock();
 if (!hasLock) {
   app.quit();
 } else {
+  app.on("open-url", (event, url) => {
+    event.preventDefault();
+    const request = parseProtocolRequest(url);
+    if (request) dispatchProtocolRequest(request);
+  });
+
   app.on("second-instance", (_event, argv) => {
     const request = findProtocolRequest(argv);
-    if (request) void handleProtocolRequest(request);
+    if (request) dispatchProtocolRequest(request);
   });
 
   void app.whenReady().then(async () => {
@@ -452,25 +571,16 @@ if (!hasLock) {
       console.error("Could not register the Polymons protocol.", error);
     }
     auth = await loadAuth();
-    if (
-      auth &&
-      (!Number.isInteger(auth.user.polymonsId) ||
-        typeof auth.user.description !== "string")
-    ) {
+    if (auth) {
       await refreshAuth();
     }
     const initialRequest = findProtocolRequest(process.argv);
-    if (initialRequest?.accountTicket) {
-      try {
-        await redeemAccountLink(initialRequest.accountTicket);
-      } catch {
-        // The renderer reports a useful error after it opens.
-      }
-    }
-    if (initialRequest?.launch) pendingLaunch = initialRequest.launch;
 
     const updater = registerUpdater({
-      assetName: "PolymonsPlayer.exe",
+      assetName: {
+        win32: "PolymonsPlayer.exe",
+        darwin: "PolymonsPlayer-mac-${arch}.dmg",
+      },
       productName: "Polymons Player",
     });
     discordPresence.setPresence({
@@ -684,8 +794,21 @@ if (!hasLock) {
     mainWindow?.webContents.once("did-finish-load", () => {
       setTimeout(updater.checkAutomatically, 1_500);
     });
+    startupComplete = true;
+    const startupRequest = mergeProtocolRequests(
+      initialRequest,
+      queuedProtocolRequest,
+    );
+    queuedProtocolRequest = null;
+    if (startupRequest) await handleProtocolRequest(startupRequest);
   });
 }
+
+app.on("activate", () => {
+  if (startupComplete && BrowserWindow.getAllWindows().length === 0) {
+    createWindow();
+  }
+});
 
 app.on("before-quit", () => {
   discordPresence.destroy();

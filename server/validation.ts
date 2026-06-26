@@ -108,7 +108,7 @@ export const equipAvatarItemSchema = z.object({
   shirtId: z
     .string()
     .trim()
-    .regex(/^[a-z0-9][a-z0-9-]{1,63}$/)
+    .regex(/^[a-z0-9][a-z0-9-]{1,95}$/)
     .nullable(),
 });
 
@@ -116,7 +116,15 @@ export const equipAvatarPantsSchema = z.object({
   pantsId: z
     .string()
     .trim()
-    .regex(/^[a-z0-9][a-z0-9-]{1,63}$/)
+    .regex(/^[a-z0-9][a-z0-9-]{1,95}$/)
+    .nullable(),
+});
+
+export const equipAvatarAccessorySchema = z.object({
+  itemId: z
+    .string()
+    .trim()
+    .regex(/^[a-z0-9][a-z0-9-]{1,95}$/)
     .nullable(),
 });
 
@@ -162,14 +170,41 @@ export const polyCodeCompleteSchema = z.object({
 });
 
 export const avatarUploadSchema = z.object({
-  itemType: z.enum(["shirt", "pants"]),
+  itemType: z.enum(["shirt", "pants", "hair", "hat"]),
   name: z.string().trim().min(1).max(64),
   description: z.string().trim().max(500).default(""),
   priceTix: z.number().int().min(0).max(1_000_000).default(0),
   textureData: z
     .string()
     .max(2_800_000)
-    .regex(/^data:image\/png;base64,[A-Za-z0-9+/=]+$/),
+    .regex(/^data:image\/png;base64,[A-Za-z0-9+/=]+$/)
+    .optional(),
+  modelData: z
+    .string()
+    .max(11_200_000)
+    .regex(/^data:[^;]+;base64,[A-Za-z0-9+/=]+$/)
+    .optional(),
+  modelFormat: z
+    .enum(["glb", "gltf", "obj", "fbx", "stl", "dae", "zip", "rbxm", "rbxmx", "rblx", "rbxlx"])
+    .optional(),
+}).superRefine((input, context) => {
+  if (input.itemType === "shirt" || input.itemType === "pants") {
+    if (!input.textureData) {
+      context.addIssue({
+        code: "custom",
+        path: ["textureData"],
+        message: "Clothing uploads need a PNG template.",
+      });
+    }
+    return;
+  }
+  if (!input.modelData || !input.modelFormat) {
+    context.addIssue({
+      code: "custom",
+      path: ["modelData"],
+      message: "Hair and hat uploads need a model file.",
+    });
+  }
 });
 
 export const adminCatalogReviewSchema = z.object({
@@ -181,7 +216,7 @@ export const adminInventorySchema = z.object({
   itemId: z
     .string()
     .trim()
-    .regex(/^[a-z0-9][a-z0-9-]{1,63}$/),
+    .regex(/^[a-z0-9][a-z0-9-]{1,95}$/),
   owned: z.boolean(),
   equip: z.boolean().optional(),
 });

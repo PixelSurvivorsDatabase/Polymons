@@ -74,6 +74,105 @@ does not alter the code:
 python polycode/complete.py --prompt-file prompt.lua
 ```
 
+## Tiny local chat model
+
+PolyCode also has an experimental local chat path for a tiny 6.5M parameter
+model, rounded as `polycode-6m-chat`. It is meant for PowerShell experiments
+and simple scripting Q&A, not production-quality Studio autocomplete.
+
+Build the chat corpus:
+
+```powershell
+python polycode/build_chat_corpus.py
+```
+
+Train it on CPU:
+
+```powershell
+python polycode/train.py `
+  --config polycode/config/model-6m-chat.json `
+  --tokenizer polycode/artifacts/tokenizer.json `
+  --train-data polycode/data/generated-chat/train.jsonl `
+  --validation-data polycode/data/generated-chat/validation.jsonl `
+  --output-dir polycode/checkpoints-chat-6m `
+  --sequence-length 256 `
+  --batch-size 1 `
+  --gradient-accumulation 2 `
+  --max-steps 1500
+```
+
+Resume training:
+
+```powershell
+python polycode/train.py `
+  --config polycode/config/model-6m-chat.json `
+  --tokenizer polycode/artifacts/tokenizer.json `
+  --train-data polycode/data/generated-chat/train.jsonl `
+  --validation-data polycode/data/generated-chat/validation.jsonl `
+  --output-dir polycode/checkpoints-chat-6m `
+  --sequence-length 256 `
+  --batch-size 1 `
+  --gradient-accumulation 2 `
+  --max-steps 1500 `
+  --resume polycode/checkpoints-chat-6m/checkpoint-latest.pt
+```
+
+Chat in PowerShell after a checkpoint exists:
+
+```powershell
+python polycode/chat.py
+```
+
+Or ask one question:
+
+```powershell
+python polycode/chat.py --message "How do I make a button give Coins?"
+```
+
+## Quick local PolyGPT
+
+For a rough terminal assistant that uses the completed 13M checkpoint and saves
+persistent memory locally:
+
+```powershell
+python polycode/polygpt.py
+```
+
+By default it will use a chat-trained 13M checkpoint from
+`polycode/checkpoints-polygpt-13m/` if one exists. If not, it falls back to the
+completed 13M code checkpoint.
+
+To train a dedicated 13M PolyGPT chat checkpoint:
+
+```powershell
+python polycode/build_chat_corpus.py
+python polycode/train.py `
+  --config polycode/config/model-13m.json `
+  --tokenizer polycode/artifacts/tokenizer.json `
+  --train-data polycode/data/generated-chat/train.jsonl `
+  --validation-data polycode/data/generated-chat/validation.jsonl `
+  --output-dir polycode/checkpoints-polygpt-13m `
+  --sequence-length 512 `
+  --batch-size 1 `
+  --gradient-accumulation 2 `
+  --max-steps 1500
+```
+
+Useful commands inside the chat:
+
+```text
+/remember TEXT  save a persistent note
+/memory         show saved turns and notes
+/reset          clear chat turns but keep notes
+/forget         clear all local PolyGPT memory
+/exit           stop chatting
+```
+
+The 13M checkpoint was trained with a 512 token maximum sequence length, so
+`polygpt.py` keeps a longer memory file on disk but only packs the most recent
+conversation that fits the model each turn. A real 658-1500 token context window
+needs a checkpoint trained with a larger `max_sequence_length`.
+
 Generated corpus files, tokenizers, and checkpoints are intentionally ignored
 by Git.
 
@@ -106,14 +205,33 @@ Unauthenticated requests should be rejected rather than sharing an IP bucket.
 The recommended production shape is:
 
 ```text
-Poly Studio -> Polymons Server -> PolyCode API -> Supabase Storage checkpoint
+Poly Studio -> Polymons Server -> PolyCode API -> release/direct checkpoint URL
 ```
 
 The main Polymons server keeps account auth and request limits. The separate
 PolyCode API owns PyTorch, loads the checkpoint once, and can fail without
 taking down games or accounts.
 
-### Upload the stable 13M checkpoint to Supabase Storage
+### Host the stable 13M checkpoint outside Supabase Storage
+
+To avoid burning Supabase egress when Render restarts a PolyCode instance, put
+the checkpoint on a large-file host such as a GitHub Release asset and set:
+
+```text
+POLYCODE_13M_CHECKPOINT_URL=https://github.com/PixelSurvivorsDatabase/Polymons/releases/latest/download/polycode-13m-checkpoint-final.pt
+```
+
+The experimental 28M model can use:
+
+```text
+POLYCODE_28M_CHECKPOINT_URL=https://github.com/PixelSurvivorsDatabase/Polymons/releases/latest/download/polycode-28m-checkpoint-latest.pt
+```
+
+The API writes the download to a local runtime checkpoint once per service
+instance. Supabase Storage is still supported as a fallback if the URL env vars
+are not set.
+
+### Fallback: upload the stable 13M checkpoint to Supabase Storage
 
 The migration `20260616134231_polycode_model_storage.sql` creates a private
 `polycode-models` bucket. After it is pushed, upload the completed 13M
@@ -159,6 +277,13 @@ Required env vars:
 
 ```text
 POLYCODE_API_KEY=long-random-secret
+POLYCODE_13M_CHECKPOINT_URL=https://github.com/PixelSurvivorsDatabase/Polymons/releases/latest/download/polycode-13m-checkpoint-final.pt
+```
+
+Only add the Supabase checkpoint env vars if you intentionally want the
+Supabase Storage fallback:
+
+```text
 POLYCODE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 POLYCODE_SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
 POLYCODE_SUPABASE_BUCKET=polycode-models

@@ -261,6 +261,7 @@ export default function CodeEditor({
   const modelRef = useRef<monaco.editor.ITextModel | null>(null);
   const trainingTimerRef = useRef<number | null>(null);
   const inlineSuggestTimerRef = useRef<number | null>(null);
+  const suggestTimerRef = useRef<number | null>(null);
   const polyCodeCacheRef = useRef<{
     key: string;
     promise: Promise<string | null>;
@@ -314,6 +315,7 @@ export default function CodeEditor({
       quickSuggestions: settingsRef.current.autoSuggestEnabled
         ? { other: true, comments: false, strings: false }
         : false,
+      quickSuggestionsDelay: 60,
       suggestOnTriggerCharacters: settingsRef.current.autoSuggestEnabled,
       tabCompletion: "on",
       snippetSuggestions: "top",
@@ -323,7 +325,7 @@ export default function CodeEditor({
       parameterHints: { enabled: true, cycle: true },
       inlineSuggest: {
         enabled: settingsRef.current.autoSuggestEnabled,
-        suppressSuggestions: settingsRef.current.autoSuggestEnabled,
+        suppressSuggestions: false,
       },
     });
     editorRef.current = editor;
@@ -378,11 +380,39 @@ export default function CodeEditor({
       }, 260);
     };
 
-    const changeSubscription = model.onDidChangeContent(() => {
+    const scheduleSuggest = (typed = "") => {
+      if (suggestTimerRef.current !== null) {
+        window.clearTimeout(suggestTimerRef.current);
+      }
+      if (!settingsRef.current.autoSuggestEnabled) return;
+      suggestTimerRef.current = window.setTimeout(() => {
+        const currentEditor = editorRef.current;
+        const currentModel = modelRef.current;
+        const position = currentEditor?.getPosition();
+        if (!currentEditor || !currentModel || !position) return;
+        const currentLine = currentModel.getLineContent(position.lineNumber);
+        const beforeCursor = currentLine.slice(0, position.column - 1);
+        if (
+          typed === "." ||
+          typed === ":" ||
+          typed === '"' ||
+          /[A-Za-z0-9_]$/.test(beforeCursor)
+        ) {
+          currentEditor.trigger(
+            "poly-autocomplete",
+            "editor.action.triggerSuggest",
+            {},
+          );
+        }
+      }, 70);
+    };
+
+    const changeSubscription = model.onDidChangeContent((event) => {
       const source = model.getValue();
       if (!externalUpdate.current) onChangeRef.current(source);
       updateDiagnostics(source);
       scheduleInlineSuggest();
+      scheduleSuggest(event.changes.at(-1)?.text ?? "");
       if (trainingTimerRef.current !== null) {
         window.clearTimeout(trainingTimerRef.current);
       }
@@ -432,6 +462,13 @@ export default function CodeEditor({
             "Material",
             "Shape",
             "Texture",
+            "Image",
+            "FrontImage",
+            "BackImage",
+            "LeftImage",
+            "RightImage",
+            "TopImage",
+            "BottomImage",
             "CanCollide",
             "CastShadow",
             "Friction",
@@ -463,6 +500,8 @@ export default function CodeEditor({
             "CameraMaxZoomDistance",
             "Health",
             "MaxHealth",
+            "leaderstats",
+            "Value",
             "SprintEnabled",
             "SprintMultiplier",
             "ClockTime",
@@ -551,6 +590,11 @@ export default function CodeEditor({
               insertText: `InvokeClient(\${1:player}, \${2:value})`,
               detail: "Call a RemoteFunction on one client",
             },
+            {
+              label: "TakeDamage",
+              insertText: `TakeDamage(\${1:25})${statementEnd}`,
+              detail: "Damage a Humanoid",
+            },
           ];
           const findLabel = isLuau
             ? "Workspace:FindFirstChild"
@@ -602,6 +646,26 @@ export default function CodeEditor({
             : isCpp
               ? 'Leaderstats::Add(Players::LocalPlayer, "${1:Coins}", ${2:1});'
               : 'Leaderstats.Add(Players.LocalPlayer, "${1:Coins}", ${2:1});';
+          const leaderstatSubtractText = isLuau
+            ? 'Leaderstats:Subtract(Players.LocalPlayer, "${1:Coins}", ${2:1})'
+            : isCpp
+              ? 'Leaderstats::Subtract(Players::LocalPlayer, "${1:Coins}", ${2:1});'
+              : 'Leaderstats.Subtract(Players.LocalPlayer, "${1:Coins}", ${2:1});';
+          const leaderstatValueText = isLuau
+            ? 'player.leaderstats.${1:Coins}.Value += ${2:1}'
+            : isCpp
+              ? 'player.leaderstats.${1:Coins}.Value += ${2:1};'
+              : 'player.leaderstats.${1:Coins}.Value += ${2:1};';
+          const getPlayerFromCharacterText = isLuau
+            ? "local player = Players:GetPlayerFromCharacter(${1:hit.Parent})"
+            : isCpp
+              ? "auto player = Players::GetPlayerFromCharacter(${1:hit.Parent});"
+              : "var player = Players.GetPlayerFromCharacter(${1:hit.Parent});";
+          const takeDamageText = isLuau
+            ? "local humanoid = ${1:player}.Character.Humanoid\nhumanoid:TakeDamage(${2:25})"
+            : isCpp
+              ? "auto humanoid = ${1:player}.Character.Humanoid;\nhumanoid.TakeDamage(${2:25});"
+              : "var humanoid = ${1:player}.Character.Humanoid;\nhumanoid.TakeDamage(${2:25});";
           const ifText = isLuau
             ? "if ${1:condition} then\n\t${2:-- code}\nend"
             : "if (${1:condition}) {\n\t${2:// code}\n}";
@@ -864,6 +928,42 @@ export default function CodeEditor({
                 range,
               },
               {
+                label: "Leaderstats.Subtract",
+                kind: monaco.languages.CompletionItemKind.Method,
+                insertText: leaderstatSubtractText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: "Subtract from one selected player's numeric leaderstat",
+                range,
+              },
+              {
+                label: "leaderstats Value",
+                kind: monaco.languages.CompletionItemKind.Snippet,
+                insertText: leaderstatValueText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: "Roblox-style player leaderstat value edit",
+                range,
+              },
+              {
+                label: "Players.GetPlayerFromCharacter",
+                kind: monaco.languages.CompletionItemKind.Method,
+                insertText: getPlayerFromCharacterText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: "Convert hit.Parent into the touching player",
+                range,
+              },
+              {
+                label: "Humanoid TakeDamage",
+                kind: monaco.languages.CompletionItemKind.Method,
+                insertText: takeDamageText,
+                insertTextRules:
+                  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                detail: "Damage a player's Humanoid",
+                range,
+              },
+              {
                 label: "ReplicatedStorage.Find",
                 kind: monaco.languages.CompletionItemKind.Method,
                 insertText: remoteFindText,
@@ -971,6 +1071,9 @@ export default function CodeEditor({
       if (inlineSuggestTimerRef.current !== null) {
         window.clearTimeout(inlineSuggestTimerRef.current);
       }
+      if (suggestTimerRef.current !== null) {
+        window.clearTimeout(suggestTimerRef.current);
+      }
       changeSubscription.dispose();
       cursorSubscription.dispose();
       completionSubscription.dispose();
@@ -988,15 +1091,20 @@ export default function CodeEditor({
       quickSuggestions: settings.autoSuggestEnabled
         ? { other: true, comments: false, strings: false }
         : false,
+      quickSuggestionsDelay: 60,
       suggestOnTriggerCharacters: settings.autoSuggestEnabled,
       inlineSuggest: {
         enabled: settings.autoSuggestEnabled,
-        suppressSuggestions: settings.autoSuggestEnabled,
+        suppressSuggestions: false,
       },
     });
     if (!settings.autoSuggestEnabled && inlineSuggestTimerRef.current !== null) {
       window.clearTimeout(inlineSuggestTimerRef.current);
       inlineSuggestTimerRef.current = null;
+    }
+    if (!settings.autoSuggestEnabled && suggestTimerRef.current !== null) {
+      window.clearTimeout(suggestTimerRef.current);
+      suggestTimerRef.current = null;
     }
   }, [settings.autoSuggestEnabled]);
 

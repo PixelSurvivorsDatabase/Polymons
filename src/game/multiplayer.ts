@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   isPantsId,
+  isAccessoryId,
+  type AvatarModelFormat,
+  type HairId,
+  type HatId,
   isShirtId,
   type PantsId,
   type ShirtId,
@@ -24,6 +28,14 @@ export type RemotePlayer = {
   displayName: string;
   equippedShirtId: ShirtId | null;
   equippedPantsId: PantsId | null;
+  equippedHairId?: HairId | null;
+  equippedHatId?: HatId | null;
+  equippedShirtTextureUrl?: string | null;
+  equippedPantsTextureUrl?: string | null;
+  equippedHairModelUrl?: string | null;
+  equippedHairModelFormat?: AvatarModelFormat | null;
+  equippedHatModelUrl?: string | null;
+  equippedHatModelFormat?: AvatarModelFormat | null;
   avatarAppearance: AvatarAppearance;
   state: PlayerTransform;
   leaderstats: Record<string, number | string>;
@@ -89,6 +101,36 @@ function isTransform(value: unknown): value is PlayerTransform {
   );
 }
 
+function isTextureUrl(value: unknown): value is string | null | undefined {
+  return (
+    value === undefined ||
+    value === null ||
+    (typeof value === "string" &&
+      value.length <= 2_048 &&
+      /^https?:\/\//i.test(value))
+  );
+}
+
+function isModelFormat(value: unknown): value is AvatarModelFormat | null | undefined {
+  return (
+    value === undefined ||
+    value === null ||
+    [
+      "glb",
+      "gltf",
+      "obj",
+      "fbx",
+      "stl",
+      "dae",
+      "zip",
+      "rbxm",
+      "rbxmx",
+      "rblx",
+      "rbxlx",
+    ].includes(String(value))
+  );
+}
+
 function isPlayer(value: unknown): value is ServerPlayer {
   if (!value || typeof value !== "object") return false;
   const player = value as Partial<ServerPlayer>;
@@ -103,6 +145,18 @@ function isPlayer(value: unknown): value is ServerPlayer {
       isShirtId(player.equippedShirtId)) &&
     (player.equippedPantsId === null ||
       isPantsId(player.equippedPantsId)) &&
+    (player.equippedHairId === undefined ||
+      player.equippedHairId === null ||
+      isAccessoryId(player.equippedHairId)) &&
+    (player.equippedHatId === undefined ||
+      player.equippedHatId === null ||
+      isAccessoryId(player.equippedHatId)) &&
+    isTextureUrl(player.equippedShirtTextureUrl) &&
+    isTextureUrl(player.equippedPantsTextureUrl) &&
+    isTextureUrl(player.equippedHairModelUrl) &&
+    isTextureUrl(player.equippedHatModelUrl) &&
+    isModelFormat(player.equippedHairModelFormat) &&
+    isModelFormat(player.equippedHatModelFormat) &&
     (player.leaderstats === undefined || isLeaderstats(player.leaderstats)) &&
     (player.state === undefined || isTransform(player.state))
   );

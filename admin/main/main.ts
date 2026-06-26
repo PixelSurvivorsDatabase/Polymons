@@ -32,6 +32,7 @@ type StoredAuth = {
 };
 
 let auth: StoredAuth | null = null;
+let adminInitialized = false;
 
 app.setName("Poly Admin");
 
@@ -240,8 +241,17 @@ if (!hasLock) {
         ),
     );
 
+    adminInitialized = true;
     createWindow();
   });
 
-  app.on("window-all-closed", () => app.quit());
+  app.on("activate", () => {
+    if (adminInitialized && BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") app.quit();
+  });
 }

@@ -1,12 +1,14 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { access, mkdir, open, unlink, writeFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
-import { app, BrowserWindow, ipcMain } from "electron";
+import { access, mkdir, open, readFile, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { app, BrowserWindow, ipcMain, shell } from "electron";
 
 const RELEASE_API =
   "https://api.github.com/repos/PixelSurvivorsDatabase/Polymons/releases/latest";
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export type UpdateState = {
   status:
@@ -38,7 +40,7 @@ type ReleaseResponse = {
 };
 
 type UpdaterConfig = {
-  assetName: string;
+  assetName: string | Partial<Record<NodeJS.Platform, string>>;
   productName: string;
 };
 
@@ -66,6 +68,25 @@ function assetDigest(asset: ReleaseAsset): string | null {
 
 function runningExecutable(): string {
   return resolve(process.env.PORTABLE_EXECUTABLE_FILE ?? process.execPath);
+}
+
+function updateSupported(): boolean {
+  return app.isPackaged && ["win32", "darwin"].includes(process.platform);
+}
+
+function platformAssetName(config: UpdaterConfig): string | null {
+  if (typeof config.assetName === "string") return config.assetName;
+  const value = config.assetName[process.platform];
+  return value?.replaceAll("${arch}", process.arch) ?? null;
+}
+
+async function sameVersionAsRelease(tagName: string): Promise<boolean> {
+  const packagedTag = await readFile(join(__dirname, "release-tag.txt"), "utf8")
+    .then((value) => value.trim())
+    .catch(() => "");
+  if (packagedTag && packagedTag === tagName) return true;
+  const version = app.getVersion();
+  return tagName === version || tagName === `v${version}`;
 }
 
 function quoteWindowsArgument(value: string): string {
@@ -128,16 +149,14 @@ async function launchOutsideProcessTree(
 
 export function registerUpdater(config: UpdaterConfig) {
   let state: UpdateState = {
-    status: app.isPackaged && process.platform === "win32"
-      ? "current"
-      : "unsupported",
+    status: updateSupported() ? "current" : "unsupported",
     version: null,
     publishedAt: null,
     progress: null,
     message:
-      app.isPackaged && process.platform === "win32"
+      updateSupported()
         ? "Updates are checked automatically."
-        : "Updates are available in packaged Windows builds.",
+        : "Updates are available in packaged desktop builds.",
   };
   let pendingDownload: { path: string; digest: string } | null = null;
   let checkPromise: Promise<UpdateState> | null = null;
@@ -154,9 +173,10 @@ export function registerUpdater(config: UpdaterConfig) {
     version: string,
     publishedAt: string,
   ) => {
+    const extension = extname(asset.name);
     const destination = join(
       app.getPath("temp"),
-      `polymons-${basename(config.assetName, ".exe")}-${digest.slice(0, 12)}.exe`,
+      `polymons-${basename(asset.name, extension)}-${digest.slice(0, 12)}${extension || ".download"}`,
     );
     const response = await fetch(asset.browser_download_url, {
       headers: { "User-Agent": "Polymons-Updater" },
@@ -205,14 +225,25 @@ export function registerUpdater(config: UpdaterConfig) {
       version,
       publishedAt,
       progress: 1,
-      message: "Update downloaded. Restart when you are ready.",
+      message:
+        process.platform === "darwin"
+          ? "Installer downloaded. Open it when you are ready."
+          : "Update downloaded. Restart when you are ready.",
     });
   };
 
   const check = async (autoDownload = true): Promise<UpdateState> => {
     if (checkPromise) return checkPromise;
     checkPromise = (async () => {
-      if (!app.isPackaged || process.platform !== "win32") return state;
+      if (!updateSupported()) return state;
+      const assetName = platformAssetName(config);
+      if (!assetName) {
+        return updateState({
+          status: "unsupported",
+          progress: null,
+          message: `${config.productName} updates are not available for this platform yet.`,
+        });
+      }
       updateState({
         status: "checking",
         progress: null,
@@ -230,13 +261,18 @@ export function registerUpdater(config: UpdaterConfig) {
         }
         const release = (await response.json()) as ReleaseResponse;
         const asset = release.assets.find(
-          (candidate) => candidate.name === config.assetName,
+          (candidate) => candidate.name === assetName,
         );
-        if (!asset) throw new Error(`${config.assetName} is missing from the release.`);
+        if (!asset) throw new Error(`${assetName} is missing from the release.`);
         const digest = assetDigest(asset);
         if (!digest) throw new Error("The release is missing its SHA-256 digest.");
-        const currentDigest = await fileSha256(runningExecutable());
-        if (currentDigest === digest) {
+        const currentDigest =
+          process.platform === "win32" ? await fileSha256(runningExecutable()) : null;
+        if (
+          currentDigest === digest ||
+          (process.platform === "darwin" &&
+            (await sameVersionAsRelease(release.tag_name)))
+        ) {
           pendingDownload = null;
           return updateState({
             status: "current",
@@ -280,13 +316,33 @@ export function registerUpdater(config: UpdaterConfig) {
     const pending = pendingDownload;
     try {
       await access(pending.path);
-      await access(target);
+      if (process.platform === "win32") await access(target);
     } catch {
       pendingDownload = null;
       return updateState({
         status: "error",
         progress: null,
         message: "The downloaded update is no longer available. Check again.",
+      });
+    }
+    if (process.platform === "darwin") {
+      updateState({
+        status: "installing",
+        progress: 1,
+        message: "Opening the macOS installer...",
+      });
+      const error = await shell.openPath(pending.path);
+      if (error) {
+        return updateState({
+          status: "error",
+          progress: null,
+          message: `Could not open the installer: ${error}`,
+        });
+      }
+      return updateState({
+        status: "ready",
+        progress: 1,
+        message: `Installer opened. Drag ${config.productName} to Applications, then reopen it.`,
       });
     }
     const scriptPath = join(

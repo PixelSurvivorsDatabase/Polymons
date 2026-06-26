@@ -1,5 +1,6 @@
 import { useFrame, useLoader } from "@react-three/fiber";
 import {
+  Suspense,
   type MutableRefObject,
   type ReactNode,
   useEffect,
@@ -12,12 +13,21 @@ import {
   MathUtils,
   SRGBColorSpace,
   TextureLoader,
+  type Object3D,
   type Texture,
 } from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import classicSmileFaceUrl from "../../assets/avatar/faces/classic-smile.png";
+import classicHeadObjSource from "../../assets/avatar/heads/classic-head.obj?raw";
+import {
+  avatarAccessoriesForIds,
+  type AvatarAccessoryDefinition,
+} from "./avatarAccessories";
 import {
   createPantsTexture,
   createShirtTexture,
+  type AvatarModelFormat,
   type PantsId,
   type ShirtId,
 } from "./avatarCatalog";
@@ -37,10 +47,21 @@ import {
   type AvatarAppearance,
 } from "./avatarAppearance";
 import {
+  R6_ARM_CENTER_Y,
+  R6_ARM_SIZE,
   R6_AVATAR_SCALE,
-  R6_HEAD_PROFILE,
+  R6_HEAD_CENTER_Y,
+  R6_HIP_X,
+  R6_HIP_Y,
+  R6_LEG_CENTER_Y,
+  R6_LEG_SIZE,
+  R6_SHOULDER_X,
+  R6_SHOULDER_Y,
+  R6_TORSO_CENTER_Y,
+  R6_TORSO_SIZE,
   R6_VISUAL_OFFSET,
 } from "./r6Geometry";
+import { normalizedObjGeometry } from "./objMesh";
 
 function useRemoteAvatarImage(textureUrl?: string | null) {
   const [image, setImage] = useState<HTMLImageElement | null>(null);
@@ -226,17 +247,151 @@ export function PantsMaterials({
   );
 }
 
+function prepareAccessoryObject(object: Object3D): Object3D {
+  object.traverse((child) => {
+    const mesh = child as Object3D & {
+      castShadow?: boolean;
+      receiveShadow?: boolean;
+    };
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+  });
+  return object;
+}
+
+function GltfAccessoryModel({ url }: { url: string }) {
+  const gltf = useLoader(GLTFLoader, url);
+  const object = useMemo(
+    () => prepareAccessoryObject(gltf.scene.clone(true)),
+    [gltf.scene],
+  );
+  return <primitive object={object} />;
+}
+
+function ObjAccessoryModel({ url }: { url: string }) {
+  const obj = useLoader(OBJLoader, url);
+  const object = useMemo(() => prepareAccessoryObject(obj.clone(true)), [obj]);
+  return <primitive object={object} />;
+}
+
+function UploadedAccessoryModel({
+  url,
+  format,
+}: {
+  url: string;
+  format: AvatarModelFormat;
+}) {
+  if (format === "glb" || format === "gltf") {
+    return <GltfAccessoryModel url={url} />;
+  }
+  if (format === "obj") {
+    return <ObjAccessoryModel url={url} />;
+  }
+  return null;
+}
+
+function canRenderAccessoryModel(format: AvatarModelFormat | null | undefined) {
+  return format === "glb" || format === "gltf" || format === "obj";
+}
+
+function HeadAccessory({
+  accessory,
+}: {
+  accessory: AvatarAccessoryDefinition;
+}) {
+  const transform = {
+    position: accessory.position,
+    rotation: accessory.rotation,
+    scale: accessory.scale,
+  };
+  if (
+    accessory.modelUrl &&
+    accessory.modelFormat &&
+    canRenderAccessoryModel(accessory.modelFormat)
+  ) {
+    return (
+      <group {...transform}>
+        <Suspense fallback={null}>
+          <UploadedAccessoryModel
+            url={accessory.modelUrl}
+            format={accessory.modelFormat}
+          />
+        </Suspense>
+      </group>
+    );
+  }
+  if (accessory.slot === "hair") {
+    return (
+      <group {...transform}>
+        <mesh name={accessory.name} position={[0, 0.23, -0.04]} castShadow>
+          <sphereGeometry args={[0.69, 18, 10, 0, Math.PI * 2, 0, 1.72]} />
+          <meshStandardMaterial
+            color={accessory.color}
+            roughness={0.9}
+            metalness={0}
+          />
+        </mesh>
+        <mesh name={`${accessory.name}Back`} position={[0, -0.06, 0.28]} castShadow>
+          <boxGeometry args={[1.18, 0.55, 0.34]} />
+          <meshStandardMaterial
+            color={accessory.color}
+            roughness={0.92}
+            metalness={0}
+          />
+        </mesh>
+      </group>
+    );
+  }
+  return (
+    <group {...transform}>
+      <mesh name={accessory.name} position={[0, 0.39, 0]} castShadow>
+        <cylinderGeometry args={[0.73, 0.73, 0.18, 28]} />
+        <meshStandardMaterial
+          color={accessory.color}
+          roughness={0.86}
+          metalness={0}
+        />
+      </mesh>
+      <mesh name={`${accessory.name}Brim`} position={[0, 0.28, -0.48]} castShadow>
+        <boxGeometry args={[1.1, 0.08, 0.42]} />
+        <meshStandardMaterial
+          color={accessory.color}
+          roughness={0.86}
+          metalness={0}
+        />
+      </mesh>
+    </group>
+  );
+}
+
 export function R6Head({
   color = DEFAULT_AVATAR_APPEARANCE.bodyColors.head,
+  accessories = [],
+  uploadedAccessories = [],
 }: {
   color?: string;
+  accessories?: readonly string[];
+  uploadedAccessories?: readonly AvatarAccessoryDefinition[];
 }) {
   const faceTexture = useLoader(TextureLoader, classicSmileFaceUrl);
+  const headGeometry = useMemo(
+    () => normalizedObjGeometry(classicHeadObjSource, [1.25, 1.18, 1.25]),
+    [],
+  );
+  const headAccessories = useMemo(
+    () =>
+      avatarAccessoriesForIds(
+        [...uploadedAccessories.map((accessory) => accessory.id), ...accessories],
+        uploadedAccessories,
+      ),
+    [accessories, uploadedAccessories],
+  );
   faceTexture.colorSpace = SRGBColorSpace;
+  useEffect(() => () => headGeometry.dispose(), [headGeometry]);
   return (
     <group name="Head">
       <mesh castShadow receiveShadow>
-        <latheGeometry args={[R6_HEAD_PROFILE, 24]} />
+        <primitive object={headGeometry} attach="geometry" />
         <meshStandardMaterial
           color={color}
           roughness={0.86}
@@ -246,11 +401,11 @@ export function R6Head({
       </mesh>
       <mesh
         name="Face"
-        position={[0, -0.055, -0.767]}
+        position={[0, -0.04, -0.64]}
         rotation={[0, Math.PI, 0]}
         renderOrder={2}
       >
-        <planeGeometry args={[1.28, 0.86]} />
+        <planeGeometry args={[1.02, 0.68]} />
         <meshBasicMaterial
           map={faceTexture}
           transparent
@@ -261,8 +416,21 @@ export function R6Head({
           toneMapped={false}
         />
       </mesh>
-      <group name="HatAttachment" position={[0, 0.65, 0]} />
-      <group name="FaceFrontAttachment" position={[0, 0, -0.78]} />
+      <group name="HairAttachment" position={[0, 0.48, 0.03]}>
+        {headAccessories
+          .filter((accessory) => accessory.attachment === "HairAttachment")
+          .map((accessory) => (
+            <HeadAccessory key={accessory.id} accessory={accessory} />
+          ))}
+      </group>
+      <group name="HatAttachment" position={[0, 0.64, 0]}>
+        {headAccessories
+          .filter((accessory) => accessory.attachment === "HatAttachment")
+          .map((accessory) => (
+            <HeadAccessory key={accessory.id} accessory={accessory} />
+          ))}
+      </group>
+      <group name="FaceFrontAttachment" position={[0, 0, -0.66]} />
     </group>
   );
 }
@@ -272,8 +440,14 @@ export type R6AvatarPlayer = {
   displayName: string;
   equippedShirtId?: ShirtId | null;
   equippedPantsId?: PantsId | null;
+  equippedHairId?: string | null;
+  equippedHatId?: string | null;
   equippedShirtTextureUrl?: string | null;
   equippedPantsTextureUrl?: string | null;
+  equippedHairModelUrl?: string | null;
+  equippedHairModelFormat?: AvatarModelFormat | null;
+  equippedHatModelUrl?: string | null;
+  equippedHatModelFormat?: AvatarModelFormat | null;
   avatarAppearance?: AvatarAppearance;
 };
 
@@ -307,6 +481,45 @@ export function R6Avatar({
   const pantsId = player?.equippedPantsId ?? null;
   const shirtTextureUrl = player?.equippedShirtTextureUrl ?? null;
   const pantsTextureUrl = player?.equippedPantsTextureUrl ?? null;
+  const uploadedAccessories = useMemo<AvatarAccessoryDefinition[]>(() => {
+    const items: AvatarAccessoryDefinition[] = [];
+    if (player?.equippedHairId && player.equippedHairModelUrl) {
+      items.push({
+        id: player.equippedHairId,
+        name: "Equipped Hair",
+        slot: "hair",
+        attachment: "HairAttachment",
+        color: "#17121a",
+        position: [0, 0.02, 0],
+        rotation: [0, 0, 0],
+        scale: [0.82, 0.82, 0.82],
+        modelUrl: player.equippedHairModelUrl,
+        modelFormat: player.equippedHairModelFormat ?? null,
+      });
+    }
+    if (player?.equippedHatId && player.equippedHatModelUrl) {
+      items.push({
+        id: player.equippedHatId,
+        name: "Equipped Hat",
+        slot: "hat",
+        attachment: "HatAttachment",
+        color: "#2b2140",
+        position: [0, 0.02, 0],
+        rotation: [0, 0, 0],
+        scale: [0.82, 0.82, 0.82],
+        modelUrl: player.equippedHatModelUrl,
+        modelFormat: player.equippedHatModelFormat ?? null,
+      });
+    }
+    return items;
+  }, [
+    player?.equippedHairId,
+    player?.equippedHairModelFormat,
+    player?.equippedHairModelUrl,
+    player?.equippedHatId,
+    player?.equippedHatModelFormat,
+    player?.equippedHatModelUrl,
+  ]);
   const idleSeed = useMemo(() => {
     const identity = player?.username ?? "localplayer";
     return [...identity].reduce(
@@ -332,7 +545,7 @@ export function R6Avatar({
         Math.sin(facing.current - root.current.rotation.y),
         Math.cos(facing.current - root.current.rotation.y),
       );
-      root.current.rotation.y += angleDelta * Math.min(1, delta * 16);
+      root.current.rotation.y += angleDelta * Math.min(1, delta * 34);
     }
 
     const rising = (verticalVelocity?.current ?? 0) > 0.4;
@@ -435,15 +648,24 @@ export function R6Avatar({
         />
       </mesh>
 
-      <group ref={head} name="HeadMotor" position={[0, 2.14, 0]}>
-        <R6Head color={colors.head} />
+      <group ref={head} name="HeadMotor" position={[0, R6_HEAD_CENTER_Y, 0]}>
+        <R6Head
+          color={colors.head}
+          accessories={appearance.accessories}
+          uploadedAccessories={uploadedAccessories}
+        />
       </group>
 
       {children}
 
       <group ref={torso} name="TorsoMotor">
-        <mesh name="Torso" position={[0, 0.5, 0]} castShadow receiveShadow>
-          <boxGeometry args={[2, 2, 1]} />
+        <mesh
+          name="Torso"
+          position={[0, R6_TORSO_CENTER_Y, 0]}
+          castShadow
+          receiveShadow
+        >
+          <boxGeometry args={R6_TORSO_SIZE} />
           <ShirtMaterials
             shirtId={shirtId}
             textureUrl={shirtTextureUrl}
@@ -451,17 +673,22 @@ export function R6Avatar({
             fallbackColor={colors.torso}
           />
         </mesh>
-        <group name="BackAttachment" position={[0, 0.65, 0.54]} />
+        <group name="BackAttachment" position={[0, 0.65, 0.43]} />
         <group name="WaistAttachment" position={[0, -0.52, 0]} />
       </group>
 
       <group
         ref={leftArm}
         name="Left Shoulder"
-        position={[-1.57, 1.52, 0]}
+        position={[-R6_SHOULDER_X, R6_SHOULDER_Y, 0]}
       >
-        <mesh name="Left Arm" position={[0, -1.07, 0]} castShadow receiveShadow>
-          <boxGeometry args={[1.08, 2.12, 1.04]} />
+        <mesh
+          name="Left Arm"
+          position={[0, R6_ARM_CENTER_Y, 0]}
+          castShadow
+          receiveShadow
+        >
+          <boxGeometry args={R6_ARM_SIZE} />
           <ShirtMaterials
             shirtId={shirtId}
             textureUrl={shirtTextureUrl}
@@ -475,10 +702,15 @@ export function R6Avatar({
       <group
         ref={rightArm}
         name="Right Shoulder"
-        position={[1.57, 1.52, 0]}
+        position={[R6_SHOULDER_X, R6_SHOULDER_Y, 0]}
       >
-        <mesh name="Right Arm" position={[0, -1.07, 0]} castShadow receiveShadow>
-          <boxGeometry args={[1.08, 2.12, 1.04]} />
+        <mesh
+          name="Right Arm"
+          position={[0, R6_ARM_CENTER_Y, 0]}
+          castShadow
+          receiveShadow
+        >
+          <boxGeometry args={R6_ARM_SIZE} />
           <ShirtMaterials
             shirtId={shirtId}
             textureUrl={shirtTextureUrl}
@@ -490,9 +722,14 @@ export function R6Avatar({
         <group name="RightShoulderAttachment" position={[0, -0.08, 0]} />
       </group>
 
-      <group ref={leftLeg} name="Left Hip" position={[-0.53, -0.56, 0]}>
-        <mesh name="Left Leg" position={[0, -1.04, 0]} castShadow receiveShadow>
-          <boxGeometry args={[1.06, 2.08, 1.04]} />
+      <group ref={leftLeg} name="Left Hip" position={[-R6_HIP_X, R6_HIP_Y, 0]}>
+        <mesh
+          name="Left Leg"
+          position={[0, R6_LEG_CENTER_Y, 0]}
+          castShadow
+          receiveShadow
+        >
+          <boxGeometry args={R6_LEG_SIZE} />
           <PantsMaterials
             pantsId={pantsId}
             textureUrl={pantsTextureUrl}
@@ -501,9 +738,14 @@ export function R6Avatar({
           />
         </mesh>
       </group>
-      <group ref={rightLeg} name="Right Hip" position={[0.53, -0.56, 0]}>
-        <mesh name="Right Leg" position={[0, -1.04, 0]} castShadow receiveShadow>
-          <boxGeometry args={[1.06, 2.08, 1.04]} />
+      <group ref={rightLeg} name="Right Hip" position={[R6_HIP_X, R6_HIP_Y, 0]}>
+        <mesh
+          name="Right Leg"
+          position={[0, R6_LEG_CENTER_Y, 0]}
+          castShadow
+          receiveShadow
+        >
+          <boxGeometry args={R6_LEG_SIZE} />
           <PantsMaterials
             pantsId={pantsId}
             textureUrl={pantsTextureUrl}
