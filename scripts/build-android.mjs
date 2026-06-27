@@ -4,6 +4,12 @@ import { delimiter, resolve } from "node:path";
 
 const androidDirectory = resolve(process.argv[2] || "android");
 const wrapper = process.platform === "win32" ? "gradlew.bat" : "./gradlew";
+const gradleArguments = [
+  "assembleDebug",
+  "--no-daemon",
+  "--console=plain",
+  "--max-workers=1",
+];
 const isStudio = androidDirectory.endsWith("android-studio");
 const apkSource = resolve(androidDirectory, "app/build/outputs/apk/debug/app-debug.apk");
 const apkDestination = resolve(
@@ -20,7 +26,9 @@ if (!existsSync(resolve(androidDirectory, wrapper))) {
   throw new Error("Android project is missing. Run `npx cap add android` first.");
 }
 
-const child = spawn(wrapper, ["assembleDebug", "--no-daemon", "--console=plain", "--max-workers=1"], {
+const child = spawn(process.platform === "win32" ? wrapper : "bash", process.platform === "win32"
+  ? gradleArguments
+  : [wrapper, ...gradleArguments], {
   cwd: androidDirectory,
   stdio: "inherit",
   shell: process.platform === "win32",
@@ -33,6 +41,11 @@ const child = spawn(wrapper, ["assembleDebug", "--no-daemon", "--console=plain",
         }
       : {}),
   },
+});
+
+child.on("error", (error) => {
+  console.error(`Could not start the Android build: ${error.message}`);
+  process.exit(1);
 });
 
 child.on("exit", (code) => {
