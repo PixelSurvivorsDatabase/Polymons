@@ -14,7 +14,7 @@ const isStudio = androidDirectory.endsWith("android-studio");
 const apkSource = resolve(androidDirectory, "app/build/outputs/apk/debug/app-debug.apk");
 const apkDestination = resolve(
   isStudio ? "studio-release" : "release",
-  isStudio ? "Poly Studio.apk" : "Polymons Player.apk",
+  isStudio ? "Poly-Studio.apk" : "Polymons-Player.apk",
 );
 const androidStudioJavaHome = "C:\\Program Files\\Android\\Android Studio\\jbr";
 const javaHome =
