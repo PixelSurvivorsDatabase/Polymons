@@ -49,35 +49,21 @@ jobs:
       - name: Package Player
         run: npm run ${{ matrix.playerScript }}
         env:
-          CSC_LINK: ${{ matrix.platform == 'mac' && secrets.MACOS_CSC_LINK || '' }}
-          CSC_KEY_PASSWORD: ${{ matrix.platform == 'mac' && secrets.MACOS_CSC_KEY_PASSWORD || '' }}
-          APPLE_ID: ${{ matrix.platform == 'mac' && secrets.APPLE_ID || '' }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ matrix.platform == 'mac' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ matrix.platform == 'mac' && secrets.APPLE_TEAM_ID || '' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
       - name: Package Studio
         run: npm run ${{ matrix.studioScript }}
         env:
-          CSC_LINK: ${{ matrix.platform == 'mac' && secrets.MACOS_CSC_LINK || '' }}
-          CSC_KEY_PASSWORD: ${{ matrix.platform == 'mac' && secrets.MACOS_CSC_KEY_PASSWORD || '' }}
-          APPLE_ID: ${{ matrix.platform == 'mac' && secrets.APPLE_ID || '' }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ matrix.platform == 'mac' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ matrix.platform == 'mac' && secrets.APPLE_TEAM_ID || '' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
       - name: Package Admin
         run: npm run ${{ matrix.adminScript }}
         env:
-          CSC_LINK: ${{ matrix.platform == 'mac' && secrets.MACOS_CSC_LINK || '' }}
-          CSC_KEY_PASSWORD: ${{ matrix.platform == 'mac' && secrets.MACOS_CSC_KEY_PASSWORD || '' }}
-          APPLE_ID: ${{ matrix.platform == 'mac' && secrets.APPLE_ID || '' }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ matrix.platform == 'mac' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ matrix.platform == 'mac' && secrets.APPLE_TEAM_ID || '' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
       - name: Validate macOS apps and installers
         if: matrix.platform == 'mac'
         shell: bash
-        env:
-          CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
         run: |
           set -euo pipefail
 
@@ -114,7 +100,7 @@ jobs:
           lipo -archs "$studio_x64/Contents/MacOS/Poly Studio" | grep -qw x86_64
           lipo -archs "$studio_arm64/Contents/MacOS/Poly Studio" | grep -qw arm64
 
-          if [[ -n "${CSC_LINK:-}" ]]; then
+          if codesign -dv "$player_x64" >/dev/null 2>&1; then
             codesign --verify --deep --strict "$player_x64"
             codesign --verify --deep --strict "$player_arm64"
             codesign --verify --deep --strict "$studio_x64"
