@@ -193,4 +193,4 @@ jobs:
           files: |
             desktop-artifacts/player-*/*
             desktop-artifacts/studio-*/*
-            desktop-artifacts/android-apks/*
+            desktop-artifacts/android-apks/**/*
