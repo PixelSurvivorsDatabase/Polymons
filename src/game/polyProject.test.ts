@@ -2347,10 +2347,11 @@ test("prevents browser shortcuts from hijacking gameplay movement", () => {
     "ArrowRight",
     "ArrowUp",
     "ArrowDown",
+    "ControlLeft",
+    "ControlRight",
   ]) {
     assert.equal(shouldPreventGameplayDefault(code), true);
   }
-  assert.equal(shouldPreventGameplayDefault("ControlLeft"), false);
   assert.equal(shouldPreventGameplayDefault("KeyF"), false);
 });
 

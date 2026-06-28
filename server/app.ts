@@ -112,6 +112,28 @@ type AvatarItemAsset = {
   modelFormat: string | null;
 };
 
+function versionedAssetUrl(
+  url: string | null | undefined,
+  version: string | null | undefined,
+): string | null {
+  if (!url) return null;
+  const marker = version ? Date.parse(version) || version : "1";
+  return `${url}${url.includes("?") ? "&" : "?"}v=${encodeURIComponent(
+    String(marker),
+  )}`;
+}
+
+function avatarTextureUrl(item: {
+  texture_url?: string | null;
+  reviewed_at?: string | null;
+  created_at?: string | null;
+}): string | null {
+  return versionedAssetUrl(
+    item.texture_url,
+    item.reviewed_at ?? item.created_at ?? null,
+  );
+}
+
 async function loadEquippedAvatarAssetMap(
   admin: SupabaseClient,
   profiles: EquippedAvatarRow[],
@@ -131,7 +153,9 @@ async function loadEquippedAvatarAssetMap(
   if (itemIds.length === 0) return new Map();
   const { data, error } = await admin
     .from("avatar_items")
-    .select("id, texture_url, model_url, model_format, review_status")
+    .select(
+      "id, texture_url, model_url, model_format, review_status, created_at, reviewed_at",
+    )
     .in("id", itemIds);
   if (error) throw error;
   return new Map(
@@ -140,7 +164,7 @@ async function loadEquippedAvatarAssetMap(
       .map((item) => [
         item.id,
         {
-          textureUrl: item.texture_url ?? null,
+          textureUrl: avatarTextureUrl(item),
           modelUrl: item.model_url ?? null,
           modelFormat: item.model_format ?? null,
         },
@@ -853,7 +877,7 @@ export function createApp(
         const { data, error } = await admin
           .from("avatar_items")
           .select(
-            "id, name, description, item_type, unlock_type, unlock_threshold, price_tix, bundle_key, sort_order, texture_url, model_url, model_format, model_preview_url, creator_id, created_from_upload",
+            "id, name, description, item_type, unlock_type, unlock_threshold, price_tix, bundle_key, sort_order, texture_url, model_url, model_format, model_preview_url, creator_id, created_from_upload, created_at, reviewed_at",
           )
           .eq("review_status", "approved")
           .order("sort_order");
@@ -886,7 +910,7 @@ export function createApp(
         unlockThreshold: item.unlock_threshold,
         priceTix: Number(item.price_tix ?? 0),
         bundleKey: item.bundle_key,
-        textureUrl: item.texture_url ?? null,
+        textureUrl: avatarTextureUrl(item),
         modelUrl: item.model_url ?? null,
         modelFormat: item.model_format ?? null,
         modelPreviewUrl: item.model_preview_url ?? null,
@@ -910,7 +934,7 @@ export function createApp(
       const { data: items, error } = await admin
         .from("avatar_items")
         .select(
-          "id, name, description, item_type, unlock_type, unlock_threshold, price_tix, bundle_key, sort_order, texture_url, model_url, model_format, model_preview_url, creator_id, created_from_upload, created_at",
+          "id, name, description, item_type, unlock_type, unlock_threshold, price_tix, bundle_key, sort_order, texture_url, model_url, model_format, model_preview_url, creator_id, created_from_upload, created_at, reviewed_at",
         )
         .eq("review_status", "approved")
         .order("sort_order")
@@ -949,7 +973,7 @@ export function createApp(
             unlockThreshold: item.unlock_threshold,
             priceTix: Number(item.price_tix ?? 0),
             bundleKey: item.bundle_key,
-            textureUrl: item.texture_url ?? null,
+            textureUrl: avatarTextureUrl(item),
             modelUrl: item.model_url ?? null,
             modelFormat: item.model_format ?? null,
             modelPreviewUrl: item.model_preview_url ?? null,
@@ -989,7 +1013,7 @@ export function createApp(
         itemType: item.item_type,
         unlockType: item.unlock_type,
         priceTix: Number(item.price_tix ?? 0),
-        textureUrl: item.texture_url,
+        textureUrl: avatarTextureUrl(item),
         modelUrl: item.model_url ?? null,
         modelFormat: item.model_format ?? null,
         modelPreviewUrl: item.model_preview_url ?? null,
@@ -1072,7 +1096,7 @@ export function createApp(
         itemType: item.item_type,
         unlockType: item.unlock_type,
         priceTix: Number(item.price_tix ?? 0),
-        textureUrl: item.texture_url,
+        textureUrl: avatarTextureUrl(item),
         modelUrl: item.model_url ?? null,
         modelFormat: item.model_format ?? null,
         modelPreviewUrl: item.model_preview_url ?? null,
@@ -1297,7 +1321,7 @@ export function createApp(
         : Promise.resolve({ data: [], error: null }),
       admin
         .from("avatar_items")
-        .select("id, name, description, item_type, unlock_type, unlock_threshold, price_tix, bundle_key, sort_order, texture_url, model_url, model_format, model_preview_url, review_status, creator_id, created_from_upload")
+        .select("id, name, description, item_type, unlock_type, unlock_threshold, price_tix, bundle_key, sort_order, texture_url, model_url, model_format, model_preview_url, review_status, creator_id, created_from_upload, created_at, reviewed_at")
         .order("sort_order"),
     ]);
     if (profilesResult.error) throw profilesResult.error;
@@ -1402,7 +1426,7 @@ export function createApp(
         unlockThreshold: item.unlock_threshold,
         priceTix: Number(item.price_tix ?? 0),
         bundleKey: item.bundle_key,
-        textureUrl: item.texture_url ?? null,
+        textureUrl: avatarTextureUrl(item),
         modelUrl: item.model_url ?? null,
         modelFormat: item.model_format ?? null,
         modelPreviewUrl: item.model_preview_url ?? null,
@@ -1445,7 +1469,7 @@ export function createApp(
           itemType: item.item_type,
           unlockType: item.unlock_type,
           priceTix: Number(item.price_tix ?? 0),
-          textureUrl: item.texture_url,
+          textureUrl: avatarTextureUrl(item),
           modelUrl: item.model_url ?? null,
           modelFormat: item.model_format ?? null,
           modelPreviewUrl: item.model_preview_url ?? null,

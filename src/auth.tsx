@@ -114,6 +114,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           error instanceof PolymonsApiError &&
           (error.status === 401 || error.status === 403)
         ) {
+          const current = authRef.current;
+          if (current && sessionExpiryMs(current.session) > Date.now()) {
+            refreshFailures.current += 1;
+            refreshRetryAt.current = Date.now() + 60_000;
+            return current.session;
+          }
           saveAuth(null);
           return null;
         }

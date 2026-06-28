@@ -5,6 +5,8 @@ const GAMEPLAY_KEY_CODES = new Set([
   "KeyD",
   "KeyR",
   "Space",
+  "ControlLeft",
+  "ControlRight",
   "ArrowUp",
   "ArrowDown",
   "ArrowLeft",

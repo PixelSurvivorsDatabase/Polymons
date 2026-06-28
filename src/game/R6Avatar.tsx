@@ -63,26 +63,59 @@ import {
 } from "./r6Geometry";
 import { normalizedObjGeometry } from "./objMesh";
 
+type RemoteAvatarImageRecord = {
+  image: HTMLImageElement | null;
+  subscribers: Set<() => void>;
+};
+
+const remoteAvatarImageCache = new Map<string, RemoteAvatarImageRecord>();
+
+function getRemoteAvatarImageRecord(url: string): RemoteAvatarImageRecord {
+  const cached = remoteAvatarImageCache.get(url);
+  if (cached) return cached;
+
+  const record: RemoteAvatarImageRecord = {
+    image: null,
+    subscribers: new Set(),
+  };
+  remoteAvatarImageCache.set(url, record);
+
+  const nextImage = new Image();
+  nextImage.crossOrigin = "anonymous";
+  nextImage.onload = () => {
+    record.image = nextImage;
+    record.subscribers.forEach((subscriber) => subscriber());
+  };
+  nextImage.onerror = () => {
+    record.subscribers.forEach((subscriber) => subscriber());
+  };
+  nextImage.src = url;
+
+  return record;
+}
+
 function useRemoteAvatarImage(textureUrl?: string | null) {
-  const [image, setImage] = useState<HTMLImageElement | null>(null);
+  const [image, setImage] = useState<HTMLImageElement | null>(() =>
+    textureUrl ? getRemoteAvatarImageRecord(textureUrl).image : null,
+  );
   useEffect(() => {
     if (!textureUrl) {
       setImage(null);
       return;
     }
+    const record = getRemoteAvatarImageRecord(textureUrl);
+    if (record.image) {
+      setImage(record.image);
+      return;
+    }
     let disposed = false;
-    const nextImage = new Image();
-    nextImage.crossOrigin = "anonymous";
-    nextImage.onload = () => {
-      if (!disposed) setImage(nextImage);
+    const update = () => {
+      if (!disposed) setImage(record.image);
     };
-    nextImage.onerror = () => {
-      if (!disposed) setImage(null);
-    };
-    nextImage.src = textureUrl;
+    record.subscribers.add(update);
     return () => {
       disposed = true;
-      setImage(null);
+      record.subscribers.delete(update);
     };
   }, [textureUrl]);
   return image;

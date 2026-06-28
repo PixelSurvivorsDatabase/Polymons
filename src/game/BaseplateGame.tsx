@@ -567,13 +567,9 @@ function MouseLook({
     const onLockChange = () => {
       const locked = document.pointerLockElement === canvas;
       onPointerLock(locked);
-      if (!locked && cameraSettingsRef.current.shiftLockActive) {
-        onShiftLockChange(false);
-      }
     };
     const onLockError = () => {
       onPointerLock(false);
-      onShiftLockChange(false);
     };
     const onWheel = (event: WheelEvent) => {
       if (!controlsEnabled) return;
@@ -593,7 +589,13 @@ function MouseLook({
       const next = !cameraSettingsRef.current.shiftLockActive;
       onShiftLockChange(next);
       if (next) {
-        void canvas.requestPointerLock();
+        try {
+          const lockRequest = canvas.requestPointerLock();
+          if (lockRequest) void lockRequest.catch(() => undefined);
+        } catch {
+          // Some browsers only allow pointer lock after a mouse click. Keep
+          // shift-lock active and let the camera/character behavior continue.
+        }
       } else if (document.pointerLockElement === canvas) {
         void document.exitPointerLock();
       }

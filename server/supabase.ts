@@ -54,6 +54,28 @@ const DEFAULT_AVATAR_APPEARANCE: AvatarAppearance = {
   accessories: [],
 };
 
+function versionedAssetUrl(
+  url: string | null | undefined,
+  version: string | null | undefined,
+): string | null {
+  if (!url) return null;
+  const marker = version ? Date.parse(version) || version : "1";
+  return `${url}${url.includes("?") ? "&" : "?"}v=${encodeURIComponent(
+    String(marker),
+  )}`;
+}
+
+function avatarTextureUrl(item: {
+  texture_url?: string | null;
+  reviewed_at?: string | null;
+  created_at?: string | null;
+}): string | null {
+  return versionedAssetUrl(
+    item.texture_url,
+    item.reviewed_at ?? item.created_at ?? null,
+  );
+}
+
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 
 export function normalizeAvatarAppearance(value: unknown): AvatarAppearance {
@@ -150,7 +172,9 @@ export async function loadProfile(
   const { data: avatarItems, error: avatarItemsError } = equippedIds.length
     ? await client
         .from("avatar_items")
-        .select("id, texture_url, model_url, model_format, review_status")
+        .select(
+          "id, texture_url, model_url, model_format, review_status, created_at, reviewed_at",
+        )
         .in("id", equippedIds)
     : { data: [], error: null };
   if (avatarItemsError) throw avatarItemsError;
@@ -160,7 +184,7 @@ export async function loadProfile(
       .map((item) => [
         item.id,
         {
-          textureUrl: item.texture_url ?? null,
+          textureUrl: avatarTextureUrl(item),
           modelUrl: item.model_url ?? null,
           modelFormat: item.model_format ?? null,
         },
